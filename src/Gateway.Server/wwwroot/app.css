@@ -45,3 +45,9 @@ tr.t-done td { color: var(--ok); } tr.t-failed td { color: var(--bad); } tr.t-ru
 .log.tall { max-height: 70vh; margin-top: 10px; }
 #blazor-error-ui { display: none; position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 16px; background: #fef3c7; border-top: 1px solid var(--warn); }
 #blazor-error-ui .dismiss { float: right; cursor: pointer; }
+.row-buttons { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.state-line { padding: 8px 10px; border-radius: 6px; background: #f3f4f6; margin: 8px 0; }
+.state-line.available, .state-line.ready { background: #dbeafe; color: var(--pri); }
+.state-line.uptodate { background: #dcfce7; color: var(--ok); }
+.state-line.error { background: #fee2e2; color: var(--bad); }
+.state-line.applying, .state-line.downloading, .state-line.checking { background: #fef3c7; color: var(--warn); }

@@ -39,6 +39,16 @@ jobs:
           cp deploy/*.bat docs/DEPLOY.md dist/AgvFotaGateway/
           rm -f dist/AgvFotaGateway/*.pdb dist/AgvFotaGateway/appsettings.Development.json dist/AgvFotaGateway/web.config
           cd dist && zip -r "AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip" AgvFotaGateway
+          # 사내 피드(Update.Source=Url)용 latest.json — 릴리스 자산을 사내 HTTP 폴더에 복사하면 그대로 쓸 수 있다
+          SIZE=$(stat -c %s "AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip")
+          cat > latest.json <<JSON
+          {
+            "version": "${{ steps.ver.outputs.ver }}",
+            "url": "https://github.com/${{ github.repository }}/releases/download/v${{ steps.ver.outputs.ver }}/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip",
+            "notes": "AgvFotaGateway ${{ steps.ver.outputs.ver }}",
+            "size": $SIZE
+          }
+          JSON
           ls -l
           {
             echo "### AgvFotaGateway ${{ steps.ver.outputs.ver }}"
@@ -54,5 +64,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip
+          files: |
+            dist/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip
+            dist/latest.json
           generate_release_notes: true

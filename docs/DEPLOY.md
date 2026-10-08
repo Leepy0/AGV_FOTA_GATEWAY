@@ -47,9 +47,23 @@
 
 바꾼 뒤 서비스를 재시작합니다 (`sc stop AgvFotaGateway` / `sc start AgvFotaGateway`).
 
-## 5. 업데이트
+## 5. 업데이트 (자동)
 
-새 zip 을 같은 폴더에 덮어쓰고(`data\` 는 그대로) `install-service.bat` 을 다시 실행하면 서비스가 재등록·재시작됩니다.
+WPF 프로그램의 자동 업데이트와 같은 방식입니다. 서버가 새 버전을 확인·다운로드해 두었다가, 배포 작업이 없을 때 스스로 파일을 바꾸고 재시작합니다.
+`appsettings.json` 과 `data\` 는 유지됩니다.
+
+- 화면 **서버 업데이트**: 지금 확인 → 다운로드 → 적용(서비스 재시작, 약 10초). 메뉴에 ● 가 붙으면 새 버전이 있다는 뜻입니다.
+- 자동 확인 주기는 `Update.CheckIntervalMin`(기본 6시간). `Update.AutoApply: true` 면 작업이 없을 때 자동으로 적용까지 합니다.
+- 새 버전 출처 (`Update.Source`)
+
+| Source | 설정 | 언제 |
+|---|---|---|
+| `GitHub` (기본) | `GitHubRepo`, 비공개 저장소면 `GitHubToken`(fine-grained PAT, Contents: Read) | 서버 PC 가 github.com 에 나갈 수 있을 때 |
+| `Url` | `FeedUrl`: 사내 HTTP 서버의 `latest.json` 주소 | 사내망이 GitHub 를 막을 때. 릴리스 자산(`latest.json` + zip)을 사내 HTTP 폴더에 복사하고 `latest.json` 의 `url` 을 사내 주소로 고친다 |
+
+토큰은 파일 대신 환경변수 `Update__GitHubToken` 으로도 줄 수 있습니다 (서비스 환경변수는 `sc` 대신 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Services\AgvFotaGateway\Environment`).
+
+적용 기록은 `data\update\apply.log`. 자동 적용이 실패하면 수동으로: 새 zip 을 같은 폴더에 덮어쓰고(`appsettings.json`, `data\` 제외) `install-service.bat` 을 다시 실행합니다.
 
 ## 6. 문제 해결
 

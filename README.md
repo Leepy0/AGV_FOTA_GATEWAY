@@ -9,14 +9,14 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
                                         └──TCP──▶ ACS (규격 확인 후 활성화)
 ```
 
-**설치**: Releases 의 zip 을 풀고 `install-service.bat`(관리자) 한 번 → `http://<PC IP>:8080`. 자세한 절차는 [docs/DEPLOY.md](docs/DEPLOY.md).
+**설치**: Releases 의 zip 을 풀고 `install-service.bat`(관리자) 한 번 → `http://<PC IP>:8080`. 이후 버전은 서버가 스스로 받아 적용합니다(**서버 업데이트** 화면). 자세한 절차는 [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## 구성
 
 | 경로 | 내용 |
 |---|---|
-| `src/Gateway.Core` | 브리지 UDP 패킷, AGV 프레임(BCC), DSP 이미지 헤더, DSP OTA·브리지 OTA 클라이언트. 벤치 도구(`DspOtaTest.cs`, `BridgeTest.cs`)에서 옮긴 코드 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 4개(호기 현황·펌웨어·배포 작업·통신 로그), REST API |
+| `src/Gateway.Core` | 브리지 UDP 패킷, AGV 프레임(BCC), DSP 이미지 헤더, DSP OTA·브리지 OTA 클라이언트, 업데이트 피드 파싱. 벤치 도구(`DspOtaTest.cs`, `BridgeTest.cs`)에서 옮긴 코드 |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 5개(호기 현황·펌웨어·배포 작업·통신 로그·서버 업데이트), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임/헤더 왕복, DSP OTA 재전송 |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` |
 | `docs/` | [DEPLOY.md](docs/DEPLOY.md) 설치·운영, [INTERFACES.md](docs/INTERFACES.md) 접점 규격 출처 |
@@ -39,7 +39,8 @@ REST API (화면과 같은 기능, 스크립트용): `GET /api/agvs`, `GET|POST|
 
 ## 릴리스
 
-`v*` 태그를 푸시하면 Actions 가 win-x64 단일 exe(런타임 포함)를 zip 으로 Release 에 첨부합니다. 버전은 태그에서 가져옵니다.
+`v*` 태그를 푸시하면 Actions 가 win-x64 단일 exe(런타임 포함) zip 과 `latest.json` 을 Release 에 첨부합니다. 버전은 태그에서 가져오며,
+설치된 서버들이 이 릴리스를 보고 업데이트합니다. 절차는 `.claude/skills/fota-gateway-release/SKILL.md` (Claude 가 "릴리스 올려줘" 요청에 따르는 순서).
 
 ## 아직 정해지지 않은 것
 

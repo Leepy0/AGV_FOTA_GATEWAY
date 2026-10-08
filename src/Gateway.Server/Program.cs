@@ -13,6 +13,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 builder.Host.UseWindowsService(o => o.ServiceName = "AgvFotaGateway");
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection(GatewayOptions.Section));
+builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.Section));
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 64L * 1024 * 1024);
 builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = 64L * 1024 * 1024);
 
@@ -32,6 +33,8 @@ builder.Services.AddSingleton(sp => new FirmwareStore(dataDir));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<JobService>());
 builder.Services.AddSingleton<TraceLog>();
+builder.Services.AddSingleton<UpdateService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
 var app = builder.Build();
 
@@ -90,7 +93,11 @@ api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService li
     link.SendMainDown(agv, AgvFrame.ParseData(r.Data)) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
 api.MapPost("/agvs/{agv:int}/cfg", (int agv, SendRequest r, BridgeUdpService link) =>
     link.SendCfg(agv, r.Data) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
-api.MapGet("/health", () => Results.Ok(new { ok = true, time = DateTime.UtcNow }));
+api.MapGet("/update", (UpdateService u) => new { current = u.CurrentText, stage = u.Stage.ToString(), u.Message, latest = u.Latest?.Tag, u.LastCheck, source = u.SourceText });
+api.MapPost("/update/check", async (UpdateService u) => { var i = await u.CheckAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message, latest = i?.Tag }); });
+api.MapPost("/update/download", async (UpdateService u) => { await u.DownloadAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
+api.MapPost("/update/apply", async (UpdateService u) => { await u.ApplyAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
+api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, time = DateTime.UtcNow }));
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {
