@@ -1,4 +1,7 @@
-# 빌드·테스트 → v* 태그면 win-x64 단일 exe(런타임 포함) zip 을 Release 에 첨부
+# 빌드·테스트 → 릴리스면 win-x64 단일 exe(런타임 포함) zip + latest.json 을 Release 에 첨부
+#  릴리스 만드는 두 가지 방법 (결과는 같음)
+#   1. v* 태그 푸시
+#   2. Actions 탭 → build → Run workflow → version 입력 (태그를 워크플로가 만든다)
 name: build
 
 on:
@@ -7,6 +10,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '릴리스 버전 (예: 0.1.0). 비우면 빌드·테스트만'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -24,9 +32,22 @@ jobs:
         id: ver
         run: |
           BASE=$(grep -oP '<Version>\K[^<]+' src/Gateway.Server/Gateway.Server.csproj)
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="${BASE}-${GITHUB_SHA::7}"; fi
+          INPUT="${{ github.event.inputs.version }}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VER="${GITHUB_REF_NAME#v}"; RELEASE=true
+          elif [[ -n "$INPUT" ]]; then
+            VER="${INPUT#v}"; RELEASE=true
+            [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version 형식: X.Y.Z"; exit 1; }
+            git ls-remote --exit-code --tags origin "v$VER" >/dev/null && { echo "태그 v$VER 이 이미 있음"; exit 1; }
+          else
+            VER="${BASE}-${GITHUB_SHA::7}"; RELEASE=false
+          fi
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
-          echo "version: $VER"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "version: $VER release: $RELEASE (csproj $BASE)"
+          if [[ "$RELEASE" == true && "$VER" != "$BASE" ]]; then
+            echo "::warning::csproj Version($BASE) 과 릴리스 버전($VER) 이 다릅니다. 실행 파일은 $VER 로 빌드됩니다."
+          fi
 
       - name: Build & test
         run: |
@@ -60,10 +81,19 @@ jobs:
           name: AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64
           path: dist/AgvFotaGateway/
 
-      - name: Release (tag only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Tag (manual release)
+        if: steps.ver.outputs.release == 'true' && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.ver.outputs.ver }}" -m "AgvFotaGateway ${{ steps.ver.outputs.ver }}"
+          git push origin "v${{ steps.ver.outputs.ver }}"
+
+      - name: Release
+        if: steps.ver.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.ver }}
           files: |
             dist/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip
             dist/latest.json

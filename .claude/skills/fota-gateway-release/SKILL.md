@@ -28,11 +28,16 @@ dotnet build && dotnet test
 1. **버전 결정**: 마지막 태그(`git tag --sort=-v:refname | head -1`)보다 올린다. 버그 수정 patch, 기능 추가 minor. 사용자가 지정하면 그대로.
 2. **버전 반영**: `src/Gateway.Server/Gateway.Server.csproj` 의 `<Version>` 을 같은 값으로 바꾸고 commit·push.
    서버의 업데이트 확인은 "릴리스 태그 버전 > 실행 중 버전" 비교라 csproj 와 태그가 같아야 한다.
-3. **태그 푸시**: `git tag vX.Y.Z && git push origin vX.Y.Z`. Actions 가 빌드·테스트 후 Release 에 자산을 올린다.
+3. **릴리스 실행** — 둘 중 하나. Actions 가 빌드·테스트 후 태그와 Release 를 만든다.
+   - `git tag vX.Y.Z && git push origin vX.Y.Z`
+   - 태그 푸시가 안 되는 환경(Claude 클라우드 세션의 git 프록시는 태그 푸시를 끊는다)이면 Actions 워크플로 `build` 를
+     `workflow_dispatch` 로 실행하며 `version` 입력에 `X.Y.Z` 를 준다 (GitHub MCP `actions_run_trigger`, 또는 Actions 탭 → Run workflow).
+     워크플로가 태그를 만들어 푸시하고 Release 까지 올린다. 같은 버전 태그가 이미 있으면 실패한다.
    - `AgvFotaGateway_X.Y.Z_win-x64.zip` — 런타임 포함 단일 exe + appsettings.json + 배포 bat + DEPLOY.md
    - `latest.json` — 사내 HTTP 피드용 (`Update.Source=Url`)
 4. **릴리스 노트**: Actions 가 자동 생성한다. 사용자 관점 변경 사항을 한글 3~6줄로 다듬고 싶으면 릴리스를 편집한다.
-5. **검증**: Actions 가 초록인지, Release 에 zip 과 latest.json 두 개가 있는지. 설치된 서버의 **서버 업데이트** 화면에서 "지금 확인" 이 새 버전을 보이는지.
+5. **검증**: Actions 가 초록인지(`actions_list` → `list_workflow_runs`), Release 에 zip 과 latest.json 두 개가 있는지(`list_releases`).
+   설치된 서버의 **서버 업데이트** 화면에서 "지금 확인" 이 새 버전을 보이는지.
 6. **사내망 주의**: 서버 PC 가 github.com 에 못 나가면 `Update.Source=Url` 로 바꾸고 릴리스 자산을 사내 HTTP 폴더에 복사한다 (`latest.json` 의 `url` 을 사내 주소로). 비공개 저장소면 `Update.GitHubToken` 이 필요하다. 처음 릴리스할 때 한 줄로 알린다.
 
 테스트 빌드는 태그 없이 push → Actions 아티팩트로만 나온다(릴리스 아님). 정식 릴리스로 올리지 않는다.
