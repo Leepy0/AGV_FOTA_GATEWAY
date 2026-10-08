@@ -1,0 +1,29 @@
+@page "/trace"
+@inject TraceLog Log
+@inject BridgeUdpService Link
+@rendermode InteractiveServer
+@implements IDisposable
+
+<h1>통신 로그</h1>
+<div class="form row">
+    <label>호기 <input @bind="agv" style="width:60px" /></label>
+    <label>프레임 <input @bind="data" placeholder="<STX>W1107C001000 00000<ETX>" style="width:360px" /></label>
+    <button @onclick="Send">MAIN_DOWN 전송</button>
+    <label>설정 명령 <input @bind="cfg" placeholder="cfg | set ip 192.168.10.107 | save | reboot" style="width:300px" /></label>
+    <button @onclick="SendCfg">CFG_CMD 전송</button>
+    <label><input type="checkbox" @bind="paused" /> 멈춤</label>
+    @if (msg is not null) { <span class="msg">@msg</span> }
+</div>
+<pre class="log tall">@string.Join("\n", lines)</pre>
+
+@code {
+    string[] lines = [];
+    string agv = "7", data = "", cfg = "";
+    string? msg;
+    bool paused;
+    protected override void OnInitialized() { Log.Changed += OnChanged; lines = Log.Snapshot(); }
+    void OnChanged() { if (!paused) InvokeAsync(() => { lines = Log.Snapshot(); StateHasChanged(); }); }
+    public void Dispose() => Log.Changed -= OnChanged;
+    void Send() => msg = int.TryParse(agv, out var a) && Link.SendMainDown(a, AgvFrame.ParseData(data)) ? "전송" : "실패 (호기 endpoint 없음)";
+    void SendCfg() => msg = int.TryParse(agv, out var a) && Link.SendCfg(a, cfg) ? "전송" : "실패 (호기 endpoint 없음)";
+}

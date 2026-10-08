@@ -1,0 +1,53 @@
+@page "/"
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
+@implements IDisposable
+
+<h1>호기 현황</h1>
+<p class="muted">브리지 heartbeat 기준. DSP 열은 마지막 OTA 작업 때 조회한 값입니다.</p>
+
+@if (agvs.Count == 0)
+{
+    <div class="empty">아직 보이는 호기가 없습니다. 브리지의 <code>server</code> IP 가 이 PC 이고 UDP @Opt.Value.UdpPort 이 열려 있는지 확인하세요.</div>
+}
+else
+{
+    <table class="grid">
+        <thead>
+            <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>DSP</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var a in agvs)
+            {
+                var on = a.Online(Opt.Value.OfflineAfterSec);
+                <tr class="@(on ? "" : "off")">
+                    <td><b>@a.Id.ToString("D2")</b></td>
+                    <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : $"{(int)(DateTime.UtcNow - a.LastSeen).TotalSeconds}s 전")</td>
+                    <td>@a.EndPoint</td>
+                    <td>@a.Status?.Fw</td>
+                    <td>@a.Status?.Part</td>
+                    <td>@a.Status?.Ota</td>
+                    <td>@a.Status?.Cfg @(a.Status?.SetupAp == true ? "(AP)" : "")</td>
+                    <td>@a.Status?.Rssi</td>
+                    <td>@(a.Dsp is null ? "-" : $"{a.Dsp.Version} {a.Dsp.Slot}/{a.Dsp.State}")</td>
+                    <td>@a.MainUp / @a.MainDown</td>
+                    <td>@a.SeqLoss</td>
+                    <td class="mono small" title="@a.StatusRaw">@a.LastFrame</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    IReadOnlyList<AgvState> agvs = [];
+    System.Threading.Timer? timer;
+    protected override void OnInitialized()
+    {
+        Reg.Changed += OnChanged;
+        timer = new System.Threading.Timer(_ => OnChanged(), null, 2000, 2000);   // 오프라인 표시 갱신
+        agvs = Reg.Snapshot();
+    }
+    void OnChanged() => InvokeAsync(() => { agvs = Reg.Snapshot(); StateHasChanged(); });
+    public void Dispose() { Reg.Changed -= OnChanged; timer?.Dispose(); }
+}

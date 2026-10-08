@@ -1,0 +1,90 @@
+@page "/firmware"
+@inject FirmwareStore Store
+@inject JobService JobSvc
+@rendermode InteractiveServer
+
+<h1>펌웨어</h1>
+
+<section class="card">
+    <h2>업로드</h2>
+    <div class="form">
+        <label>종류
+            <select @bind="kind">
+                <option value="Dsp">DSP (메인보드, TMS320F2808)</option>
+                <option value="Esp">브리지 (ESP32-S3, agv_wifi_bridge.bin)</option>
+            </select>
+        </label>
+        <label>버전 <input @bind="version" placeholder="예: 1.0.3" /></label>
+        <label>프로젝트 <input @bind="project" placeholder="@(kind == "Dsp" ? "agv-dsp" : "agv_wifi_bridge")" /></label>
+        <label>메모 <input @bind="notes" /></label>
+        @if (kind == "Dsp")
+        {
+            <p class="muted">슬롯 A 용·B 용 이미지를 각각 올립니다. 헤더 없는 raw .bin 이면 위 버전·프로젝트로 헤더를 붙입니다. 위치 독립 이미지(시뮬레이터)는 "any" 하나만.</p>
+            <label>슬롯 A <InputFile OnChange="e => fileA = e.File" /></label>
+            <label>슬롯 B <InputFile OnChange="e => fileB = e.File" /></label>
+            <label>any <InputFile OnChange="e => fileAny = e.File" /></label>
+        }
+        else
+        {
+            <label>agv_wifi_bridge.bin <InputFile OnChange="e => fileEsp = e.File" /></label>
+        }
+        <button class="primary" @onclick="Upload" disabled="@busy">@(busy ? "업로드 중…" : "업로드")</button>
+        @if (msg is not null) { <div class="msg @(err ? "err" : "")">@msg</div> }
+    </div>
+</section>
+
+<section class="card">
+    <h2>목록</h2>
+    <table class="grid">
+        <thead><tr><th>종류</th><th>버전</th><th>프로젝트</th><th>파일</th><th>업로드</th><th>메모</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var e in Store.List())
+            {
+                <tr>
+                    <td>@e.Kind</td><td><b>@e.Version</b></td><td>@e.Project</td>
+                    <td class="small">@e.FilesText</td>
+                    <td>@e.UploadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>@e.Notes</td>
+                    <td><button @onclick="() => Delete(e.Id)">삭제</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</section>
+
+@code {
+    string kind = "Dsp", version = "", project = "", notes = "";
+    IBrowserFile? fileA, fileB, fileAny, fileEsp;
+    bool busy, err;
+    string? msg;
+
+    async Task Upload()
+    {
+        busy = true; msg = null; err = false;
+        try
+        {
+            var files = new List<(string, string, Stream)>();
+            const long max = 64L * 1024 * 1024;
+            if (kind == "Dsp")
+            {
+                if (fileA is not null) files.Add(("A", fileA.Name, fileA.OpenReadStream(max)));
+                if (fileB is not null) files.Add(("B", fileB.Name, fileB.OpenReadStream(max)));
+                if (fileAny is not null) files.Add(("any", fileAny.Name, fileAny.OpenReadStream(max)));
+            }
+            else if (fileEsp is not null) files.Add(("esp", fileEsp.Name, fileEsp.OpenReadStream(max)));
+            if (files.Count == 0) { msg = "파일을 선택하세요"; err = true; return; }
+            var e = await Store.AddAsync(kind == "Dsp" ? FirmwareKind.Dsp : FirmwareKind.Esp, version, project, notes, files);
+            foreach (var (_, _, s) in files) s.Dispose();
+            msg = $"등록: {e.Kind} {e.Version} — {e.FilesText}";
+            fileA = fileB = fileAny = fileEsp = null;
+        }
+        catch (Exception ex) { msg = ex.Message; err = true; }
+        finally { busy = false; }
+    }
+
+    void Delete(string id)
+    {
+        if (JobSvc.List().Any(j => j.FirmwareId == id && j.State is JobState.Scheduled or JobState.Running)) { msg = "예약·실행 중인 작업이 쓰는 펌웨어입니다"; err = true; return; }
+        Store.Delete(id);
+    }
+}

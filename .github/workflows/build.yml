@@ -1,0 +1,58 @@
+# 빌드·테스트 → v* 태그면 win-x64 단일 exe(런타임 포함) zip 을 Release 에 첨부
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version
+        id: ver
+        run: |
+          BASE=$(grep -oP '<Version>\K[^<]+' src/Gateway.Server/Gateway.Server.csproj)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="${BASE}-${GITHUB_SHA::7}"; fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "version: $VER"
+
+      - name: Build & test
+        run: |
+          dotnet build -c Release
+          dotnet test -c Release --no-build --logger "console;verbosity=minimal"
+
+      - name: Publish win-x64 (self-contained single file)
+        run: |
+          dotnet publish src/Gateway.Server -c Release -r win-x64 -p:Version=${{ steps.ver.outputs.ver }} -o dist/AgvFotaGateway
+          cp deploy/*.bat docs/DEPLOY.md dist/AgvFotaGateway/
+          rm -f dist/AgvFotaGateway/*.pdb dist/AgvFotaGateway/appsettings.Development.json dist/AgvFotaGateway/web.config
+          cd dist && zip -r "AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip" AgvFotaGateway
+          ls -l
+          {
+            echo "### AgvFotaGateway ${{ steps.ver.outputs.ver }}"
+            echo '```'; ls -l AgvFotaGateway; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64
+          path: dist/AgvFotaGateway/
+
+      - name: Release (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip
+          generate_release_notes: true

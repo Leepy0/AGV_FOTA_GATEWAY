@@ -1,0 +1,127 @@
+@page "/jobs"
+@inject JobService JobSvc
+@inject FirmwareStore Store
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
+@rendermode InteractiveServer
+@implements IDisposable
+
+<h1>배포 작업</h1>
+
+<section class="card">
+    <h2>새 작업</h2>
+    <div class="form">
+        <label>펌웨어
+            <select @bind="fwId">
+                <option value="">선택</option>
+                @foreach (var f in Store.List()) { <option value="@f.Id">[@f.Kind] @f.Version — @f.Project (@f.UploadedAt.ToLocalTime():MM-dd HH:mm)</option> }
+            </select>
+        </label>
+        <label>작업 이름 <input @bind="name" placeholder="비우면 펌웨어 이름" /></label>
+        <label>대상 호기
+            <div class="chips">
+                @foreach (var a in Reg.Snapshot())
+                {
+                    var on = a.Online(Opt.Value.OfflineAfterSec);
+                    <label class="chip @(targets.Contains(a.Id) ? "on" : "") @(on ? "" : "off")">
+                        <input type="checkbox" checked="@targets.Contains(a.Id)" @onchange="e => Toggle(a.Id, (bool)e.Value!)" /> @a.Id.ToString("D2")
+                        <small>@(a.Status?.Fw)</small>
+                    </label>
+                }
+            </div>
+            <input @bind="extraTargets" placeholder="직접 입력: 7, 12-15 (아직 안 보이는 호기)" />
+        </label>
+        <label>실행 시각
+            <select @bind="when">
+                <option value="now">지금 바로</option>
+                <option value="at">예약</option>
+            </select>
+            @if (when == "at") { <input type="datetime-local" @bind="at" @bind:format="yyyy-MM-ddTHH:mm" /> }
+        </label>
+        <label><input type="checkbox" @bind="stopOnFailure" /> 한 대라도 실패하면 나머지 중단</label>
+        <p class="muted">호기는 한 대씩 순차로 진행됩니다. <b>AGV 정지 상태</b>에서만 실행하세요 (DSP 는 슬롯 지우기 동안 ACS 응답이 끊김).</p>
+        <button class="primary" @onclick="Create">작업 만들기</button>
+        @if (msg is not null) { <div class="msg @(err ? "err" : "")">@msg</div> }
+    </div>
+</section>
+
+<section class="card">
+    <h2>작업 목록</h2>
+    @foreach (var j in JobSvc.List())
+    {
+        <div class="job @j.State.ToString().ToLower()">
+            <div class="job-head" @onclick="() => open = open == j.Id ? null : j.Id">
+                <span class="state">@State(j)</span>
+                <b>@j.Name</b>
+                <span class="muted">@j.Kind @j.FirmwareVersion · 대상 @j.Targets.Count 대 · 완료 @j.DoneCount / 실패 @j.FailCount</span>
+                <span class="muted">@(j.ScheduledAt is null ? "즉시" : "예약 " + j.ScheduledAt.Value.ToLocalTime().ToString("MM-dd HH:mm")) · 생성 @j.CreatedAt.ToLocalTime().ToString("MM-dd HH:mm")</span>
+                <span class="actions">
+                    @if (j.State is JobState.Scheduled or JobState.Running) { <button @onclick:stopPropagation @onclick="() => JobSvc.Cancel(j.Id)">취소</button> }
+                    else { <button @onclick:stopPropagation @onclick="() => JobSvc.Delete(j.Id)">삭제</button> }
+                </span>
+            </div>
+            @if (open == j.Id)
+            {
+                <table class="grid">
+                    <thead><tr><th>호기</th><th>상태</th><th>진행</th><th>이전 → 이후</th><th>메시지</th><th>시간</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in j.Results)
+                        {
+                            <tr class="t-@r.State.ToString().ToLower()">
+                                <td><b>@r.Agv.ToString("D2")</b></td>
+                                <td>@r.State</td>
+                                <td><div class="bar"><div style="width:@(r.Percent)%"></div></div> @r.Percent%</td>
+                                <td>@r.VersionBefore → @r.VersionAfter</td>
+                                <td class="small">@r.Message</td>
+                                <td class="small">@r.StartedAt?.ToLocalTime().ToString("HH:mm:ss") ~ @r.FinishedAt?.ToLocalTime().ToString("HH:mm:ss")</td>
+                            </tr>
+                            @if (r.Log.Count > 0 && (r.State is TargetState.Running or TargetState.Failed))
+                            {
+                                <tr><td colspan="6"><pre class="log">@string.Join("\n", r.Log.TakeLast(12))</pre></td></tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    string fwId = "", name = "", extraTargets = "", when = "now";
+    DateTime at = DateTime.Now.AddMinutes(10);
+    bool stopOnFailure = true, err;
+    string? msg, open;
+    readonly HashSet<int> targets = new();
+
+    protected override void OnInitialized() { JobSvc.Changed += OnChanged; Reg.Changed += OnChanged; }
+    void OnChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() { JobSvc.Changed -= OnChanged; Reg.Changed -= OnChanged; }
+    void Toggle(int id, bool on) { if (on) targets.Add(id); else targets.Remove(id); }
+
+    static string State(Job j) => j.State switch
+    {
+        JobState.Scheduled => "대기", JobState.Running => "실행 중", JobState.Done => "완료", JobState.Failed => "실패", JobState.Cancelled => "취소", _ => "?"
+    };
+
+    void Create()
+    {
+        msg = null; err = false;
+        try
+        {
+            var all = new HashSet<int>(targets);
+            foreach (var tok in extraTargets.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var r = tok.Split('-');
+                if (r.Length == 2 && int.TryParse(r[0], out var a) && int.TryParse(r[1], out var b)) for (int i = a; i <= b; i++) all.Add(i);
+                else if (int.TryParse(tok, out var v)) all.Add(v);
+                else throw new InvalidOperationException($"호기 표기 오류: {tok}");
+            }
+            if (all.Any(x => x < 1 || x > 99)) throw new InvalidOperationException("호기 번호는 1~99");
+            var j = JobSvc.Create(name, fwId, all, when == "at" ? at.ToUniversalTime() : null, stopOnFailure);
+            msg = $"작업 생성: {j.Name} ({j.Targets.Count}대)";
+            targets.Clear(); extraTargets = ""; name = "";
+        }
+        catch (Exception ex) { msg = ex.Message; err = true; }
+    }
+}
