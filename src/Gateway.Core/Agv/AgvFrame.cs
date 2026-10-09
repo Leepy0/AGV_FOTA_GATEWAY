@@ -68,6 +68,16 @@ public static class AgvFrame
     /// <summary>DSP OTA 응답(A…F…) 인지 — ACS 로 넘기지 않는다</summary>
     public static bool IsOtaReply(ReadOnlySpan<byte> f) => f.Length >= 8 && f[0] == Stx && f[1] == 'A' && f[6] == 'F';
 
+    /// <summary>
+    /// ACS 로 중계할 상향 프레임인지 — 화이트리스트. 기존 ACS 는 모르는 종류(P 위치, R/A…F OTA 응답 등)를 받으면
+    /// 오동작할 수 있으므로 규격에 있는 E(이벤트)와 A(ACK)만 넘긴다.
+    /// </summary>
+    public static bool IsForAcs(ReadOnlySpan<byte> f)
+    {
+        if (f.Length < 8 || f[0] != Stx) return false;
+        return f[1] switch { (byte)'E' => true, (byte)'A' => !IsOtaReply(f), _ => false };
+    }
+
     /// <summary>버퍼를 ETX 기준으로 프레임들로 나눈다. 남은 조각은 rest 로 돌려준다.</summary>
     public static List<byte[]> Split(ReadOnlySpan<byte> data, ref byte[] rest)
     {

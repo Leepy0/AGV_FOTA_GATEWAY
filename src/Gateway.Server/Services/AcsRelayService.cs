@@ -10,7 +10,7 @@ namespace Gateway.Server.Services;
 /// ACS(교통제어) TCP 소켓 중계 — 뼈대. 기존 ZigBee 게이트웨이가 ACS 와 주고받던 규격을 확인해 맞춘다.
 ///  현재 가정: 소켓 위에 AGV 프레임(STX…ETX)이 그대로 흐른다.
 ///   - ACS → 소켓 → 프레임 분리 → AGV ID(헤더 4~5번째 자리) 로 호기 선택 → MAIN_DOWN
-///   - 브리지 MAIN_UP(OTA 응답 제외) → 소켓에 그대로 기록
+///   - 브리지 MAIN_UP 중 E·A 만(화이트리스트, AgvFrame.IsForAcs) → 소켓에 그대로 기록. 새 종류(P 위치 등)는 ACS 에 보내지 않는다
 ///  Mode=Client 면 이 서버가 ACS 에 접속(재접속 반복), Server 면 ACS 의 접속을 기다린다(한 연결).
 /// </summary>
 public sealed class AcsRelayService : BackgroundService

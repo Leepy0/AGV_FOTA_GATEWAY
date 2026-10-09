@@ -12,7 +12,7 @@ namespace Gateway.Server.Services;
 
 /// <summary>
 /// 브리지 UDP 서버 (AGV_Wifi_Bridge 규격). 호기별 endpoint 를 기억했다가 그곳으로 하향 송신한다.
-///  - MAIN_UP: OTA 응답(A…F)은 구독자(OTA 클라이언트)에게만, 나머지는 구독자 + ACS 중계로
+///  - MAIN_UP: 모두 구독자(OTA 클라이언트 등)에게, ACS 중계는 E·A(OTA 응답 제외)만 (AgvFrame.IsForAcs)
 ///  - STATUS: 레지스트리 갱신   - OTA_RESULT: 구독자   - CFG_RESULT/PONG: 로그
 /// </summary>
 public sealed class BridgeUdpService : BackgroundService, IAgvLink
@@ -90,7 +90,7 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 a.LastFrame = AgvFrame.Fmt(pl);
                 Trace?.Invoke($"[{h.Agv:D2}] MAIN> {a.LastFrame}{(loss > 0 ? $"  [LOSS {loss}]" : "")}");
                 foreach (var s in Subscribers(h.Agv)) s.Frames.Writer.TryWrite(pl);
-                if (!AgvFrame.IsOtaReply(pl)) MainUpForAcs?.Invoke(h.Agv, pl);
+                if (AgvFrame.IsForAcs(pl)) MainUpForAcs?.Invoke(h.Agv, pl);   // E·A 만 ACS 로 (화이트리스트)
                 _reg.NotifyChanged();
                 break;
             case BridgePacket.OtaResult:
