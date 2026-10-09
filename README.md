@@ -9,7 +9,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
                                         └──TCP──▶ ACS (규격 확인 후 활성화)
 ```
 
-**설치**: Releases 의 zip 을 풀고 `install-service.bat`(관리자) 한 번 → `http://<PC IP>:8080`. 이후 버전은 서버가 스스로 받아 적용합니다(**서버 업데이트** 화면). 자세한 절차는 [docs/DEPLOY.md](docs/DEPLOY.md).
+**설치**: Releases 의 zip 을 풀고 `install-service.bat`(관리자) 한 번 → `http://<PC IP>:8080`. 이후 버전은 서버가 스스로 받아(SHA-256 검증) 적용합니다(**서버 업데이트** 화면). 사내망에서 api.github.com 이 막혀도 github.com 의 매니페스트로 확인합니다. 자세한 절차는 [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## 구성
 
@@ -39,8 +39,10 @@ REST API (화면과 같은 기능, 스크립트용): `GET /api/agvs`, `GET|POST|
 
 ## 릴리스
 
-`v*` 태그를 푸시하면 Actions 가 win-x64 단일 exe(런타임 포함) zip 과 `latest.json` 을 Release 에 첨부합니다. 버전은 태그에서 가져오며,
-설치된 서버들이 이 릴리스를 보고 업데이트합니다. 절차는 `.claude/skills/fota-gateway-release/SKILL.md` (Claude 가 "릴리스 올려줘" 요청에 따르는 순서).
+- main push → `dev` 프리릴리스(테스트 빌드, 덮어쓰기). 자동 업데이트 대상 아님.
+- 정식: csproj `<Version>` 을 올려 커밋한 뒤 `vX.Y.Z` 태그 푸시 또는 Actions `build` 를 `release=true` 로 실행 → Latest 릴리스에
+  `AgvFotaGateway_win-x64.zip`, `.sha256`, `AgvFotaGateway.json`(매니페스트). 설치된 서버들이 github.com 의 매니페스트 주소로 이 릴리스를 보고 업데이트합니다.
+- 절차는 `.claude/skills/fota-gateway-release/SKILL.md` (Claude 가 "릴리스 올려줘" 요청에 따르는 순서).
 
 ## 아직 정해지지 않은 것
 

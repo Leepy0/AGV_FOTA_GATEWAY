@@ -6,7 +6,16 @@ description: "AGV FOTA Gateway(ASP.NET Core Blazor 웹 서버, 사내 PC Windows
 # AGV FOTA Gateway 빌드·릴리스·설치
 
 웹 서버지만 배포 방식은 WPF 자동 업데이트 프로그램과 같다: **정식 릴리스를 올리면 설치된 서버들이 스스로 받아 적용**한다.
-`wpf-build-release` 스킬의 "경로 A: 정식 배포" 규칙을 그대로 따르고, 아래가 이 프로젝트의 구체 값이다.
+`wpf-build-release` 스킬의 "경로 A: 정식 배포" 와 `dotnet-self-update` 스킬의 핵심 결정(매니페스트 확인, SHA-256, .old 되돌리기, 채널)을 그대로 따르고,
+아래가 이 프로젝트의 구체 값이다.
+
+| 항목 | 값 |
+|---|---|
+| 저장소 | `Leepy0/AGV_FOTA_GATEWAY` (**비공개** — github.com 매니페스트 주소가 404 라 사내 자동 업데이트는 공개 전환 또는 사내 BaseUrl 필요) |
+| 자산 | `AgvFotaGateway_win-x64.zip`(고정 이름), `.sha256`, `AgvFotaGateway.json` |
+| 매니페스트 주소 | `https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` |
+| 버전 원본 | `src/Gateway.Server/Gateway.Server.csproj` `<Version>` — 태그와 다르면 CI 가 실패 |
+| 채널 | CI `release` / `dev`(main 테스트 프리릴리스) / 로컬 `local` |
 
 ## 공통 전제
 
@@ -28,19 +37,21 @@ dotnet build && dotnet test
 1. **버전 결정**: 마지막 태그(`git tag --sort=-v:refname | head -1`)보다 올린다. 버그 수정 patch, 기능 추가 minor. 사용자가 지정하면 그대로.
 2. **버전 반영**: `src/Gateway.Server/Gateway.Server.csproj` 의 `<Version>` 을 같은 값으로 바꾸고 commit·push.
    서버의 업데이트 확인은 "릴리스 태그 버전 > 실행 중 버전" 비교라 csproj 와 태그가 같아야 한다.
-3. **릴리스 실행** — 둘 중 하나. Actions 가 빌드·테스트 후 태그와 Release 를 만든다.
-   - `git tag vX.Y.Z && git push origin vX.Y.Z`
-   - 태그 푸시가 안 되는 환경(Claude 클라우드 세션의 git 프록시는 태그 푸시를 끊는다)이면 Actions 워크플로 `build` 를
-     `workflow_dispatch` 로 실행하며 `version` 입력에 `X.Y.Z` 를 준다 (GitHub MCP `actions_run_trigger`, 또는 Actions 탭 → Run workflow).
-     워크플로가 태그를 만들어 푸시하고 Release 까지 올린다. 같은 버전 태그가 이미 있으면 실패한다.
+3. **정식 배포 실행** — 둘 중 하나. Actions 가 빌드·테스트·publish 뒤 태그와 Latest Release 를 만든다.
+   - `git tag vX.Y.Z && git push origin vX.Y.Z` (csproj 와 같아야 함)
+   - 태그 푸시가 안 되는 환경(Claude 클라우드 세션의 git 프록시는 태그 푸시를 끊는다): Actions `build` 를 `workflow_dispatch` 로
+     `release=true` 입력과 함께 실행 (GitHub MCP `actions_run_trigger` inputs `{"release":"true"}`, 또는 Actions 탭 → Run workflow → 정식 배포 체크).
+     csproj 버전으로 태그를 만든다. 그 버전 태그가 이미 다른 커밋에 있으면 실패한다.
    - `AgvFotaGateway_X.Y.Z_win-x64.zip` — 런타임 포함 단일 exe + appsettings.json + 배포 bat + DEPLOY.md
    - `latest.json` — 사내 HTTP 피드용 (`Update.Source=Url`)
-4. **릴리스 노트**: Actions 가 자동 생성한다. 사용자 관점 변경 사항을 한글 3~6줄로 다듬고 싶으면 릴리스를 편집한다.
-5. **검증**: Actions 가 초록인지(`actions_list` → `list_workflow_runs`), Release 에 zip 과 latest.json 두 개가 있는지(`list_releases`).
+4. **릴리스 노트**: 이전 태그 이후 커밋 메시지로 자동 생성(Co-Authored-By·Claude-Session 줄 제거). 다듬고 싶으면 릴리스를 편집한다.
+5. **검증**: Actions 초록(`actions_list` → `list_workflow_runs`), Release 자산 3개(`get_release_by_tag`): zip, `.sha256`, `AgvFotaGateway.json` 의 `version`·`sha256`.
+   공개 저장소면 `curl -sL https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` 에 새 버전이 보이는지.
    설치된 서버의 **서버 업데이트** 화면에서 "지금 확인" 이 새 버전을 보이는지.
-6. **사내망 주의**: 서버 PC 가 github.com 에 못 나가면 `Update.Source=Url` 로 바꾸고 릴리스 자산을 사내 HTTP 폴더에 복사한다 (`latest.json` 의 `url` 을 사내 주소로). 비공개 저장소면 `Update.GitHubToken` 이 필요하다. 처음 릴리스할 때 한 줄로 알린다.
+6. **사내망·비공개 주의**: 저장소가 비공개인 동안은 github.com 매니페스트 주소가 404 → 서버는 "정식 릴리스가 없거나 접근할 수 없음" 을 보인다.
+   공개로 바꾸거나(AmrMapEditor 처럼), 릴리스 자산 3개를 사내 서버에 복사하고 `Update.BaseUrl` 을 그 주소로 바꾼다. 처음 릴리스할 때 한 줄로 알린다.
 
-테스트 빌드는 태그 없이 push → Actions 아티팩트로만 나온다(릴리스 아님). 정식 릴리스로 올리지 않는다.
+테스트 빌드: main push 마다 `dev` 프리릴리스를 덮어쓴다(`AgvFotaGateway-dev_win-x64.zip`). 자동 업데이트 대상이 아니며 정식 릴리스로 올리지 않는다.
 
 ## 3. 처음 설치 (원클릭)
 
@@ -54,13 +65,15 @@ dotnet build && dotnet test
 
 ## 4. 업데이트 적용
 
-설치된 서버는 6시간마다(기본) 새 릴리스를 확인한다. 화면 **서버 업데이트** → 지금 확인 → 다운로드 → 적용(재시작 약 10초).
-`Update.AutoApply=true` 면 배포 작업이 없을 때 자동 적용. 적용 기록 `data\update\apply.log`.
+설치된 서버는 시작 3초 뒤와 6시간마다 매니페스트로 새 릴리스를 확인한다. 화면 **서버 업데이트** → 지금 확인 → 받기(SHA-256 검증) → 적용(현재 exe 는 `.old`, 재시작 약 10초).
+`Update.AutoApply=true` 면 배포 작업이 없을 때 자동 적용. 잘못 배포했으면 "이전 버전으로 되돌리기". 적용 기록 `data\update\apply.log`.
 적용이 실패하면 수동: zip 을 같은 폴더에 덮어쓰고(`appsettings.json`, `data\` 제외) `install-service.bat` 재실행.
 
 ## 하지 말 것
 
-- csproj 버전을 안 올리고 태그만 올리기 (서버가 새 버전으로 인식하지 못함)
+- csproj 버전을 안 올리고 정식 배포 (서버가 새 버전으로 인식하지 못함, 태그 푸시는 CI 가 거부)
+- 테스트 빌드를 Latest 릴리스로 — dev 프리릴리스로만
 - 같은 태그에 자산 덮어쓰기 — 새 버전으로
+- 업데이트 확인을 api.github.com 에만 의존하도록 고치기 — 사내에서 "확인 실패" 만 뜬다
 - 배포 작업이 실행 중인 서버에 수동으로 파일 교체 — 작업이 끝난 뒤 (자동 적용은 스스로 거른다)
 - 릴리스에서 `appsettings.json` 기본값을 바꿀 때 설치된 서버의 설정이 바뀔 거라 기대하기 — 업데이트는 appsettings.json 을 덮어쓰지 않는다. 새 키는 코드 기본값으로 동작하게 만든다

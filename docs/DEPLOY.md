@@ -47,23 +47,26 @@
 
 바꾼 뒤 서비스를 재시작합니다 (`sc stop AgvFotaGateway` / `sc start AgvFotaGateway`).
 
-## 5. 업데이트 (자동)
+## 5. 업데이트 (자동, 사내망 대응)
 
-WPF 프로그램의 자동 업데이트와 같은 방식입니다. 서버가 새 버전을 확인·다운로드해 두었다가, 배포 작업이 없을 때 스스로 파일을 바꾸고 재시작합니다.
-`appsettings.json` 과 `data\` 는 유지됩니다.
+WPF 프로그램(AmrMapEditor 등)의 자동 업데이트와 같은 방식입니다.
 
-- 화면 **서버 업데이트**: 지금 확인 → 다운로드 → 적용(서비스 재시작, 약 10초). 메뉴에 ● 가 붙으면 새 버전이 있다는 뜻입니다.
-- 자동 확인 주기는 `Update.CheckIntervalMin`(기본 6시간). `Update.AutoApply: true` 면 작업이 없을 때 자동으로 적용까지 합니다.
-- 새 버전 출처 (`Update.Source`)
+- **확인**: `https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json`(매니페스트) → `releases/latest` 리다이렉트 → api.github.com 순서.
+  사내망은 api.github.com 이 막히고 github.com 만 열려 있어 매니페스트 주소로 통과합니다. 시작 3초 뒤 한 번, 이후 6시간마다(`Update.CheckIntervalMin`), 화면에서 수동.
+- **받기**: 서버가 직접 받아 `.partial` 로 저장하고 릴리스의 **SHA-256** 과 맞을 때만 채택합니다. 메뉴에 ● 가 붙으면 새 버전이 있다는 뜻입니다.
+- **적용**: 화면 **서버 업데이트** → 적용. 배포 작업이 없을 때 서비스를 멈추고 현재 exe 를 `.old` 로 남긴 채 새 파일로 바꾼 뒤 다시 시작합니다(약 10초).
+  `Update.AutoApply: true` 면 작업이 없을 때 자동으로 적용까지 합니다. `appsettings.json` 과 `data\` 는 유지됩니다.
+- **되돌리기**: `.old` 가 있으면 화면의 "이전 버전으로 되돌리기" 로 한 세대 되돌립니다.
+- **채널**: 릴리스 zip 은 `정식 배포`, main 테스트 빌드(`dev` 프리릴리스)는 `테스트 빌드`(정식만 받음), 직접 빌드한 것은 `로컬 빌드`(자동 교체 안 함).
 
-| Source | 설정 | 언제 |
-|---|---|---|
-| `GitHub` (기본) | `GitHubRepo`, 비공개 저장소면 `GitHubToken`(fine-grained PAT, Contents: Read) | 서버 PC 가 github.com 에 나갈 수 있을 때 |
-| `Url` | `FeedUrl`: 사내 HTTP 서버의 `latest.json` 주소 | 사내망이 GitHub 를 막을 때. 릴리스 자산(`latest.json` + zip)을 사내 HTTP 폴더에 복사하고 `latest.json` 의 `url` 을 사내 주소로 고친다 |
-
-토큰은 파일 대신 환경변수 `Update__GitHubToken` 으로도 줄 수 있습니다 (서비스 환경변수는 `sc` 대신 레지스트리 `HKLM\SYSTEM\CurrentControlSet\Services\AgvFotaGateway\Environment`).
+| 상황 | 설정 (`Update` 섹션) |
+|---|---|
+| 저장소가 **공개** | 기본값 그대로 |
+| 저장소가 **비공개** | github.com 주소는 404 → 공개로 바꾸거나, 아래 사내 서버 방식. (사외망에서만 쓸 거면 `GitHubToken` 으로 API 폴백) |
+| 사내 git·파일 서버로만 배포 | `BaseUrl` 을 사내 주소로. 그 아래 `releases/latest/download/AgvFotaGateway.json` 과 `releases/download/vX.Y.Z/AgvFotaGateway_win-x64.zip` 구조로 릴리스 자산 3개를 복사. 구조를 못 맞추면 `ManifestUrl` 을 직접 주고 매니페스트의 `url` 에 zip 절대 주소를 넣음. `file://server/share/fota` 도 됨 |
 
 적용 기록은 `data\update\apply.log`. 자동 적용이 실패하면 수동으로: 새 zip 을 같은 폴더에 덮어쓰고(`appsettings.json`, `data\` 제외) `install-service.bat` 을 다시 실행합니다.
+브라우저로 직접 받는 고정 주소: `https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway_win-x64.zip`.
 
 ## 6. 문제 해결
 

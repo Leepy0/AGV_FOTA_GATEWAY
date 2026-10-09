@@ -1,7 +1,8 @@
-# 빌드·테스트 → 릴리스면 win-x64 단일 exe(런타임 포함) zip + latest.json 을 Release 에 첨부
-#  릴리스 만드는 두 가지 방법 (결과는 같음)
-#   1. v* 태그 푸시
-#   2. Actions 탭 → build → Run workflow → version 입력 (태그를 워크플로가 만든다)
+# main push   → 테스트 빌드: Release "dev" (prerelease) 덮어쓰기. 자동 업데이트 대상 아님
+# 정식 배포   → Release "vX.Y.Z" (Latest). 설치된 서버의 자동 업데이트가 이것만 받음
+#   1) 태그 vX.Y.Z push (csproj <Version> 과 같아야 함), 또는
+#   2) Actions 탭 › Run workflow › '정식 배포' 체크 (csproj 버전으로 태그 · 릴리스 생성)
+# 정식 자산 3개: AgvFotaGateway_win-x64.zip, .sha256, AgvFotaGateway.json(매니페스트 — 서버가 github.com 주소로 확인)
 name: build
 
 on:
@@ -11,90 +12,151 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      version:
-        description: '릴리스 버전 (예: 0.1.0). 비우면 빌드·테스트만'
-        required: false
-        default: ''
+      release:
+        description: '정식 배포 (csproj <Version>으로 vX.Y.Z 태그 · 릴리스 생성)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
+
+env:
+  APP: AgvFotaGateway
+  ZIP: AgvFotaGateway_win-x64.zip
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 릴리스 노트용 이전 태그 조회
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Version
+      - name: 버전 · 채널 결정
         id: ver
         run: |
           BASE=$(grep -oP '<Version>\K[^<]+' src/Gateway.Server/Gateway.Server.csproj)
-          INPUT="${{ github.event.inputs.version }}"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VER="${GITHUB_REF_NAME#v}"; RELEASE=true
-          elif [[ -n "$INPUT" ]]; then
-            VER="${INPUT#v}"; RELEASE=true
-            [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version 형식: X.Y.Z"; exit 1; }
-            git ls-remote --exit-code --tags origin "v$VER" >/dev/null && { echo "태그 v$VER 이 이미 있음"; exit 1; }
+            VER="${GITHUB_REF_NAME#v}"
+            if [[ "$VER" != "$BASE" ]]; then
+              echo "::error::태그($GITHUB_REF_NAME)와 csproj <Version>($BASE)이 다릅니다. csproj 버전을 올려 커밋한 뒤 그 커밋에 태그를 붙이세요."
+              exit 1
+            fi
+            CHANNEL=release
+          elif [[ "${{ inputs.release }}" == "true" ]]; then
+            VER="$BASE"
+            TAGGED=$(git rev-parse -q --verify "refs/tags/v$VER^{commit}" || true)
+            if [[ -n "$TAGGED" && "$TAGGED" != "$GITHUB_SHA" ]]; then
+              echo "::error::v$VER 태그가 이미 다른 커밋에 있습니다. csproj <Version>을 올려 커밋한 뒤 다시 실행하세요."
+              exit 1
+            fi
+            CHANNEL=release
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            VER="$BASE"; CHANNEL=local
           else
-            VER="${BASE}-${GITHUB_SHA::7}"; RELEASE=false
+            VER="$BASE"; CHANNEL=dev
           fi
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
-          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
-          echo "version: $VER release: $RELEASE (csproj $BASE)"
-          if [[ "$RELEASE" == true && "$VER" != "$BASE" ]]; then
-            echo "::warning::csproj Version($BASE) 과 릴리스 버전($VER) 이 다릅니다. 실행 파일은 $VER 로 빌드됩니다."
-          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "version: $VER channel: $CHANNEL"
 
       - name: Build & test
         run: |
           dotnet build -c Release
           dotnet test -c Release --no-build --logger "console;verbosity=minimal"
 
-      - name: Publish win-x64 (self-contained single file)
+      # .NET 런타임 포함 단일 exe (설치 없이 복사만). 채널·커밋을 어셈블리에 기록
+      - name: Publish win-x64
         run: |
-          dotnet publish src/Gateway.Server -c Release -r win-x64 -p:Version=${{ steps.ver.outputs.ver }} -o dist/AgvFotaGateway
-          cp deploy/*.bat docs/DEPLOY.md dist/AgvFotaGateway/
-          rm -f dist/AgvFotaGateway/*.pdb dist/AgvFotaGateway/appsettings.Development.json dist/AgvFotaGateway/web.config
-          cd dist && zip -r "AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip" AgvFotaGateway
-          # 사내 피드(Update.Source=Url)용 latest.json — 릴리스 자산을 사내 HTTP 폴더에 복사하면 그대로 쓸 수 있다
-          SIZE=$(stat -c %s "AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip")
-          cat > latest.json <<JSON
+          dotnet publish src/Gateway.Server -c Release -r win-x64 --self-contained true \
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true \
+            -p:DebugType=None -p:DebugSymbols=false \
+            -p:Version=${{ steps.ver.outputs.ver }} -p:SourceRevisionId=$GITHUB_SHA \
+            -p:BuildChannel=${{ steps.ver.outputs.channel }} \
+            -o dist/$APP
+          cp deploy/*.bat docs/DEPLOY.md dist/$APP/
+          rm -f dist/$APP/appsettings.Development.json dist/$APP/web.config
+          if [[ "${{ steps.ver.outputs.channel }}" == "dev" ]]; then ZIP=AgvFotaGateway-dev_win-x64.zip; echo "ZIP=$ZIP" >> "$GITHUB_ENV"; fi
+          (cd dist && zip -qr "$ZIP" $APP)
+          (cd dist && sha256sum "$ZIP" > "$ZIP.sha256")
+          ls -l dist
           {
-            "version": "${{ steps.ver.outputs.ver }}",
-            "url": "https://github.com/${{ github.repository }}/releases/download/v${{ steps.ver.outputs.ver }}/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip",
-            "notes": "AgvFotaGateway ${{ steps.ver.outputs.ver }}",
-            "size": $SIZE
-          }
-          JSON
-          ls -l
-          {
-            echo "### AgvFotaGateway ${{ steps.ver.outputs.ver }}"
-            echo '```'; ls -l AgvFotaGateway; echo '```'
+            echo "### $APP ${{ steps.ver.outputs.ver }} (${{ steps.ver.outputs.channel }})"
+            echo '```'; ls -l dist/$APP; cat dist/$ZIP.sha256; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64
-          path: dist/AgvFotaGateway/
+          name: ${{ env.APP }}_${{ steps.ver.outputs.ver }}_${{ steps.ver.outputs.channel }}
+          path: dist/${{ env.APP }}/
 
-      - name: Tag (manual release)
-        if: steps.ver.outputs.release == 'true' && !startsWith(github.ref, 'refs/tags/v')
+      # 정식 1) 이전 태그 이후 커밋 메시지로 변경 내용 (Co-Authored-By · Claude-Session 줄 제거)
+      - name: 변경 내용 (정식)
+        if: steps.ver.outputs.channel == 'release'
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ steps.ver.outputs.ver }}" -m "AgvFotaGateway ${{ steps.ver.outputs.ver }}"
-          git push origin "v${{ steps.ver.outputs.ver }}"
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}^" 2>/dev/null || true)
+          RANGE="${PREV:+$PREV..}$GITHUB_SHA"
+          git log --no-merges --pretty='tformat:%s%n%n%b' $RANGE | sed -E '/^(Co-Authored-By|Claude-Session):/d' | cat -s > changes.md
+          {
+            echo "Windows x64 · 런타임 포함 단일 exe · 설치: zip 풀고 install-service.bat (관리자)"
+            echo "설치된 서버는 6시간마다 이 버전을 확인하고, 서버 업데이트 화면에서 받기 → 적용(재시작)으로 바뀝니다."
+            echo
+            cat changes.md
+            [[ -n "$PREV" ]] && { echo; echo "전체 변경: https://github.com/$GITHUB_REPOSITORY/compare/$PREV...v$VER"; }
+          } > notes.md
+          cat notes.md
 
-      - name: Release
-        if: steps.ver.outputs.release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.ver }}
-          files: |
-            dist/AgvFotaGateway_${{ steps.ver.outputs.ver }}_win-x64.zip
-            dist/latest.json
-          generate_release_notes: true
+      # 정식 2) 매니페스트 — 서버는 api.github.com 대신 github.com/…/releases/latest/download/AgvFotaGateway.json 으로 확인
+      - name: 매니페스트 (정식)
+        if: steps.ver.outputs.channel == 'release'
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, os, datetime
+          zip_ = f"dist/{os.environ['ZIP']}"
+          m = {
+            "version": os.environ["VER"],
+            "file": os.environ["ZIP"],
+            "sha256": hashlib.sha256(open(zip_, "rb").read()).hexdigest(),
+            "size": os.path.getsize(zip_),
+            "published": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "page": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/tag/v{os.environ['VER']}",
+            "notes": open("changes.md", encoding="utf-8").read().strip(),
+          }
+          json.dump(m, open(f"dist/{os.environ['APP']}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          print(open(f"dist/{os.environ['APP']}.json", encoding="utf-8").read())
+          PY
+
+      # 정식 3) Release (Latest). 태그 push 면 그 태그로, 수동 실행이면 이 커밋에 태그 생성
+      - name: Release (정식 vX.Y.Z)
+        if: steps.ver.outputs.channel == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          gh release delete "v$VER" -y 2>/dev/null || true   # 같은 태그 재실행 시 (태그는 유지)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAGOPT=(--verify-tag); else TAGOPT=(--target "$GITHUB_SHA"); fi
+          gh release create "v$VER" "dist/$ZIP" "dist/$ZIP.sha256" "dist/$APP.json" \
+            "${TAGOPT[@]}" --latest --title "v$VER" --notes-file notes.md
+
+      # 테스트 빌드: 항상 같은 주소(dev)로 덮어쓰기
+      - name: Release (테스트 dev)
+        if: steps.ver.outputs.channel == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev --cleanup-tag -y 2>/dev/null || true
+          gh release create dev "dist/$ZIP" "dist/$ZIP.sha256" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "테스트 빌드 (main)" \
+            --notes "branch: ${GITHUB_REF_NAME} / commit: ${GITHUB_SHA::7} / run #${GITHUB_RUN_NUMBER} · 자동 업데이트 대상 아님 · 정식 배포는 Latest 릴리스"

@@ -7,20 +7,24 @@
 
 <section class="card">
     <div class="form">
-        <div>현재 버전 <b>@Upd.CurrentText</b> · 출처 @Upd.SourceText · 마지막 확인 @(Upd.LastCheck?.ToLocalTime().ToString("MM-dd HH:mm") ?? "-")</div>
+        <div>현재 <b>v@Upd.CurrentText</b> · @Upd.ChannelName@(Upd.Commit is null ? "" : $" · {Upd.Commit}") · 마지막 확인 @(Upd.LastCheck?.ToLocalTime().ToString("MM-dd HH:mm") ?? "-")</div>
+        <div class="muted small">확인 주소 @Upd.ManifestUrl</div>
         @if (!Upd.Enabled) { <div class="msg err">appsettings.json 의 Update.Enabled 가 false 입니다</div> }
+        @if (!Upd.CanSelfUpdate) { <div class="muted">@(Upd.Channel == "local" ? "로컬 빌드는 자동 교체하지 않습니다 (확인·받기는 됩니다)." : "자동 교체는 Windows 서비스/콘솔 실행에서만 됩니다.")</div> }
         <div class="state-line @Upd.Stage.ToString().ToLower()">@Upd.Message</div>
         @if (Upd.Latest is { } l && Upd.Stage is UpdateStage.Available or UpdateStage.Ready or UpdateStage.Downloading or UpdateStage.Applying)
         {
-            <div class="muted">@l.Tag · @l.AssetName · <a href="@l.PageUrl" target="_blank">릴리스 페이지</a></div>
+            <div class="muted">@l.Tag · @l.AssetName · @(l.Published == DateTimeOffset.MinValue ? "" : l.Published.ToLocalTime().ToString("yyyy-MM-dd")) · <a href="@l.PageUrl" target="_blank">릴리스 페이지</a></div>
             @if (!string.IsNullOrWhiteSpace(l.Notes)) { <pre class="log">@l.Notes</pre> }
         }
         <div class="row-buttons">
             <button @onclick="Check" disabled="@busy">지금 확인</button>
-            <button @onclick="Download" disabled="@(busy || Upd.Stage != UpdateStage.Available)">다운로드</button>
-            <button class="primary" @onclick="Apply" disabled="@(busy || Upd.Stage != UpdateStage.Ready)">적용 (서비스 재시작)</button>
+            <button @onclick="Download" disabled="@(busy || Upd.Stage != UpdateStage.Available)">받기</button>
+            <button class="primary" @onclick="Apply" disabled="@(busy || Upd.Stage != UpdateStage.Ready || !Upd.CanSelfUpdate)">적용 (서비스 재시작)</button>
+            @if (Upd.OldVersionText is { } old) { <button @onclick="Rollback" disabled="@(busy || !Upd.CanSelfUpdate)">이전 버전(@old)으로 되돌리기</button> }
+            <a class="muted" href="@Upd.DownloadUrl" target="_blank">브라우저로 받기 (항상 최신)</a>
         </div>
-        <p class="muted">적용하면 서비스가 멈추고 새 파일로 바뀐 뒤 다시 시작됩니다(약 10초). 배포 작업이 실행 중이면 적용되지 않습니다. appsettings.json 과 data 폴더는 유지됩니다.</p>
+        <p class="muted">적용하면 서비스가 멈추고 현재 exe 는 .old 로 남긴 채 새 파일로 바뀐 뒤 다시 시작됩니다(약 10초). 배포 작업이 실행 중이면 적용되지 않습니다. appsettings.json 과 data 폴더는 유지됩니다.</p>
     </div>
 </section>
 
@@ -37,4 +41,5 @@
     async Task Check() { busy = true; try { await Upd.CheckAsync(); } finally { busy = false; } }
     async Task Download() { busy = true; try { await Upd.DownloadAsync(); } finally { busy = false; } }
     async Task Apply() { busy = true; try { await Upd.ApplyAsync(); } finally { busy = false; } }
+    async Task Rollback() { busy = true; try { await Upd.RollbackAsync(); } finally { busy = false; } }
 }
