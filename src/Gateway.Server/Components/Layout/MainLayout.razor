@@ -1,6 +1,7 @@
 @inherits LayoutComponentBase
 @inject AgvRegistry Reg
 @inject AcsRelayService Acs
+@inject AcsPositionPushService AcsApi
 @inject IOptions<GatewayOptions> Opt
 @inject UpdateService Upd
 @implements IDisposable
@@ -15,7 +16,8 @@
         <NavLink href="update">서버 업데이트 @(Upd.Stage is UpdateStage.Available or UpdateStage.Ready ? "●" : "")</NavLink>
         <div class="foot">
             <div>호기 @online / @total 온라인</div>
-            <div>ACS @(Acs.Enabled ? (Acs.Connected ? "연결" : "끊김") : "사용 안 함")</div>
+            <div>ACS 중계 @(Acs.Enabled ? (Acs.Connected ? "연결" : "끊김") : "사용 안 함")</div>
+            <div>ACS 위치 API @(AcsApi.Enabled ? (AcsApi.LogOnly ? "로그만" : AcsApi.FailStreak > 0 ? "오류" : "발행 중") : "사용 안 함")</div>
             <div>UDP :@Opt.Value.UdpPort</div>
             <div>v@(Upd.CurrentText)</div>
         </div>

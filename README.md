@@ -37,7 +37,8 @@ python3 tests/fake_esp.py --agv 7 --server 127.0.0.1:50000 --listen 50010 --dsp 
 ```
 
 REST API (화면과 같은 기능, 스크립트용): `GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs`, `POST /api/jobs/{id}/cancel`,
-`POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일).
+`POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일),
+`GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고.
 
 ## 릴리스
 

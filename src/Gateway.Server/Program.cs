@@ -1,8 +1,11 @@
+using Gateway.Core.Acs;
 using Gateway.Core.Agv;
+using Gateway.Core.Positions;
 using Gateway.Server.Components;
 using Gateway.Server.Options;
 using Gateway.Server.Services;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 // Windows 서비스로 돌 때 작업 디렉터리가 system32 가 되므로 실행 파일 위치를 기준으로 잡는다
@@ -14,6 +17,7 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 builder.Host.UseWindowsService(o => o.ServiceName = "AgvFotaGateway");
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection(GatewayOptions.Section));
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.Section));
+builder.Services.Configure<AcsApiOptions>(builder.Configuration.GetSection(AcsApiOptions.Section));
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 64L * 1024 * 1024);
 builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = 64L * 1024 * 1024);
 
@@ -33,6 +37,10 @@ builder.Services.AddSingleton(sp => new FirmwareStore(dataDir));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<JobService>());
 builder.Services.AddSingleton<TraceLog>();
+builder.Services.AddSingleton<AgvPositionStore>();
+builder.Services.AddHttpClient<AcsRestPublisher>();
+builder.Services.AddSingleton<AcsPositionPushService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsPositionPushService>());
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
@@ -57,7 +65,7 @@ app.MapGet("/fw/{id}/{file}", (string id, string file, FirmwareStore fw) =>
 
 // ───── REST API (스크립트·종단 테스트용. 화면도 같은 서비스를 직접 쓴다) ─────
 var api = app.MapGroup("/api");
-api.MapGet("/agvs", (AgvRegistry reg, Microsoft.Extensions.Options.IOptions<GatewayOptions> o) =>
+api.MapGet("/agvs", (AgvRegistry reg, IOptions<GatewayOptions> o) =>
     reg.Snapshot().Select(a => new
     {
         a.Id, Online = a.Online(o.Value.OfflineAfterSec), EndPoint = a.EndPoint?.ToString(), a.LastSeen,
@@ -100,6 +108,24 @@ api.MapPost("/update/check", async (UpdateService u) => { var i = await u.CheckA
 api.MapPost("/update/download", async (UpdateService u) => { await u.DownloadAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
 api.MapPost("/update/apply", async (UpdateService u) => { await u.ApplyAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
 api.MapPost("/update/rollback", async (UpdateService u) => { await u.RollbackAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
+// ───── 호기 위치 (RTLS 결과. 지금은 테스트 주입만) — ACS 가 끌어갈 때도 이 GET 을 쓴다 ─────
+api.MapGet("/positions", (AgvPositionStore st) => st.Snapshot());
+api.MapGet("/positions/{agv:int}", (int agv, AgvPositionStore st) => st.Get(agv) is { } p ? Results.Ok(p) : Results.NotFound());
+api.MapPost("/positions/{agv:int}", (int agv, PositionInject r, AgvPositionStore st, AgvRegistry reg) =>
+{
+    // 시험용 주입: RTLS 가 들어오기 전 ACS 발행·화면을 시험한다
+    var a = reg.Get(agv);
+    st.Set(new AgvPosition(agv, DateTimeOffset.UtcNow, r.X, r.Y, r.Heading, r.State ?? PositionState.Tracked, r.Speed, r.Rotating ?? false,
+                           r.LastTag, r.LastTag is null ? null : DateTimeOffset.UtcNow, r.Map, a?.Online(opt.OfflineAfterSec) ?? true, "injected"));
+    return Results.Ok(st.Get(agv));
+});
+// ───── ACS REST 발행 상태·수동 발행 ─────
+api.MapGet("/acs/status", (AcsPositionPushService p, IOptions<AcsApiOptions> o) => new
+{
+    p.Enabled, p.LogOnly, p.Target, o.Value.IntervalMs, o.Value.OnlyChanged, o.Value.PerAgv, p.LastTry, p.LastOk, p.LastResult, p.SentCount, p.FailStreak,
+});
+api.MapPost("/acs/push", async (AcsPositionPushService p) => Results.Ok(new { result = await p.PushAsync(force: true) }));
+api.MapGet("/acs/preview", (AgvPositionStore st) => Results.Text(AcsPositionMapper.Serialize(AcsPositionMapper.Build(st.Snapshot(), DateTimeOffset.UtcNow)), "application/json"));
 api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, channel = u.Channel, time = DateTime.UtcNow }));
 
 app.Lifetime.ApplicationStarted.Register(() =>
@@ -118,3 +144,4 @@ app.Run();
 
 record JobCreateRequest(string? Name, string FirmwareId, List<int> Targets, DateTime? ScheduledAt, bool? StopOnFailure);
 record SendRequest(string Data);
+record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
