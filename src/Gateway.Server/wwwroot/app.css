@@ -17,7 +17,7 @@ code, .mono { font-family: Consolas, "Cascadia Mono", monospace; }
 .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
 .form label { display: block; margin: 8px 0; }
 .form label > input[type=text], .form label > input:not([type]), .form label > select, .form label > input[type=datetime-local] { margin-left: 8px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; min-width: 240px; max-width: calc(100% - 16px); box-sizing: border-box; }
-@media (max-width: 700px) { .form label > select, .form label > input { min-width: 0; width: calc(100% - 16px); } }
+@media (max-width: 700px) { .form label > select, .form label > input:not([type=checkbox]) { min-width: 0; width: calc(100% - 16px); } .chip input { width: auto; } }
 .form.row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 .form.row label { margin: 0; }
 button { padding: 7px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; min-height: 36px; }
