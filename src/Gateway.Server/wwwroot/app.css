@@ -51,3 +51,4 @@ tr.t-done td { color: var(--ok); } tr.t-failed td { color: var(--bad); } tr.t-ru
 .state-line.uptodate { background: #dcfce7; color: var(--ok); }
 .state-line.error { background: #fee2e2; color: var(--bad); }
 .state-line.applying, .state-line.downloading, .state-line.checking { background: #fef3c7; color: var(--warn); }
+h1:focus { outline: none; }
