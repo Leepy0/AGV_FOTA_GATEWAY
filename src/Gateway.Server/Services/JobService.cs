@@ -69,8 +69,20 @@ public sealed class JobService : BackgroundService
         {
             j.State = JobState.Failed; j.FinishedAt = DateTime.UtcNow;
             foreach (var r in j.Results.Where(r => r.State == TargetState.Running)) { r.State = TargetState.Failed; r.Message = "서버 재시작"; }
+            foreach (var r in j.Results.Where(r => r.State == TargetState.Waiting)) { r.State = TargetState.Skipped; r.Message = "서버 재시작"; }
         }
+        // 서버가 꺼져 있는 동안 예약 시각이 한참 지난 작업은 몰래 실행하지 않고 취소 (야간 예약이 아침에 갑자기 도는 사고 방지)
+        var stale = DateTime.UtcNow.AddMinutes(-StaleScheduleMinutes);
+        foreach (var j in _jobs.Where(j => j.State == JobState.Scheduled && j.ScheduledAt is not null && j.ScheduledAt < stale))
+        {
+            j.State = JobState.Cancelled; j.FinishedAt = DateTime.UtcNow;
+            foreach (var r in j.Results) { r.State = TargetState.Skipped; r.Message = $"서버 중단 중 예약 시각 경과 ({StaleScheduleMinutes}분 초과) — 다시 예약하세요"; }
+        }
+        if (_jobs.Count > 0) Save();
     }
+
+    /// <summary>예약 시각이 이보다 오래 지난 채 서버가 켜지면 자동 취소</summary>
+    public const int StaleScheduleMinutes = 30;
 
     public IReadOnlyList<Job> List() { lock (_lock) return _jobs.OrderByDescending(j => j.CreatedAt).ToList(); }
     public Job? Get(string id) { lock (_lock) return _jobs.FirstOrDefault(j => j.Id == id); }
@@ -197,7 +209,7 @@ public sealed class JobService : BackgroundService
         r.VersionBefore = st.Dsp;
         var file = fw.Files.First();
         var img = DspfwImage.Parse(await File.ReadAllBytesAsync(_fw.PathOf(fw, file), ct)) ?? throw new InvalidOperationException("이미지 파일 손상 (.dspfw CRC)");
-        var url = $"{BaseUrlFor(r.Agv)}/fw/{fw.Id}/{file.FileName}";
+        var url = $"{BaseUrlFor(r.Agv)}/fw/{Uri.EscapeDataString(fw.Id)}/{Uri.EscapeDataString(file.FileName)}";
         // 브리지 보고와 대조할 작업 번호 — 브리지가 u32 로 읽으므로 4,294,967,295 이하 (초 단위 시각 × 100 + 호기, 약 115일 주기)
         long job = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() % 10_000_000) * 100 + r.Agv;
         Add(r, $"현재 {(st.HasDsp ? st.Dsp : "?")} (부트로더 {st.DspBoot}) → {img.Version} 스테이징 {file.FileName} ({img.Size:N0}B)");
@@ -233,8 +245,24 @@ public sealed class JobService : BackgroundService
         var agv = _reg.Get(r.Agv);
         if (agv is null || !agv.Online(_opt.OfflineAfterSec)) throw new InvalidOperationException("호기 오프라인 (heartbeat 없음)");
         r.VersionBefore = agv.Status?.Fw ?? "";
+        if (agv.Status?.Fw == fw.Version)
+            Add(r, $"이미 {fw.Version} 실행 중 — 그래도 진행 (재설치)");
+        if (agv.Status?.Ota == "pending")
+        {
+            // 이전 OTA 가 확정되지 않은 상태(pending)에서는 새 이미지를 받으면 롤백 정책과 충돌할 수 있다 — 먼저 PING 으로 확정
+            Add(r, "이전 업데이트가 미확정(pending) — PING 으로 확정 후 진행");
+            using var sub = _link.Subscribe(r.Agv);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && _reg.StatusOf(r.Agv)?.Ota == "pending")
+            {
+                _link.SendPing(r.Agv);
+                await Task.Delay(1000, ct);
+            }
+            if (_reg.StatusOf(r.Agv)?.Ota == "pending")
+                throw new InvalidOperationException("브리지가 이전 업데이트를 확정하지 못함 (ota=pending 유지) — 브리지 재부팅 후 다시 시도");
+        }
         var file = fw.Files.First();
-        var url = $"{BaseUrlFor(r.Agv)}/fw/{fw.Id}/{file.FileName}";
+        var url = $"{BaseUrlFor(r.Agv)}/fw/{Uri.EscapeDataString(fw.Id)}/{Uri.EscapeDataString(file.FileName)}";
         var client = new EspOtaClient(_link, _reg.StatusOf);
         r.Percent = 10;
         var ver = await client.RunAsync(r.Agv, url, fw.Version, line => { Add(r, line); if (line.StartsWith("재부팅")) r.Percent = 70; }, ct);

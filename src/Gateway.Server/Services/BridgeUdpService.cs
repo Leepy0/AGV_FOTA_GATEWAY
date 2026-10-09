@@ -23,6 +23,8 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
     readonly ConcurrentDictionary<int, List<AgvSubscription>> _subs = new();
     readonly ConcurrentDictionary<int, ushort> _downSeq = new();
     UdpClient? _udp;
+    /// <summary>UDP 포트를 못 열었을 때의 사유 (화면 표시). null = 정상</summary>
+    public string? BindError { get; private set; }
 
     /// <summary>ACS 로 넘길 상향 프레임 (OTA 응답 제외)</summary>
     public event Action<int, byte[]>? MainUpForAcs;
@@ -36,7 +38,23 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        _udp = new UdpClient(new IPEndPoint(IPAddress.Any, _opt.UdpPort));
+        // 포트가 이미 쓰이고 있으면(벤치 도구 등) 서비스를 죽이지 말고 10초마다 다시 시도 — 화면에 사유를 보여준다
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                _udp = new UdpClient(new IPEndPoint(IPAddress.Any, _opt.UdpPort));
+                BindError = null;
+                break;
+            }
+            catch (SocketException e)
+            {
+                BindError = $"UDP {_opt.UdpPort} 포트를 열 수 없음: {e.Message} (다른 프로그램이 사용 중?)";
+                _log.LogError("{Err}", BindError);
+                try { await Task.Delay(10000, ct); } catch (OperationCanceledException) { return; }
+            }
+        }
+        if (_udp is null) return;
         if (OperatingSystem.IsWindows()) _udp.Client.IOControl(-1744830452, [0], null);   // ICMP unreachable 예외 방지
         _log.LogInformation("bridge udp :{Port}", _opt.UdpPort);
         var rfid = _opt.RfidPort > 0 ? Task.Run(() => RfidLoop(ct), ct) : Task.CompletedTask;
@@ -54,7 +72,10 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
 
     async Task RfidLoop(CancellationToken ct)
     {
-        using var u = new UdpClient(new IPEndPoint(IPAddress.Any, _opt.RfidPort));
+        UdpClient u;
+        try { u = new UdpClient(new IPEndPoint(IPAddress.Any, _opt.RfidPort)); }
+        catch (SocketException e) { _log.LogWarning("RFID 포트 {Port} 를 열 수 없음: {Msg} — RFID 로그 없이 계속", _opt.RfidPort, e.Message); return; }
+        using var _ = u;
         while (!ct.IsCancellationRequested)
         {
             UdpReceiveResult r;

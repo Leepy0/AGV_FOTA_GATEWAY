@@ -25,6 +25,10 @@ var opt = builder.Configuration.GetSection(GatewayOptions.Section).Get<GatewayOp
 var dataDir = Path.IsPathRooted(opt.DataDir) ? opt.DataDir : Path.Combine(AppContext.BaseDirectory, opt.DataDir);
 Directory.CreateDirectory(dataDir);
 builder.Services.Configure<GatewayOptions>(o => o.DataDir = dataDir);
+// Windows 서비스로 돌면 콘솔 로그가 보이지 않으므로 파일 로그 추가 ({DataDir}/logs/gateway-yyyyMMdd.log, 14일 보관)
+var fileLog = new FileLoggerProvider(Path.Combine(dataDir, "logs"));
+builder.Logging.AddProvider(fileLog);
+builder.Services.AddSingleton(fileLog);
 
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
@@ -88,7 +92,13 @@ api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
     finally { foreach (var (_, _, s) in files) s.Dispose(); }
 }).DisableAntiforgery();
-api.MapDelete("/firmware/{id}", (string id, FirmwareStore fw) => fw.Delete(id) ? Results.Ok() : Results.NotFound());
+api.MapDelete("/firmware/{id}", (string id, FirmwareStore fw, JobService jobs) =>
+{
+    // 예약·실행 중인 작업이 참조하는 펌웨어는 지우지 않는다 (작업을 먼저 취소)
+    var inUse = jobs.List().Where(j => j.FirmwareId == id && j.State is JobState.Scheduled or JobState.Running).ToList();
+    if (inUse.Count > 0) return Results.Conflict($"작업 {string.Join(", ", inUse.Select(j => j.Name))} 이(가) 이 펌웨어를 사용 중입니다 — 작업을 먼저 취소하세요");
+    return fw.Delete(id) ? Results.Ok() : Results.NotFound();
+});
 api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
 api.MapPost("/jobs", (JobCreateRequest r, JobService jobs) =>

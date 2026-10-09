@@ -196,7 +196,8 @@ public sealed class UpdateService : BackgroundService
                 }
             }
             catch { TryDelete(part); throw; }
-            var actual = Convert.ToHexString(await SHA256.HashDataAsync(File.OpenRead(part), ct)).ToLowerInvariant();
+            string actual;
+            await using (var fs = File.OpenRead(part)) actual = Convert.ToHexString(await SHA256.HashDataAsync(fs, ct)).ToLowerInvariant();   // 닫은 뒤 이동 (Windows 공유 위반 방지)
             if (actual != expected) { TryDelete(part); throw new InvalidOperationException("받은 파일이 손상됨 (SHA-256 불일치) — 다시 받으세요"); }
             File.Move(part, zip, true);
 
@@ -246,7 +247,7 @@ public sealed class UpdateService : BackgroundService
         {
             Directory.CreateDirectory(_dir);
             var bat = Path.Combine(_dir, "apply-update.bat");
-            File.WriteAllText(bat, ApplyScript, System.Text.Encoding.Default);
+            File.WriteAllText(bat, ApplyScript, System.Text.Encoding.ASCII);   // cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 스크립트는 ASCII 만
             File.WriteAllText(Path.Combine(_dir, "exclude.txt"), "appsettings.json\r\n");
             File.WriteAllText(Path.Combine(_dir, "pending.txt"), $"{mode} {tag}");
             var app = AppContext.BaseDirectory.TrimEnd('\\', '/');
@@ -321,7 +322,7 @@ public sealed class UpdateService : BackgroundService
         sc query %SVC% 2>nul | findstr /C:"RUNNING" >nul && (set WASSVC=1 & sc stop %SVC% >> "%LOG%" 2>&1)
         set /a N=0
         :wait
-        tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul || goto swap
+        tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /B /I /C:"AgvFotaGateway" >nul || goto swap
         set /a N+=1
         if %N% GEQ 60 (echo [%date% %time%] process %PID% still running, killing >> "%LOG%" & taskkill /PID %PID% /F >> "%LOG%" 2>&1 & goto swap)
         timeout /t 1 /nobreak >nul
