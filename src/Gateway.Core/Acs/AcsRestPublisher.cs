@@ -19,12 +19,13 @@ public sealed record PublishResult(bool Ok, int StatusCode, string Body, TimeSpa
     public override string ToString() => Ok ? $"HTTP {StatusCode} ({Elapsed.TotalMilliseconds:F0}ms)" : $"실패 {(StatusCode > 0 ? $"HTTP {StatusCode} " : "")}{Error ?? Body}";
 }
 
-/// <summary>JSON 본문을 ACS REST 로 보낸다. 인증·메서드·타임아웃만 다루고 본문 형식은 AcsPositionMapper 가 정한다.</summary>
+/// <summary>ACS REST 와 주고받기. 인증·메서드·타임아웃만 다루고 본문 형식은 AcsPositionMapper(보내기)·AcsInventoryMapper(받기)가 정한다.</summary>
 public sealed class AcsRestPublisher
 {
     readonly HttpClient _http;
     public AcsRestPublisher(HttpClient http) => _http = http;
 
+    /// <summary>JSON 본문 보내기 (위치 보고). 응답 본문은 300자까지만 보관</summary>
     public async Task<PublishResult> PublishAsync(AcsRestSettings s, string json, int? agv = null, CancellationToken ct = default)
     {
         var path = s.Path.Replace("{agv}", agv?.ToString() ?? "");
@@ -33,6 +34,20 @@ public sealed class AcsRestPublisher
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
+        return await SendAsync(s, req, 300, ct);
+    }
+
+    /// <summary>GET 으로 받기 (호기 소속 목록). 응답 본문 전체를 돌려준다</summary>
+    public async Task<PublishResult> GetAsync(AcsRestSettings s, CancellationToken ct = default)
+    {
+        var url = s.BaseUrl.TrimEnd('/') + "/" + s.Path.TrimStart('/');
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        return await SendAsync(s, req, int.MaxValue, ct);
+    }
+
+    async Task<PublishResult> SendAsync(AcsRestSettings s, HttpRequestMessage req, int bodyLimit, CancellationToken ct)
+    {
         switch (s.AuthType.ToLowerInvariant())
         {
             case "bearer": req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", s.AuthValue); break;
@@ -46,7 +61,7 @@ public sealed class AcsRestPublisher
             cts.CancelAfter(s.TimeoutMs);
             using var res = await _http.SendAsync(req, cts.Token);
             var body = await res.Content.ReadAsStringAsync(ct);
-            if (body.Length > 300) body = body[..300] + "…";
+            if (body.Length > bodyLimit) body = body[..bodyLimit] + "…";
             return new PublishResult(res.IsSuccessStatusCode, (int)res.StatusCode, body, sw.Elapsed);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return new PublishResult(false, 0, "", sw.Elapsed, $"시간 초과 ({s.TimeoutMs}ms)"); }

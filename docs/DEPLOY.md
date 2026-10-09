@@ -47,6 +47,8 @@
 | `Gateway.DataDir` | `data` | 펌웨어·작업 저장 폴더 |
 | `Gateway.PublicBaseUrl` | 빈 값 | 브리지 OTA 파일 URL 의 서버 주소. 비우면 호기 쪽 NIC IP:8080 자동 |
 | `Gateway.Acs.*` | 비활성 | ACS TCP 중계. 규격 확인 후 `Enabled: true` |
+| `AcsApi.*` | 비활성(LogOnly) | ACS 로 호기 위치 REST 보고 (`docs/ACS_API.md`) |
+| `AcsInventory.*` | 비활성 | ACS 에서 호기 소속(제품군·층·라인·공정·라우트) 받기. 꺼져 있어도 **구역** 화면에서 직접 입력·CSV 로 관리 (`docs/ACS_API.md`) |
 
 바꾼 뒤 서비스를 재시작합니다 (`sc stop AgvFotaGateway` / `sc start AgvFotaGateway`).
 

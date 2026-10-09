@@ -2,6 +2,7 @@
 @inject JobService JobSvc
 @inject FirmwareStore Store
 @inject AgvRegistry Reg
+@inject AgvGroupStore Groups
 @inject IOptions<GatewayOptions> Opt
 @inject IJSRuntime JS
 @implements IDisposable
@@ -26,6 +27,23 @@
             </label>
             <label>작업 이름 <input @bind="name" placeholder="비우면 펌웨어 이름" /></label>
             <label>대상 호기
+                @if (Groups.Count > 0)
+                {
+                    <div class="cascade">
+                        <span class="muted small">구역으로 선택:</span>
+                        @for (int i = 0; i < AgvGroup.Levels; i++)
+                        {
+                            var lv = i;
+                            var opts = CascadeOptions(lv);
+                            <select value="@casc[lv]" @onchange="e => SetCascade(lv, e.Value?.ToString() ?? string.Empty)" disabled="@(opts.Count == 0)">
+                                <option value="">@AgvGroup.LevelNames[lv] 전체</option>
+                                @foreach (var o in opts) { <option value="@o">@o</option> }
+                            </select>
+                        }
+                        <button type="button" @onclick="AddCascade" disabled="@(CascadeAgvs.Count == 0)">@(CascadePath.Length == 0 ? "소속 등록된 호기" : CascadePath) 추가 (@CascadeAgvs.Count 대)</button>
+                        <a href="groups" class="small">구역 관리</a>
+                    </div>
+                }
                 <div class="row-buttons small">
                     <button type="button" @onclick="SelectOnline">온라인 전체 선택</button>
                     <button type="button" @onclick="SelectNeedUpdate" disabled="@(Fw is null)" title="선택한 펌웨어와 버전이 다른 온라인 호기만">업데이트 필요한 호기 선택</button>
@@ -33,16 +51,18 @@
                     <span class="muted">@targets.Count 대 선택@(Fw is null ? "" : $" · 칩의 작은 글씨 = 현재 {(Fw.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} 버전")</span>
                 </div>
                 <div class="chips">
-                    @foreach (var a in Reg.Snapshot())
+                    @foreach (var id in AllAgvIds())
                     {
-                        var on = a.Online(Opt.Value.OfflineAfterSec);
-                        var cur = CurrentVersion(a);
-                        var same = Fw is not null && cur == Fw.Version;
-                        var unsupported = Fw?.Kind == FirmwareKind.Dsp && on && (string.IsNullOrEmpty(a.Status?.DspState) || a.Status?.DspState == "nopart");
-                        <label class="chip @(targets.Contains(a.Id) ? "on" : "") @(on ? "" : "off") @(same ? "same" : "") @(unsupported ? "bad" : "")"
-                               title="@(unsupported ? (a.Status?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 (USB 전체 굽기 필요)" : "브리지 fw 가 메인보드 OTA 를 지원하지 않음 (0.5.0 이상 필요)") : same ? "이미 이 버전" : on ? "" : "오프라인 — 실행 시각에 heartbeat 가 없으면 실패")">
-                            <input type="checkbox" checked="@targets.Contains(a.Id)" @onchange="e => Toggle(a.Id, (bool)e.Value!)" /> @a.Id.ToString("D2")
-                            <small>@(cur.Length > 0 ? cur : on ? "?" : "off")</small>
+                        var a = Reg.Get(id);
+                        var on = a?.Online(Opt.Value.OfflineAfterSec) == true;
+                        var cur = a is null ? "" : CurrentVersion(a);
+                        var same = Fw is not null && cur.Length > 0 && cur == Fw.Version;
+                        var unsupported = Fw?.Kind == FirmwareKind.Dsp && on && (string.IsNullOrEmpty(a?.Status?.DspState) || a?.Status?.DspState == "nopart");
+                        var grp = Groups.Get(id)?.Group.Path;
+                        <label class="chip @(targets.Contains(id) ? "on" : "") @(on ? "" : "off") @(same ? "same" : "") @(unsupported ? "bad" : "")"
+                               title="@((grp is null ? "" : grp + " · ") + (unsupported ? (a?.Status?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 (USB 전체 굽기 필요)" : "브리지 fw 가 메인보드 OTA 를 지원하지 않음 (0.5.0 이상 필요)") : same ? "이미 이 버전" : a is null ? "아직 heartbeat 없음 (ACS·구역 등록만 됨)" : on ? "" : "오프라인 — 실행 시각에 heartbeat 가 없으면 실패"))">
+                            <input type="checkbox" checked="@targets.Contains(id)" @onchange="e => Toggle(id, (bool)e.Value!)" /> @id.ToString("D2")
+                            <small>@(cur.Length > 0 ? cur : a is null ? "미접속" : on ? "?" : "off")</small>
                         </label>
                     }
                 </div>
@@ -115,6 +135,8 @@
 
 @code {
     [SupplyParameterFromQuery] public int? Agv { get; set; }
+    [SupplyParameterFromQuery] public string? Group { get; set; }
+    readonly string[] casc = new string[AgvGroup.Levels];
 
     string fwId = "", name = "", extraTargets = "", when = "now";
     DateTime at = DateTime.Now.AddMinutes(10);
@@ -129,12 +151,33 @@
 
     protected override void OnInitialized()
     {
-        JobSvc.Changed += OnChanged; Reg.Changed += OnChanged;
+        JobSvc.Changed += OnChanged; Reg.Changed += OnChanged; Groups.Changed += OnChanged;
         if (Agv is int a && a is >= 1 and <= 99) targets.Add(a);
+        for (int i = 0; i < AgvGroup.Levels; i++) casc[i] = "";
+        if (Group is not null)
+        {
+            // 구역 화면에서 "이 호기들에 배포" 로 넘어온 경우: 경로를 단계별 선택에 채우고 그 아래 호기를 모두 대상에
+            var parts = Group.Split(" / ");
+            for (int i = 0; i < parts.Length && i < AgvGroup.Levels; i++) casc[i] = parts[i];
+            foreach (var id in Groups.AgvsUnder(Group)) targets.Add(id);
+            if (Group.Length > 0 && targets.Count > 0) name = $"{Group} 전체";
+        }
         at = DateTime.Now.AddMinutes(10);
     }
+
+    IEnumerable<int> AllAgvIds() => Reg.Snapshot().Select(a => a.Id).Union(Groups.Snapshot().Select(g => g.Agv)).OrderBy(x => x);
+    string CascadePath { get { int d = 0; while (d < AgvGroup.Levels && casc[d].Length > 0) d++; return string.Join(" / ", casc.Take(d)); } }
+    IReadOnlyList<int> CascadeAgvs => Groups.AgvsUnder(CascadePath);
+    List<string> CascadeOptions(int lv)
+    {
+        if (lv > 0 && casc[lv - 1].Length == 0) return new();
+        var node = GroupTree.Find(Groups.Tree, string.Join(" / ", casc.Take(lv)));
+        return node?.Children.Select(c => c.Name).ToList() ?? new();
+    }
+    void SetCascade(int lv, string v) { casc[lv] = v; for (int i = lv + 1; i < AgvGroup.Levels; i++) casc[i] = ""; }
+    void AddCascade() { foreach (var id in CascadeAgvs) targets.Add(id); if (string.IsNullOrWhiteSpace(name) && CascadePath.Length > 0) name = $"{CascadePath} 전체"; }
     void OnChanged() => InvokeAsync(StateHasChanged);
-    public void Dispose() { JobSvc.Changed -= OnChanged; Reg.Changed -= OnChanged; }
+    public void Dispose() { JobSvc.Changed -= OnChanged; Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; }
     void Toggle(int id, bool on) { if (on) targets.Add(id); else targets.Remove(id); }
     void ToggleOpen(bool isOpen, string id) => open = isOpen ? "" : id;
     void ToggleLog(string key) { if (!logOpen.Remove(key)) logOpen.Add(key); }

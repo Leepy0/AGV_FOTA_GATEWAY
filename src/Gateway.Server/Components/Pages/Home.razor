@@ -1,6 +1,7 @@
 @page "/"
 @inject AgvRegistry Reg
 @inject BridgeUdpService Link
+@inject AgvGroupStore Groups
 @inject IOptions<GatewayOptions> Opt
 @implements IDisposable
 
@@ -34,13 +35,20 @@ else
                 <button class="stat @(filter == "dsp:" + g.Key ? "on" : "")" @onclick='() => filter = "dsp:" + g.Key' title="@(g.Key == "-" ? "브리지가 메인보드 OTA 를 지원하지 않음 (0.5.0 미만)" : g.Key == "?" ? "브리지가 메인보드 앱에서 버전 응답을 못 받음" : "")">@g.Key <b>×@g.Count()</b></button>
             }
         </span>
-        <input class="search" @bind="search" @bind:event="oninput" placeholder="검색: 호기·IP·버전" />
+        @if (Groups.Count > 0)
+        {
+            <select class="grp" value="@group" @onchange="e => group = e.Value?.ToString() ?? string.Empty" title="구역으로 거르기">
+                <option value="">구역 전체</option>
+                @foreach (var n in Groups.Tree.Descendants()) { <option value="@n.Path">@(new string(' ', n.Level * 3))@n.Name (@n.Count)</option> }
+            </select>
+        }
+        <input class="search" @bind="search" @bind:event="oninput" placeholder="검색: 호기·IP·버전·구역" />
     </div>
 
     <div class="table-wrap">
         <table class="grid clickable">
             <thead>
-                <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+                <tr><th>호기</th><th>구역</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
             </thead>
             <tbody>
                 @foreach (var a in Visible())
@@ -49,6 +57,7 @@ else
                     var st = a.Status;
                     <tr class="@(on ? "" : "off") @(sel == a.Id ? "sel" : "")" @onclick="() => sel = sel == a.Id ? null : a.Id">
                         <td><b>@a.Id.ToString("D2")</b></td>
+                        <td class="small ellipsis" title="@(Groups.Get(a.Id)?.Group.Path)">@(Groups.Get(a.Id)?.Group.Path ?? "")</td>
                         <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : Ago(a.LastSeen))</td>
                         <td class="mono small">@a.EndPoint?.Address</td>
                         <td>@st?.Fw</td>
@@ -64,7 +73,7 @@ else
                     </tr>
                     @if (sel == a.Id)
                     {
-                        <tr class="detail"><td colspan="13">
+                        <tr class="detail"><td colspan="14">
                             <div class="detail-box">
                                 <div class="row-buttons">
                                     <b>@a.Id.ToString("D2") 호기</b>
@@ -72,6 +81,7 @@ else
                                     <button @onclick='() => Do(a.Id, Link.SendPing, "PING")' @onclick:stopPropagation>PING</button>
                                     <a href="trace?agv=@a.Id" @onclick:stopPropagation>통신 로그</a>
                                     <a href="jobs?agv=@a.Id" @onclick:stopPropagation>이 호기에 배포</a>
+                                    <a href="groups?path=@Uri.EscapeDataString(Groups.Get(a.Id)?.Group.Path ?? "")" @onclick:stopPropagation>구역 @(Groups.Get(a.Id) is null ? "(미등록)" : "")</a>
                                     @if (msg is not null) { <span class="msg">@msg</span> }
                                 </div>
                                 @if (st is not null)
@@ -99,7 +109,8 @@ else
 
 @code {
     IReadOnlyList<AgvState> all = [];
-    string filter = "all", search = "";
+    [SupplyParameterFromQuery] public string? Group { get; set; }
+    string filter = "all", search = "", group = "";
     int? sel;
     string? msg;
     int pending, busyDsp;
@@ -107,8 +118,9 @@ else
 
     protected override void OnInitialized()
     {
-        Reg.Changed += OnChanged;
+        Reg.Changed += OnChanged; Groups.Changed += OnChanged;
         timer = new System.Threading.Timer(_ => OnChanged(), null, 2000, 2000);   // 오프라인 표시 갱신
+        if (!string.IsNullOrEmpty(Group)) group = Group;
         Load();
     }
     void Load()
@@ -118,7 +130,7 @@ else
         busyDsp = all.Count(a => On(a) && a.Status?.DspState is "downloading" or "programming");
     }
     void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
-    public void Dispose() { Reg.Changed -= OnChanged; timer?.Dispose(); }
+    public void Dispose() { Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; timer?.Dispose(); }
 
     bool On(AgvState a) => a.Online(Opt.Value.OfflineAfterSec);
 
@@ -134,12 +146,18 @@ else
             _ when filter.StartsWith("dsp:") => q.Where(a => (a.Status is { } s && !string.IsNullOrEmpty(s.DspState) ? (s.HasDsp ? s.Dsp : "?") : "-") == filter[4..]),
             _ => q,
         };
+        if (!string.IsNullOrEmpty(group))
+        {
+            var ids = Groups.AgvsUnder(group).ToHashSet();
+            q = q.Where(a => ids.Contains(a.Id));
+        }
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim();
             q = q.Where(a => a.Id.ToString("D2").Contains(s) || (a.EndPoint?.Address.ToString().Contains(s) ?? false)
                           || (a.Status?.Fw.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false) || (a.Status?.Dsp.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
-                          || (a.Status?.Cfg.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
+                          || (a.Status?.Cfg.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                          || (Groups.Get(a.Id)?.Group.Path.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
         }
         return q.ToList();
     }

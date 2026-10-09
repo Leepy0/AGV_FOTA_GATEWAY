@@ -95,3 +95,24 @@ h1:focus { outline: none; }
 .form label > input.w-sm { min-width: 0; width: 80px; } .form label > input.w-md { min-width: 0; width: 220px; } .form label > input.w-lg { min-width: 0; width: 380px; max-width: 100%; }
 @media (max-width: 700px) { .form label > input.w-sm { width: 80px; } .form label > input.w-md, .form label > input.w-lg { width: calc(100% - 16px); } }
 .grid td.wrap { white-space: normal; min-width: 160px; }
+/* ── 구역 트리 ── */
+.split { display: grid; grid-template-columns: 300px 1fr; gap: 12px; align-items: start; }
+.tree-card { position: sticky; top: 12px; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 14px; border-left: 1px dashed var(--line); padding-left: 6px; }
+.tree li { margin: 2px 0; }
+.tree a { cursor: pointer; text-decoration: none; color: var(--text); padding: 3px 8px; border-radius: 6px; display: inline-block; }
+.tree a:hover { background: #f3f4f6; }
+.tree a.on { background: #dbeafe; color: var(--pri); }
+.tree a .cnt { font-size: 11px; color: var(--muted); margin-left: 4px; background: #e5e7eb; padding: 0 6px; border-radius: 8px; }
+.tree a.lv0 { font-weight: 700; } .tree a.lv1 { font-weight: 600; }
+.tree .tw { display: inline-block; width: 14px; color: var(--muted); cursor: pointer; user-select: none; }
+.grid input.cell { width: 100%; min-width: 70px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 4px; }
+.grid tr.editing td { background: #fffbeb; }
+textarea.csv { width: 100%; font-family: Consolas, monospace; font-size: 12px; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+a.button { display: inline-block; padding: 7px 14px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; text-decoration: none; color: var(--text); }
+a.button:hover { background: #f3f4f6; }
+.cascade { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.cascade select { padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; min-width: 0 !important; width: auto !important; margin: 0 !important; }
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } .tree-card { position: static; } }
+.stats .grp { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 16px; max-width: 260px; }

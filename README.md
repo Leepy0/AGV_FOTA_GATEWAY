@@ -17,7 +17,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | 경로 | 내용 |
 |---|---|
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat, AGV 프레임(BCC, ACS 화이트리스트), `.dspfw` 파서, 메인보드 OTA(B안)·브리지 OTA 클라이언트, 업데이트 피드 파싱 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 6개(호기 현황·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, 서버 자체 업데이트, REST API |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`, 가짜 브리지로 메인보드 OTA 단계·실패·job 불일치 |
 | `tests/fake_esp.py` | 가짜 브리지(0.5.0 B안) — 하드웨어 없이 서버 종단 시험 (`--fail-at erase` 로 실패 재현) |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` |
@@ -38,7 +38,8 @@ python3 tests/fake_esp.py --agv 7 --server 127.0.0.1:50000 --listen 50010 --dsp 
 
 REST API (화면과 같은 기능, 스크립트용): `GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs`, `POST /api/jobs/{id}/cancel`,
 `POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일),
-`GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고.
+`GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고,
+`GET /api/groups` 구역 트리 · `GET /api/groups/agvs?path=` · `PUT|DELETE /api/agvs/{n}/group` · `POST /api/groups/import` (CSV) · `GET /api/groups/export.csv` · `POST /api/acs/inventory/preview|pull` ACS 소속 받기.
 
 ## 릴리스
 

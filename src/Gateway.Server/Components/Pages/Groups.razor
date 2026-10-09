@@ -1,0 +1,202 @@
+@page "/groups"
+@using Gateway.Core.Groups
+@inject AgvGroupStore Store
+@inject AcsInventoryPullService Inv
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>구역 · AGV FOTA</PageTitle>
+<h1>구역 (호기 소속)</h1>
+<p class="muted">제품군 → 층 → 라인 → 공정(구역) → 라우트(대상 자재) 순서로 호기를 분류합니다. 기존 ACS 에서 받아오거나(스키마 확정 후) 아래에서 직접 넣습니다. 트리의 항목을 누르면 그 아래 호기 전체를 한 번에 배포 대상으로 넘길 수 있습니다.</p>
+
+<div class="banner @(Inv.Enabled ? (Inv.FailStreak > 0 ? "err" : "info") : "")" style="@(Inv.Enabled ? "" : "background:#f3f4f6;border-color:#e5e7eb;color:#374151")">
+    ACS 소속 받기: @(Inv.Enabled ? $"켜짐 · {Inv.Target} · 마지막 {Inv.LastTry?.ToLocalTime().ToString("HH:mm:ss") ?? "-"} {Inv.LastResult}" : "꺼짐 (AcsInventory.Enabled=false) — 스키마를 받으면 appsettings.json 의 AcsInventory 섹션을 채우고 켭니다")
+    <span class="row-buttons" style="display:inline-flex;margin:0 0 0 10px">
+        <button @onclick="Preview" disabled="@busy">응답 미리보기</button>
+        <button @onclick="Pull" disabled="@(busy || !Inv.Enabled)">지금 받기</button>
+    </span>
+</div>
+@if (preview is not null) { <pre class="log">@preview</pre> }
+
+<div class="split">
+    <section class="card tree-card">
+        <h2>트리 <span class="muted small">@Store.Count 대 등록 · 온라인 @Reg.Snapshot().Count(a => a.Online(Opt.Value.OfflineAfterSec))</span></h2>
+        @if (Store.Count == 0)
+        {
+            <div class="empty">등록된 소속이 없습니다. 오른쪽에서 직접 넣거나 CSV 를 붙여 넣으세요.</div>
+        }
+        else
+        {
+            <ul class="tree">
+                <li><a class="@(sel == "" ? "on" : "")" @onclick='() => Select("")'>전체 <span class="cnt">@Store.Tree.Count</span></a></li>
+                @foreach (var n in Store.Tree.Children) { @RenderNode(n) }
+            </ul>
+        }
+    </section>
+
+    <section class="card">
+        <h2>@(string.IsNullOrEmpty(sel) ? "전체 호기" : sel) <span class="muted small">@Selected.Count 대</span></h2>
+        <div class="row-buttons">
+            <a class="button" href="jobs?group=@Uri.EscapeDataString(sel)">이 호기들에 배포 →</a>
+            <a class="button" href="?path=@Uri.EscapeDataString(sel)" @onclick:preventDefault @onclick='() => Nav.NavigateTo("/?group=" + Uri.EscapeDataString(sel))'>호기 현황에서 보기</a>
+            <a class="button" href="api/groups/export.csv" target="_blank">CSV 내려받기</a>
+        </div>
+        <div class="table-wrap">
+        <table class="grid">
+            <thead><tr><th>호기</th><th>상태</th><th>제품군</th><th>층</th><th>라인</th><th>공정</th><th>라우트</th><th>이름</th><th>출처</th><th>브리지 / 메인보드</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var agv in Selected)
+                {
+                    var a = Store.Get(agv);
+                    var st = Reg.Get(agv);
+                    var on = st?.Online(Opt.Value.OfflineAfterSec) == true;
+                    if (edit == agv)
+                    {
+                        <tr class="editing">
+                            <td><b>@agv.ToString("D2")</b></td>
+                            <td><span class="dot @(on ? "ok" : "bad")"></span></td>
+                            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <td><input class="cell" @bind="editVals[lv]" list="lv@(lv)" placeholder="@AgvGroup.LevelNames[lv]" /></td> }
+                            <td><input class="cell" @bind="editName" /></td>
+                            <td class="small">manual</td>
+                            <td class="small">@st?.Status?.Fw / @(st?.Status is { } s2 && s2.HasDsp ? s2.Dsp : "-")</td>
+                            <td><button class="primary" @onclick="SaveEdit">저장</button> <button @onclick="() => edit = null">취소</button></td>
+                        </tr>
+                    }
+                    else
+                    {
+                        <tr>
+                            <td><b>@agv.ToString("D2")</b></td>
+                            <td><span class="dot @(st is null ? "" : on ? "ok" : "bad")"></span>@(st is null ? "미접속" : on ? "온라인" : "오프라인")</td>
+                            @for (int i = 0; i < AgvGroup.Levels; i++) { <td>@(a?.Group[i])</td> }
+                            <td>@a?.Name</td>
+                            <td class="small" title="@(a?.UpdatedAt.ToLocalTime().ToString("MM-dd HH:mm"))">@a?.Source</td>
+                            <td class="small">@st?.Status?.Fw / @(st?.Status is { } s3 && s3.HasDsp ? s3.Dsp : "-")</td>
+                            <td><button @onclick="() => BeginEdit(agv)">수정</button> <button @onclick="() => Remove(agv)">삭제</button></td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+        </div>
+        @for (int i = 0; i < AgvGroup.Levels; i++)
+        {
+            var lv = i;
+            <datalist id="lv@(lv)">@foreach (var v in Store.Snapshot().Select(x => x.Group[lv]).Where(v => v.Length > 0).Distinct().OrderBy(v => v)) { <option value="@v" /> }</datalist>
+        }
+
+        <h2 style="margin-top:16px">직접 추가</h2>
+        <div class="form row">
+            <label>호기 <input class="w-sm" @bind="newAgv" placeholder="7" /></label>
+            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <label>@AgvGroup.LevelNames[lv] <input class="w-md" @bind="newVals[lv]" list="lv@(lv)" /></label> }
+            <button class="primary" @onclick="AddOne">추가</button>
+            @if (msg is not null) { <span class="msg @(err ? "err" : "")">@msg</span> }
+        </div>
+        <p class="muted small">미접속 호기도 넣을 수 있습니다 (ACS 목록 기준). 같은 호기를 다시 넣으면 덮어씁니다.</p>
+
+        <h2 style="margin-top:16px">CSV 붙여넣기 (일괄)</h2>
+        <textarea class="csv" @bind="csv" rows="5" placeholder="@CsvPlaceholder"></textarea>
+        <div class="row-buttons"><button @onclick="ImportCsv" disabled="@string.IsNullOrWhiteSpace(csv)">가져오기</button> <span class="muted small">엑셀에서 열을 복사해 붙여 넣어도 됩니다 (탭 구분). 첫 줄 머리글은 건너뜁니다.</span></div>
+        @if (csvResult is not null) { <div class="msg @(csvErr ? "err" : "")">@csvResult</div> }
+    </section>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? Path { get; set; }
+
+    string sel = "";
+    int? edit;
+    readonly string[] editVals = new string[AgvGroup.Levels];
+    readonly string[] newVals = new string[AgvGroup.Levels];
+    string editName = "", newAgv = "", csv = "";
+    string? msg, csvResult, preview;
+    bool err, csvErr, busy;
+    readonly HashSet<string> collapsed = new();
+
+    IReadOnlyList<int> Selected => Store.AgvsUnder(sel);
+    static readonly string CsvPlaceholder = GroupCsv.Header + "\n7,A제품,2F,L1,조립,자재X,AGV-07\n12,A제품,2F,L1,검사,자재Y";
+
+    protected override void OnInitialized()
+    {
+        Store.Changed += OnChanged; Reg.Changed += OnChanged; Inv.Changed += OnChanged;
+        for (int i = 0; i < AgvGroup.Levels; i++) { editVals[i] = ""; newVals[i] = ""; }
+        if (!string.IsNullOrEmpty(Path)) sel = Path;
+    }
+    void OnChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() { Store.Changed -= OnChanged; Reg.Changed -= OnChanged; Inv.Changed -= OnChanged; }
+
+    void Select(string path) { sel = path; edit = null; }
+    void ToggleCollapse(string path) { if (!collapsed.Remove(path)) collapsed.Add(path); }
+
+    RenderFragment RenderNode(GroupNode n) => __builder =>
+    {
+        var open = !collapsed.Contains(n.Path);
+        <li>
+            <span class="tw" @onclick="() => ToggleCollapse(n.Path)">@(n.Children.Count == 0 ? "·" : open ? "▾" : "▸")</span>
+            <a class="@(sel == n.Path ? "on" : "") lv@(n.Level)" @onclick="() => Select(n.Path)" title="@n.LevelName">@n.Name <span class="cnt">@n.Count</span></a>
+            @if (open && n.Children.Count > 0)
+            {
+                <ul>@foreach (var c in n.Children) { @RenderNode(c) }</ul>
+            }
+        </li>
+    };
+
+    void BeginEdit(int agv)
+    {
+        var a = Store.Get(agv);
+        for (int i = 0; i < AgvGroup.Levels; i++) editVals[i] = a?.Group[i] ?? "";
+        editName = a?.Name ?? "";
+        edit = agv;
+    }
+    void SaveEdit()
+    {
+        if (edit is not int agv) return;
+        Store.Set(agv, AgvGroup.Trimmed(editVals[0], editVals[1], editVals[2], editVals[3], editVals[4]), editName.Trim());
+        edit = null;
+    }
+    async Task Remove(int agv)
+    {
+        if (await JS.InvokeAsync<bool>("confirm", $"{agv:D2} 호기의 소속을 지울까요?")) Store.Remove(agv);
+    }
+    void AddOne()
+    {
+        msg = null; err = false;
+        if (!int.TryParse(newAgv, out var agv) || agv is < 1 or > 99) { msg = "호기 번호는 1~99"; err = true; return; }
+        var g = AgvGroup.Trimmed(newVals[0], newVals[1], newVals[2], newVals[3], newVals[4]);
+        Store.Set(agv, g);
+        msg = $"{agv:D2} → {g.Path}";
+        newAgv = "";
+    }
+    void ImportCsv()
+    {
+        var items = GroupCsv.Parse(csv, DateTimeOffset.UtcNow, out var errors);
+        var n = Store.Import(items);
+        csvErr = errors.Count > 0;
+        csvResult = $"{n}대 반영" + (errors.Count > 0 ? " · 오류: " + string.Join("; ", errors.Take(5)) : "");
+        if (n > 0 && errors.Count == 0) csv = "";
+    }
+    async Task Preview()
+    {
+        busy = true; preview = "받는 중…";
+        try
+        {
+            var (http, parsed, sample) = await Inv.PreviewAsync();
+            preview = !http.Ok || parsed is null
+                ? $"{http}\n{sample}"
+                : $"{http} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석\n" +
+                  string.Join("\n", parsed.Items.Take(20).Select(i => $"  {i.Agv:D2} {i.Name,-10} {i.Group.Path}")) +
+                  (parsed.Items.Count > 20 ? $"\n  … {parsed.Items.Count - 20}대 더" : "") +
+                  (parsed.Warnings.Count > 0 ? "\n경고:\n  " + string.Join("\n  ", parsed.Warnings.Take(10)) : "") +
+                  "\n--- 응답 원문 (앞부분) ---\n" + sample;
+        }
+        catch (Exception e) { preview = "오류: " + e.Message; }
+        finally { busy = false; }
+    }
+    async Task Pull()
+    {
+        busy = true;
+        try { preview = await Inv.PullAsync(); } finally { busy = false; }
+    }
+}

@@ -12,6 +12,7 @@
     <nav class="side">
         <div class="brand">AGV FOTA<br /><small>Gateway</small></div>
         <NavLink href="" Match="NavLinkMatch.All">호기 현황 <span class="nav-badge">@online/@total</span></NavLink>
+        <NavLink href="groups">구역</NavLink>
         <NavLink href="firmware">펌웨어</NavLink>
         <NavLink href="jobs">배포 작업 @(running > 0 ? $"⟳ {running}" : scheduled > 0 ? $"({scheduled} 예약)" : "")</NavLink>
         <NavLink href="trace">통신 로그</NavLink>

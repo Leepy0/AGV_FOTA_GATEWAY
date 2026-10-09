@@ -1,5 +1,6 @@
 using Gateway.Core.Acs;
 using Gateway.Core.Agv;
+using Gateway.Core.Groups;
 using Gateway.Core.Positions;
 using Gateway.Server.Components;
 using Gateway.Server.Options;
@@ -18,6 +19,7 @@ builder.Host.UseWindowsService(o => o.ServiceName = "AgvFotaGateway");
 builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection(GatewayOptions.Section));
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.Section));
 builder.Services.Configure<AcsApiOptions>(builder.Configuration.GetSection(AcsApiOptions.Section));
+builder.Services.Configure<AcsInventoryOptions>(builder.Configuration.GetSection(AcsInventoryOptions.Section));
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 64L * 1024 * 1024);
 builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = 64L * 1024 * 1024);
 
@@ -45,6 +47,9 @@ builder.Services.AddSingleton<AgvPositionStore>();
 builder.Services.AddHttpClient<AcsRestPublisher>();
 builder.Services.AddSingleton<AcsPositionPushService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsPositionPushService>());
+builder.Services.AddSingleton(sp => new AgvGroupStore(dataDir));
+builder.Services.AddSingleton<AcsInventoryPullService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullService>());
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
@@ -136,6 +141,34 @@ api.MapGet("/acs/status", (AcsPositionPushService p, IOptions<AcsApiOptions> o) 
 });
 api.MapPost("/acs/push", async (AcsPositionPushService p) => Results.Ok(new { result = await p.PushAsync(force: true) }));
 api.MapGet("/acs/preview", (AgvPositionStore st) => Results.Text(AcsPositionMapper.Serialize(AcsPositionMapper.Build(st.Snapshot(), DateTimeOffset.UtcNow)), "application/json"));
+// ───── 호기 소속 (제품군·층·라인·공정·라우트) — ACS 에서 받거나 직접 입력 ─────
+api.MapGet("/groups", (AgvGroupStore g) => g.Tree);
+api.MapGet("/groups/list", (AgvGroupStore g) => g.Snapshot());
+api.MapGet("/groups/agvs", (string path, AgvGroupStore g) => g.AgvsUnder(path));
+api.MapGet("/groups/export.csv", (AgvGroupStore g) => Results.Text(GroupCsv.Format(g.Snapshot()), "text/csv; charset=utf-8"));
+api.MapPost("/groups/import", async (HttpRequest req, AgvGroupStore g) =>
+{
+    // 본문 = CSV 텍스트 (agv,제품군,층,라인,공정,라우트[,이름])
+    using var sr = new StreamReader(req.Body);
+    var items = GroupCsv.Parse(await sr.ReadToEndAsync(), DateTimeOffset.UtcNow, out var errors);
+    var n = g.Import(items);
+    return Results.Ok(new { imported = n, errors });
+});
+api.MapGet("/agvs/{agv:int}/group", (int agv, AgvGroupStore g) => g.Get(agv) is { } a ? Results.Ok(a) : Results.NotFound());
+api.MapPut("/agvs/{agv:int}/group", (int agv, GroupSetRequest r, AgvGroupStore g) =>
+    agv is < 1 or > 99 ? Results.BadRequest("호기 번호는 1~99")
+    : Results.Ok(g.Set(agv, AgvGroup.Trimmed(r.ProductFamily, r.Floor, r.Line, r.Process, r.Route), r.Name, r.Note ?? "")));
+api.MapDelete("/agvs/{agv:int}/group", (int agv, AgvGroupStore g) => g.Remove(agv) ? Results.Ok() : Results.NotFound());
+api.MapGet("/acs/inventory/status", (AcsInventoryPullService p, IOptions<AcsInventoryOptions> o) => new
+{
+    p.Enabled, p.Target, o.Value.IntervalSec, o.Value.OverrideManual, o.Value.RemoveMissing, o.Value.Fields, p.LastTry, p.LastOk, p.LastResult, p.LastCount, p.LastWarnings, p.FailStreak,
+});
+api.MapPost("/acs/inventory/pull", async (AcsInventoryPullService p) => Results.Ok(new { result = await p.PullAsync() }));
+api.MapPost("/acs/inventory/preview", async (AcsInventoryPullService p) =>
+{
+    var (http, parsed, sample) = await p.PreviewAsync();
+    return Results.Ok(new { ok = http.Ok, http = http.ToString(), parsed?.TotalRecords, items = parsed?.Items, parsed?.Warnings, sample });
+});
 api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, channel = u.Channel, time = DateTime.UtcNow }));
 
 app.Lifetime.ApplicationStarted.Register(() =>
@@ -153,5 +186,6 @@ app.Lifetime.ApplicationStarted.Register(() =>
 app.Run();
 
 record JobCreateRequest(string? Name, string FirmwareId, List<int> Targets, DateTime? ScheduledAt, bool? StopOnFailure);
+record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, string? Process, string? Route, string? Name, string? Note);
 record SendRequest(string Data);
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);

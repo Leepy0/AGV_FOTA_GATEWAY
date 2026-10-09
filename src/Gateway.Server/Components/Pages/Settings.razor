@@ -10,6 +10,9 @@
 @inject FileLoggerProvider Logs
 @inject AcsRelayService Acs
 @inject AcsPositionPushService Push
+@inject AcsInventoryPullService Inv
+@inject IOptions<AcsInventoryOptions> InvOpt
+@inject AgvGroupStore Groups
 
 <PageTitle>설정 · AGV FOTA</PageTitle>
 <h1>설정</h1>
@@ -48,6 +51,18 @@
         <dt>최근</dt><dd>@(Push.LastTry is null ? "-" : $"{Push.LastTry?.ToLocalTime():HH:mm:ss} {Push.LastResult}") · 성공 @(Push.SentCount)회 · 마지막 성공 @(Push.LastOk?.ToLocalTime().ToString("HH:mm:ss") ?? "-")</dd>
     </dl>
     <p class="muted small">스키마가 정해지면 <code>Gateway.Core/Acs/AcsPositionMapper.cs</code> 와 <code>docs/ACS_API.md</code> 를 맞춥니다. 미리보기: <a href="api/acs/preview" target="_blank">/api/acs/preview</a></p>
+</section>
+
+<section class="card">
+    <h2>ACS 호기 소속 받기 (REST, 제품군·층·라인·공정·라우트)</h2>
+    <dl class="kv">
+        <dt>상태</dt><dd>@(Inv.Enabled ? (Inv.FailStreak > 0 ? $"오류 연속 {Inv.FailStreak}회" : "받는 중") : "사용 안 함 (AcsInventory.Enabled=false) — 구역 화면에서 직접 입력·CSV")</dd>
+        <dt>대상</dt><dd class="mono">@Inv.Target</dd>
+        <dt>주기</dt><dd>@(InvOpt.Value.IntervalSec > 0 ? $"{InvOpt.Value.IntervalSec}초" : "시작 때 한 번") · @(InvOpt.Value.OverrideManual ? "직접 입력값도 덮어씀" : "직접 입력값 유지") · @(InvOpt.Value.RemoveMissing ? "목록에 없는 호기 삭제" : "목록에 없는 호기 유지")</dd>
+        <dt>필드 매핑</dt><dd class="mono small">root=@(InvOpt.Value.Fields.Root.Length > 0 ? InvOpt.Value.Fields.Root : "(자동)") agv=@InvOpt.Value.Fields.Agv name=@InvOpt.Value.Fields.Name 제품군=@InvOpt.Value.Fields.ProductFamily 층=@InvOpt.Value.Fields.Floor 라인=@InvOpt.Value.Fields.Line 공정=@InvOpt.Value.Fields.Process 라우트=@InvOpt.Value.Fields.Route</dd>
+        <dt>최근</dt><dd>@(Inv.LastTry is null ? "-" : $"{Inv.LastTry?.ToLocalTime():HH:mm:ss} {Inv.LastResult}") · 등록 @Groups.Count 대</dd>
+    </dl>
+    <p class="muted small">스키마가 정해지면 보통 appsettings.json 의 <code>AcsInventory.Fields</code> 만 맞추면 됩니다 (중첩 필드는 <code>a.b</code>). 구조가 많이 다르면 <code>Gateway.Core/Acs/AcsInventoryMapper.cs</code>. 구역 화면의 "응답 미리보기" 로 저장 없이 확인합니다.</p>
 </section>
 
 <section class="card">
