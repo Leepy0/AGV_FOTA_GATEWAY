@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using Gateway.Core.Agv;
 using Gateway.Server.Options;
 using Microsoft.Extensions.Options;
@@ -18,7 +19,9 @@ public sealed class AcsRelayService : BackgroundService
     readonly AcsOptions _opt;
     readonly BridgeUdpService _bridge;
     readonly ILogger<AcsRelayService> _log;
-    readonly SemaphoreSlim _txLock = new(1, 1);
+    // 상향 프레임은 순서대로 한 루프가 보낸다. ACS 가 막히면 오래된 것부터 버림 (무한 적체 방지)
+    readonly Channel<byte[]> _tx = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(512) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
+    public long Dropped;
     NetworkStream? _stream;
 
     public bool Enabled => _opt.Enabled;
@@ -46,7 +49,11 @@ public sealed class AcsRelayService : BackgroundService
                     await using var ns = client.GetStream();
                     _stream = ns; ConnectedAt = DateTime.UtcNow;
                     _log.LogInformation("ACS connected {Ep}", client.Client.RemoteEndPoint);
-                    await RxLoop(ns, ct);
+                    while (_tx.Reader.TryRead(out _)) { }   // 끊겨 있던 동안 쌓인 옛 프레임은 버림
+                    using var linkCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    var tx = TxLoop(ns, linkCts.Token);
+                    try { await RxLoop(ns, ct); }
+                    finally { linkCts.Cancel(); try { await tx; } catch { } }
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception e) { _log.LogWarning("ACS: {Msg}", e.Message); }
@@ -92,14 +99,22 @@ public sealed class AcsRelayService : BackgroundService
 
     void OnMainUp(int agv, byte[] frame)
     {
-        var s = _stream;
-        if (s is null) return;
-        _ = Task.Run(async () =>
+        if (_stream is null) return;
+        if (_tx.Reader.Count >= 512) Interlocked.Increment(ref Dropped);
+        _tx.Writer.TryWrite(frame);
+    }
+
+    async Task TxLoop(NetworkStream ns, CancellationToken ct)
+    {
+        try
         {
-            await _txLock.WaitAsync();
-            try { await s.WriteAsync(frame); Interlocked.Increment(ref ToAcs); }
-            catch (Exception e) { _log.LogDebug("ACS tx: {Msg}", e.Message); }
-            finally { _txLock.Release(); }
-        });
+            await foreach (var frame in _tx.Reader.ReadAllAsync(ct))
+            {
+                await ns.WriteAsync(frame, ct);
+                Interlocked.Increment(ref ToAcs);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { _log.LogWarning("ACS tx: {Msg}", e.Message); }
     }
 }

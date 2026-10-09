@@ -1,10 +1,11 @@
 @echo off
-:: ì„œë¹„ìŠ¤ ì‚­ì œ (ë°ì´í„° í´ë” data\ ëŠ” ë‚¨ê¹€)
-net session >nul 2>&1 || (echo ê´€ë¦¬ìž ê¶Œí•œìœ¼ë¡œ ì‹¤í–‰í•˜ì„¸ìš” & pause & exit /b 1)
+:: Encoding: CP949 (EUC-KR) - Korean Windows cmd reads batch files in the OEM code page; keep this file CP949, not UTF-8.
+:: ¼­ºñ½º »èÁ¦ (µ¥ÀÌÅÍ Æú´õ data\ ´Â ³²±è)
+net session >nul 2>&1 || (echo °ü¸®ÀÚ ±ÇÇÑÀ¸·Î ½ÇÇàÇÏ¼¼¿ä & pause & exit /b 1)
 sc stop AgvFotaGateway >nul 2>&1
 timeout /t 3 >nul
 sc delete AgvFotaGateway
 netsh advfirewall firewall delete rule name="AGV FOTA Gateway HTTP" >nul 2>&1
 netsh advfirewall firewall delete rule name="AGV FOTA Gateway Bridge UDP" >nul 2>&1
-echo ì‚­ì œí–ˆìŠµë‹ˆë‹¤.
+echo »èÁ¦Çß½À´Ï´Ù.
 pause

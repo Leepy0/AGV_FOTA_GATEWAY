@@ -1,8 +1,9 @@
 @page "/firmware"
 @inject FirmwareStore Store
 @inject JobService JobSvc
-@rendermode InteractiveServer
+@inject IJSRuntime JS
 
+<PageTitle>펌웨어 · AGV FOTA</PageTitle>
 <h1>펌웨어</h1>
 
 <section class="card">
@@ -10,74 +11,92 @@
     <div class="form">
         <label>종류
             <select @bind="kind">
-                <option value="Dsp">DSP (메인보드, TMS320F2808)</option>
-                <option value="Esp">브리지 (ESP32-S3, agv_wifi_bridge.bin)</option>
+                <option value="Dsp">메인보드 DSP (TMS320F2808, .dspfw)</option>
+                <option value="Esp">브리지 ESP32-S3 (agv_wifi_bridge.bin)</option>
             </select>
         </label>
-        <label>버전 <input @bind="version" placeholder="예: 1.0.3" /></label>
-        <label>프로젝트 <input @bind="project" placeholder="@(kind == "Dsp" ? "agv-dsp" : "agv_wifi_bridge")" /></label>
-        <label>메모 <input @bind="notes" /></label>
         @if (kind == "Dsp")
         {
-            <p class="muted">CCS 빌드 결과를 <code>dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전은 파일 헤더에서 읽습니다(입력하면 일치 확인). 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
-            <label>.dspfw <InputFile OnChange="e => fileDsp = e.File" /></label>
+            <p class="muted">CCS 빌드 결과를 <code>tools/dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전·CRC 는 파일 헤더에서 읽습니다. 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
+            <label>.dspfw 파일 <InputFile OnChange="e => file = e.File" accept=".dspfw" /></label>
         }
         else
         {
-            <label>agv_wifi_bridge.bin <InputFile OnChange="e => fileEsp = e.File" /></label>
+            <p class="muted">ESP-IDF <code>build/agv_wifi_bridge.bin</code> (앱 이미지만) 을 올립니다. 버전·프로젝트·빌드 시각은 이미지 안의 앱 디스크립터에서 읽어 확인합니다. bootloader·partition-table·merged 이미지는 거부됩니다.</p>
+            <label>agv_wifi_bridge.bin <InputFile OnChange="e => file = e.File" accept=".bin" /></label>
         }
-        <button class="primary" @onclick="Upload" disabled="@busy">@(busy ? "업로드 중…" : "업로드")</button>
+        @if (file is not null) { <div class="muted small">선택: @file.Name (@file.Size.ToString("N0") B)</div> }
+        <label>버전 <input @bind="version" placeholder="비우면 파일에서 읽음 (입력하면 일치 확인)" /></label>
+        <label>메모 <input @bind="notes" placeholder="변경 내용 등 (비우면 빌드 정보)" /></label>
+        <button class="primary" @onclick="Upload" disabled="@(busy || file is null)">@(busy ? "업로드 중…" : "업로드")</button>
         @if (msg is not null) { <div class="msg @(err ? "err" : "")">@msg</div> }
+        @if (warn is not null) { <div class="msg warn">@warn</div> }
     </div>
 </section>
 
 <section class="card">
-    <h2>목록</h2>
-    <table class="grid">
-        <thead><tr><th>종류</th><th>버전</th><th>프로젝트</th><th>파일</th><th>업로드</th><th>메모</th><th></th></tr></thead>
-        <tbody>
-            @foreach (var e in Store.List())
-            {
-                <tr>
-                    <td>@e.Kind</td><td><b>@e.Version</b></td><td>@e.Project</td>
-                    <td class="small">@e.FilesText</td>
-                    <td>@e.UploadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>@e.Notes</td>
-                    <td><button @onclick="() => Delete(e.Id)">삭제</button></td>
-                </tr>
-            }
-        </tbody>
-    </table>
+    <h2>목록 <span class="muted small">@Store.List().Count 개</span></h2>
+    @if (Store.List().Count == 0) { <div class="empty">등록된 펌웨어가 없습니다.</div> }
+    else
+    {
+        <div class="table-wrap">
+        <table class="grid">
+            <thead><tr><th>종류</th><th>버전</th><th>프로젝트</th><th>파일</th><th>SHA-256</th><th>업로드</th><th>메모</th><th>사용</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var e in Store.List())
+                {
+                    var jobs = JobSvc.List().Where(j => j.FirmwareId == e.Id).ToList();
+                    var active = jobs.Where(j => j.State is JobState.Scheduled or JobState.Running).ToList();
+                    var dup = Store.List().Count(x => x.Kind == e.Kind && x.Version == e.Version) > 1;
+                    <tr>
+                        <td>@(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")</td>
+                        <td><b>@e.Version</b> @(dup ? "⚠" : "")</td>
+                        <td>@e.Project</td>
+                        <td class="small wrap">@foreach (var f in e.Files) { <a href="fw/@e.Id/@f.FileName" title="다운로드">@f.FileName</a> <span class="muted">(@f.Size.ToString("N0") B)</span> }</td>
+                        <td class="mono small" title="@(e.Files.FirstOrDefault()?.Sha256)">@(e.Files.FirstOrDefault()?.Sha256[..8].ToLowerInvariant())…</td>
+                        <td>@e.UploadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
+                        <td class="small wrap">@e.Notes</td>
+                        <td class="small">@(active.Count > 0 ? $"진행·예약 {active.Count}" : jobs.Count > 0 ? $"작업 {jobs.Count}건" : "")</td>
+                        <td><button @onclick="() => Delete(e)" disabled="@(active.Count > 0)" title="@(active.Count > 0 ? "예약·실행 중인 작업이 쓰는 펌웨어입니다 — 작업을 먼저 취소" : "")">삭제</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        </div>
+        @if (Store.List().GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="muted small">⚠ 같은 종류·버전이 여러 개 있습니다. 작업 만들 때 헷갈리지 않도록 오래된 것을 지우세요.</p> }
+    }
 </section>
 
 @code {
-    string kind = "Dsp", version = "", project = "", notes = "";
-    IBrowserFile? fileDsp, fileEsp;
+    string kind = "Dsp", version = "", notes = "";
+    IBrowserFile? file;
     bool busy, err;
-    string? msg;
+    string? msg, warn;
 
     async Task Upload()
     {
-        busy = true; msg = null; err = false;
+        if (file is null) return;
+        busy = true; msg = null; warn = null; err = false;
+        var k = kind == "Dsp" ? FirmwareKind.Dsp : FirmwareKind.Esp;
         try
         {
-            var files = new List<(string, string, Stream)>();
             const long max = 64L * 1024 * 1024;
-            if (kind == "Dsp") { if (fileDsp is not null) files.Add(("dspfw", fileDsp.Name, fileDsp.OpenReadStream(max))); }
-            else if (fileEsp is not null) files.Add(("esp", fileEsp.Name, fileEsp.OpenReadStream(max)));
-            if (files.Count == 0) { msg = "파일을 선택하세요"; err = true; return; }
-            var e = await Store.AddAsync(kind == "Dsp" ? FirmwareKind.Dsp : FirmwareKind.Esp, version, project, notes, files);
-            foreach (var (_, _, s) in files) s.Dispose();
-            msg = $"등록: {e.Kind} {e.Version} — {e.FilesText}";
-            fileDsp = fileEsp = null;
+            await using var s = file.OpenReadStream(max);
+            var e = await Store.AddAsync(k, version, "", notes, [(k == FirmwareKind.Dsp ? "dspfw" : "esp", file.Name, s)]);
+            msg = $"등록: {(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} — {e.FilesText}";
+            var dups = Store.List().Count(x => x.Kind == e.Kind && x.Version == e.Version) - 1;
+            if (dups > 0) warn = $"같은 버전 {e.Version} 이 이미 {dups}개 등록되어 있습니다 — 내용이 같다면 하나만 남기세요.";
+            file = null; version = ""; notes = "";
         }
         catch (Exception ex) { msg = ex.Message; err = true; }
         finally { busy = false; }
     }
 
-    void Delete(string id)
+    async Task Delete(FirmwareEntry e)
     {
-        if (JobSvc.List().Any(j => j.FirmwareId == id && j.State is JobState.Scheduled or JobState.Running)) { msg = "예약·실행 중인 작업이 쓰는 펌웨어입니다"; err = true; return; }
-        Store.Delete(id);
+        if (JobSvc.List().Any(j => j.FirmwareId == e.Id && j.State is JobState.Scheduled or JobState.Running)) { msg = "예약·실행 중인 작업이 쓰는 펌웨어입니다"; err = true; return; }
+        if (!await JS.InvokeAsync<bool>("confirm", $"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
+        Store.Delete(e.Id);
+        msg = null;
     }
 }

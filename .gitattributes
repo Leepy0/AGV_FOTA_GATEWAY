@@ -1,0 +1,2 @@
+# 배치 파일은 한국어 Windows cmd 용 CP949 — 깃에서 텍스트 변환·재인코딩 금지
+deploy/*.bat -text

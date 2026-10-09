@@ -40,7 +40,9 @@ public sealed class AgvRegistry
             if (a.LastSeq.TryGetValue(type, out var last))
             {
                 var expect = (ushort)(last + 1);
-                if (seq != expect && seq != 0) loss = (ushort)(seq - expect);
+                var diff = (ushort)(seq - expect);
+                // 뒤로 간 번호(diff 가 32768 이상)는 브리지 재부팅으로 0 부터 다시 시작한 것 — 손실이 아니다
+                if (seq != expect && diff < 32768) loss = diff;
             }
             a.LastSeq[type] = seq;
             return loss;

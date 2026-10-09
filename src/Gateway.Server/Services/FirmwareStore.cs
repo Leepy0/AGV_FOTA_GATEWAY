@@ -72,6 +72,8 @@ public sealed class FirmwareStore
                 await data.CopyToAsync(ms, ct);
                 var bytes = ms.ToArray();
                 string outName = SafeName(Path.GetFileName(name));
+                // 한글 등으로 이름이 거의 사라지면 종류·버전으로 이름을 만든다 (버전은 파일을 읽은 뒤 확정되므로 자리만 잡고 아래서 바꿈)
+                bool renameByVersion = Path.GetFileNameWithoutExtension(outName).Trim('_').Length < 3;
                 if (kind == FirmwareKind.Dsp)
                 {
                     var info = DspfwImage.Parse(bytes) ?? throw new InvalidOperationException($"{name}: .dspfw 형식이 아니거나 CRC 가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)");
@@ -88,6 +90,11 @@ public sealed class FirmwareStore
                     else if (e.Version != info.Version) throw new InvalidOperationException($"입력한 버전 {e.Version} 과 이미지 버전 {info.Version} 이 다릅니다");
                     if (string.IsNullOrEmpty(e.Notes)) e.Notes = $"빌드 {info.BuildDate}, IDF {info.IdfVersion}";
                     e.Files.Add(new FirmwareFile { Slot = "esp", FileName = outName, Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) });
+                }
+                if (renameByVersion)
+                {
+                    outName = $"{(kind == FirmwareKind.Dsp ? "agv_dsp" : "agv_wifi_bridge")}_{SafeName(e.Version)}{(kind == FirmwareKind.Dsp ? ".dspfw" : ".bin")}";
+                    e.Files[^1].FileName = outName;
                 }
                 await File.WriteAllBytesAsync(Path.Combine(dir, outName), bytes, ct);
             }
@@ -113,7 +120,7 @@ public sealed class FirmwareStore
     /// <summary>파일명을 ASCII 안전 문자로 정리 (URL·배치 호환, 경로 조작 방지)</summary>
     public static string SafeName(string name)
     {
-        var cleaned = System.Text.RegularExpressions.Regex.Replace(name, @"[^A-Za-z0-9._-]", "_").Trim('.', '_');
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(name, @"[^A-Za-z0-9._-]+", "_").Trim('.', '_');
         return string.IsNullOrEmpty(cleaned) ? "firmware.bin" : cleaned;
     }
 

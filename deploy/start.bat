@@ -1,7 +1,8 @@
 @echo off
-:: AGV FOTA Gateway â€” ì½˜ì†”ë¡œ ì‹¤í–‰ (ì°½ì„ ë‹«ìœ¼ë©´ ì¢…ë£Œ). ì„œë¹„ìŠ¤ ë“±ë¡ì€ install-service.bat
+:: Encoding: CP949 (EUC-KR) - Korean Windows cmd reads batch files in the OEM code page; keep this file CP949, not UTF-8.
+:: AGV FOTA Gateway - ÄÜ¼Ö·Î ½ÇÇà (Ã¢À» ´İÀ¸¸é Á¾·á). ¼­ºñ½º µî·ÏÀº install-service.bat
 cd /d "%~dp0"
-echo AGV FOTA Gateway ë¥¼ ì‹œì‘í•©ë‹ˆë‹¤. ë¸Œë¼ìš°ì €: http://localhost:8080
+echo AGV FOTA Gateway ¸¦ ½ÃÀÛÇÕ´Ï´Ù. ºê¶ó¿ìÀú: http://localhost:8080
 start "" http://localhost:8080
 AgvFotaGateway.exe
 pause

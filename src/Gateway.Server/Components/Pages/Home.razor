@@ -1,54 +1,162 @@
 @page "/"
 @inject AgvRegistry Reg
+@inject BridgeUdpService Link
 @inject IOptions<GatewayOptions> Opt
 @implements IDisposable
 
+<PageTitle>호기 현황 · AGV FOTA</PageTitle>
 <h1>호기 현황</h1>
-<p class="muted">브리지 heartbeat 기준. 메인보드 열은 브리지 0.5.0 이상이 앱에 물어본 버전(앱/부트로더)과 스테이징 상태입니다.</p>
+<p class="muted">브리지 heartbeat 기준(@(Opt.Value.OfflineAfterSec)초 넘게 없으면 오프라인). 메인보드 열은 브리지 0.5.0 이상이 앱에 물어본 버전(앱 / 부트로더)과 스테이징 상태입니다. 행을 누르면 상세가 열립니다.</p>
 
-@if (agvs.Count == 0)
+@if (all.Count == 0)
 {
-    <div class="empty">아직 보이는 호기가 없습니다. 브리지의 <code>server</code> IP 가 이 PC 이고 UDP @Opt.Value.UdpPort 이 열려 있는지 확인하세요.</div>
+    <div class="empty">아직 보이는 호기가 없습니다. 브리지의 <code>server</code> IP 가 이 PC 이고 UDP @Opt.Value.UdpPort 이 열려 있는지 확인하세요 (<a href="settings">설정</a> 에서 이 PC 의 IP 를 볼 수 있습니다).</div>
 }
 else
 {
-    <table class="grid">
-        <thead>
-            <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
-        </thead>
-        <tbody>
-            @foreach (var a in agvs)
+    <div class="stats">
+        <button class="stat @(filter == "all" ? "on" : "")" @onclick='() => filter = "all"'><b>@all.Count</b> 전체</button>
+        <button class="stat ok @(filter == "on" ? "on" : "")" @onclick='() => filter = "on"'><b>@all.Count(a => On(a))</b> 온라인</button>
+        <button class="stat bad @(filter == "off" ? "on" : "")" @onclick='() => filter = "off"'><b>@all.Count(a => !On(a))</b> 오프라인</button>
+        @if (pending > 0) { <button class="stat warn @(filter == "pending" ? "on" : "")" @onclick='() => filter = "pending"' title="재부팅 후 아직 확정되지 않은 브리지 OTA (PING 으로 확정됨)"><b>@pending</b> OTA 미확정</button> }
+        @if (busyDsp > 0) { <button class="stat warn @(filter == "dsp" ? "on" : "")" @onclick='() => filter = "dsp"'><b>@busyDsp</b> 메인보드 작업 중</button> }
+        <span class="stat-group">
+            <span class="muted small">브리지 fw</span>
+            @foreach (var g in all.Where(On).GroupBy(a => a.Status?.Fw is { Length: > 0 } f ? f : "?").OrderByDescending(g => g.Count()))
             {
-                var on = a.Online(Opt.Value.OfflineAfterSec);
-                <tr class="@(on ? "" : "off")">
-                    <td><b>@a.Id.ToString("D2")</b></td>
-                    <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : $"{(int)(DateTime.UtcNow - a.LastSeen).TotalSeconds}s 전")</td>
-                    <td>@a.EndPoint</td>
-                    <td>@a.Status?.Fw</td>
-                    <td>@a.Status?.Part</td>
-                    <td>@a.Status?.Ota</td>
-                    <td>@a.Status?.Cfg @(a.Status?.SetupAp == true ? "(AP)" : "")</td>
-                    <td>@a.Status?.Rssi</td>
-                    <td>@(a.Status is null || string.IsNullOrEmpty(a.Status.DspState) ? "-" : $"{(a.Status.HasDsp ? a.Status.Dsp : "?")} / {a.Status.DspBoot}")@(a.Status?.DspState == "programming" ? " ⟳" : "")</td>
-                    <td>@(a.Status?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {a.Status.StagedJob})" : a.Status?.DspState is "downloading" ? "받는 중" : "")</td>
-                    <td>@a.MainUp / @a.MainDown</td>
-                    <td>@a.SeqLoss</td>
-                    <td class="mono small" title="@a.StatusRaw">@a.LastFrame</td>
-                </tr>
+                <button class="stat @(filter == "fw:" + g.Key ? "on" : "")" @onclick='() => filter = "fw:" + g.Key'>@g.Key <b>×@g.Count()</b></button>
             }
-        </tbody>
-    </table>
+        </span>
+        <span class="stat-group">
+            <span class="muted small">메인보드</span>
+            @foreach (var g in all.Where(On).GroupBy(a => a.Status is { } s && !string.IsNullOrEmpty(s.DspState) ? (s.HasDsp ? s.Dsp : "?") : "-").OrderByDescending(g => g.Count()))
+            {
+                <button class="stat @(filter == "dsp:" + g.Key ? "on" : "")" @onclick='() => filter = "dsp:" + g.Key' title="@(g.Key == "-" ? "브리지가 메인보드 OTA 를 지원하지 않음 (0.5.0 미만)" : g.Key == "?" ? "브리지가 메인보드 앱에서 버전 응답을 못 받음" : "")">@g.Key <b>×@g.Count()</b></button>
+            }
+        </span>
+        <input class="search" @bind="search" @bind:event="oninput" placeholder="검색: 호기·IP·버전" />
+    </div>
+
+    <div class="table-wrap">
+        <table class="grid clickable">
+            <thead>
+                <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var a in Visible())
+                {
+                    var on = On(a);
+                    var st = a.Status;
+                    <tr class="@(on ? "" : "off") @(sel == a.Id ? "sel" : "")" @onclick="() => sel = sel == a.Id ? null : a.Id">
+                        <td><b>@a.Id.ToString("D2")</b></td>
+                        <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : Ago(a.LastSeen))</td>
+                        <td class="mono small">@a.EndPoint?.Address</td>
+                        <td>@st?.Fw</td>
+                        <td>@st?.Part</td>
+                        <td class="@(st?.Ota == "pending" ? "warn-text" : "")" title="@(st?.Ota == "pending" ? "재부팅 후 미확정 — 서버 PING 을 받으면 valid 로 확정" : "")">@st?.Ota</td>
+                        <td>@st?.Cfg @(st?.SetupAp == true ? "(AP)" : "")</td>
+                        <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null ? "" : st.Rssi)</td>
+                        <td>@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : "")</td>
+                        <td>@(st?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {st.StagedJob})" : st?.DspState is "downloading" ? "받는 중" : "")</td>
+                        <td>@a.MainUp / @a.MainDown</td>
+                        <td class="@(a.SeqLoss > 0 ? "warn-text" : "")">@a.SeqLoss</td>
+                        <td class="mono small ellipsis" title="@a.LastFrame">@a.LastFrame</td>
+                    </tr>
+                    @if (sel == a.Id)
+                    {
+                        <tr class="detail"><td colspan="13">
+                            <div class="detail-box">
+                                <div class="row-buttons">
+                                    <b>@a.Id.ToString("D2") 호기</b>
+                                    <button @onclick='() => Do(a.Id, Link.SendInfoRequest, "INFO 요청")' @onclick:stopPropagation>INFO 요청</button>
+                                    <button @onclick='() => Do(a.Id, Link.SendPing, "PING")' @onclick:stopPropagation>PING</button>
+                                    <a href="trace?agv=@a.Id" @onclick:stopPropagation>통신 로그</a>
+                                    <a href="jobs?agv=@a.Id" @onclick:stopPropagation>이 호기에 배포</a>
+                                    @if (msg is not null) { <span class="msg">@msg</span> }
+                                </div>
+                                @if (st is not null)
+                                {
+                                    <dl class="kv">
+                                        <dt>마지막 수신</dt><dd>@a.LastSeen.ToLocalTime().ToString("HH:mm:ss") (@Ago(a.LastSeen))</dd>
+                                        <dt>가동</dt><dd>@Up(st.UpSeconds)</dd>
+                                        <dt>Wi-Fi</dt><dd>ch @st.Channel · @st.Bssid · 끊김 @(st.Disconnects)회 · RSSI @st.Rssi (@Rssi(st.Rssi).text)</dd>
+                                        <dt>주소</dt><dd class="mono">@st.Ip @(st.Mac.Length > 0 ? $"({st.Mac})" : "") ← @a.EndPoint</dd>
+                                        <dt>UART</dt><dd>MAIN rx @st.MainRx / tx @st.MainTx · RFID rx @st.RfidRx · 오류 @st.UartErrors</dd>
+                                        <dt>네트</dt><dd>오프라인 @st.NetOffline · 오류 @st.NetErrors · heap @st.Heap.ToString("N0")</dd>
+                                        <dt>메인보드</dt><dd>@(string.IsNullOrEmpty(st.DspState) ? "지원 안 함 (브리지 0.5.0 미만)" : $"앱 {(st.HasDsp ? st.Dsp : "?")} · 부트로더 {st.DspBoot} · 빌드 {st.DspBuild} · 상태 {st.DspState}")</dd>
+                                    </dl>
+                                }
+                                <pre class="log small">@Pretty(a.StatusRaw)</pre>
+                            </div>
+                        </td></tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (Visible().Count == 0) { <div class="empty">조건에 맞는 호기가 없습니다.</div> }
 }
 
 @code {
-    IReadOnlyList<AgvState> agvs = [];
+    IReadOnlyList<AgvState> all = [];
+    string filter = "all", search = "";
+    int? sel;
+    string? msg;
+    int pending, busyDsp;
     System.Threading.Timer? timer;
+
     protected override void OnInitialized()
     {
         Reg.Changed += OnChanged;
         timer = new System.Threading.Timer(_ => OnChanged(), null, 2000, 2000);   // 오프라인 표시 갱신
-        agvs = Reg.Snapshot();
+        Load();
     }
-    void OnChanged() => InvokeAsync(() => { agvs = Reg.Snapshot(); StateHasChanged(); });
+    void Load()
+    {
+        all = Reg.Snapshot();
+        pending = all.Count(a => On(a) && a.Status?.Ota == "pending");
+        busyDsp = all.Count(a => On(a) && a.Status?.DspState is "downloading" or "programming");
+    }
+    void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
     public void Dispose() { Reg.Changed -= OnChanged; timer?.Dispose(); }
+
+    bool On(AgvState a) => a.Online(Opt.Value.OfflineAfterSec);
+
+    List<AgvState> Visible()
+    {
+        IEnumerable<AgvState> q = all;
+        q = filter switch
+        {
+            "on" => q.Where(On), "off" => q.Where(a => !On(a)),
+            "pending" => q.Where(a => a.Status?.Ota == "pending"),
+            "dsp" => q.Where(a => a.Status?.DspState is "downloading" or "programming"),
+            _ when filter.StartsWith("fw:") => q.Where(a => (a.Status?.Fw is { Length: > 0 } f ? f : "?") == filter[3..]),
+            _ when filter.StartsWith("dsp:") => q.Where(a => (a.Status is { } s && !string.IsNullOrEmpty(s.DspState) ? (s.HasDsp ? s.Dsp : "?") : "-") == filter[4..]),
+            _ => q,
+        };
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim();
+            q = q.Where(a => a.Id.ToString("D2").Contains(s) || (a.EndPoint?.Address.ToString().Contains(s) ?? false)
+                          || (a.Status?.Fw.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false) || (a.Status?.Dsp.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                          || (a.Status?.Cfg.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+        return q.ToList();
+    }
+
+    void Do(int agv, Func<int, bool> f, string what) => msg = f(agv) ? $"{what} 전송" : $"{what} 실패 (호기 주소 없음)";
+
+    static string Ago(DateTime utc)
+    {
+        var s = (DateTime.UtcNow - utc).TotalSeconds;
+        return s < 60 ? $"{(int)s}초 전" : s < 3600 ? $"{(int)(s / 60)}분 전" : s < 86400 ? $"{(int)(s / 3600)}시간 전" : $"{(int)(s / 86400)}일 전";
+    }
+    static string Up(long sec) => sec < 3600 ? $"{sec / 60}분" : sec < 86400 ? $"{sec / 3600}시간 {sec % 3600 / 60}분" : $"{sec / 86400}일 {sec % 86400 / 3600}시간";
+    static (string cls, string text) Rssi(int? r) => r is null or 0 ? ("", "") : r >= -60 ? ("ok-text", "좋음") : r >= -70 ? ("", "보통") : r >= -80 ? ("warn-text", "약함") : ("bad-text", "매우 약함 — AP 위치 확인");
+    static string Pretty(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "(heartbeat 없음)";
+        try { using var d = System.Text.Json.JsonDocument.Parse(raw); return System.Text.Json.JsonSerializer.Serialize(d, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }); }
+        catch (System.Text.Json.JsonException) { return raw; }
+    }
 }

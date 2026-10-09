@@ -1,17 +1,24 @@
 @echo off
-:: AGV FOTA Gateway Î•º Windows ÏÑúÎπÑÏä§Î°ú Îì±Î°ùÌïòÍ≥† ÏãúÏûë (Í¥ÄÎ¶¨Ïûê Í∂åÌïú ÌïÑÏöî). Î∂ÄÌåÖ Ïãú ÏûêÎèô ÏãúÏûë.
-:: Î∞©ÌôîÎ≤Ω: HTTP 8080, Î∏åÎ¶¨ÏßÄ UDP 50000/50001 ÌóàÏö©
+:: Encoding: CP949 (EUC-KR) - Korean Windows cmd reads batch files in the OEM code page; keep this file CP949, not UTF-8.
+:: AGV FOTA Gateway ∏¶ Windows º≠∫ÒΩ∫∑Œ µÓ∑œ«œ∞Ì Ω√¿€ (∞¸∏Æ¿⁄ ±««— « ø‰). ∫Œ∆√ Ω√ ¿⁄µø Ω√¿€.
+:: πÊ»≠∫Æ: HTTP 8080, ∫Í∏Æ¡ˆ UDP 50000/50001 «„øÎ
 setlocal
 cd /d "%~dp0"
-net session >nul 2>&1 || (echo Í¥ÄÎ¶¨Ïûê Í∂åÌïúÏúºÎ°ú Ïã§ÌñâÌïòÏÑ∏Ïöî ^(Ïö∞ÌÅ¥Î¶≠ - Í¥ÄÎ¶¨Ïûê Í∂åÌïúÏúºÎ°ú Ïã§Ìñâ^) & pause & exit /b 1)
+net session >nul 2>&1 || (echo ∞¸∏Æ¿⁄ ±««—¿∏∑Œ Ω««‡«œººø‰ ^(øÏ≈¨∏Ø - ∞¸∏Æ¿⁄ ±««—¿∏∑Œ Ω««‡^) & pause & exit /b 1)
 
 set NAME=AgvFotaGateway
 set EXE=%~dp0AgvFotaGateway.exe
+if not exist "%EXE%" (echo AgvFotaGateway.exe ∞° ¿Ã ∆˙¥ıø° æ¯Ω¿¥œ¥Ÿ: %~dp0 & pause & exit /b 1)
+echo %~dp0 | findstr /I /C:"Program Files" >nul && (
+  echo [∞Ê∞Ì] Program Files æ∆∑°ø°º≠¥¬ º≠∫ÒΩ∫∞° data ∆˙¥ıøÕ æ˜µ•¿Ã∆Æ ∆ƒ¿œ¿ª æ≤¡ˆ ∏¯«“ ºˆ ¿÷Ω¿¥œ¥Ÿ.
+  echo        C:\AgvFotaGateway ∞∞¿∫ ¿œπ› ∆˙¥ıø° «ÆæÓº≠ º≥ƒ°«œ¥¬ ∞Õ¿ª ±«¿Â«’¥œ¥Ÿ. ∞Ëº”«œ∑¡∏È æ∆π´ ≈∞≥™ ¥©∏£ººø‰.
+  pause >nul
+)
 
-sc query %NAME% >nul 2>&1 && (echo Í∏∞Ï°¥ ÏÑúÎπÑÏä§ Ï§ëÏßÄ & sc stop %NAME% >nul 2>&1 & timeout /t 3 >nul & sc delete %NAME% >nul & timeout /t 2 >nul)
+sc query %NAME% >nul 2>&1 && (echo ±‚¡∏ º≠∫ÒΩ∫ ¡ﬂ¡ˆ & sc stop %NAME% >nul 2>&1 & timeout /t 3 >nul & sc delete %NAME% >nul & timeout /t 2 >nul)
 
 sc create %NAME% binPath= "\"%EXE%\"" start= auto DisplayName= "AGV FOTA Gateway" || (pause & exit /b 1)
-sc description %NAME% "AGV Wi-Fi Î∏åÎ¶¨ÏßÄ / DSP ÌéåÏõ®Ïñ¥ Î¨¥ÏÑ† ÏóÖÎç∞Ïù¥Ìä∏ ÏÑúÎ≤Ñ (http://localhost:8080)"
+sc description %NAME% "AGV Wi-Fi ∫Í∏Æ¡ˆ / DSP ∆ﬂø˛æÓ π´º± æ˜µ•¿Ã∆Æ º≠πˆ (http://localhost:8080)"
 sc failure %NAME% reset= 86400 actions= restart/5000/restart/10000/restart/30000
 
 netsh advfirewall firewall delete rule name="AGV FOTA Gateway HTTP" >nul 2>&1
@@ -21,5 +28,5 @@ netsh advfirewall firewall add rule name="AGV FOTA Gateway Bridge UDP" dir=in ac
 
 sc start %NAME%
 timeout /t 3 >nul
-sc query %NAME% | findstr RUNNING >nul && (echo. & echo ÏÑúÎπÑÏä§ Ïã§Ìñâ Ï§ë: http://localhost:8080 & start "" http://localhost:8080) || (echo ÏÑúÎπÑÏä§ ÏãúÏûë Ïã§Ìå® - Ïù¥Î≤§Ìä∏ Î∑∞Ïñ¥ ÎòêÎäî data\logs ÌôïÏù∏)
+sc query %NAME% | findstr RUNNING >nul && (echo. & echo º≠∫ÒΩ∫ Ω««‡ ¡ﬂ: http://localhost:8080 & start "" http://localhost:8080) || (echo º≠∫ÒΩ∫ Ω√¿€ Ω«∆– - ¿Ã∫•∆Æ ∫‰æÓ ∂«¥¬ data\logs »Æ¿Œ)
 pause

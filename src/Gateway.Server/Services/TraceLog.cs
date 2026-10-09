@@ -25,5 +25,7 @@ public sealed class TraceLog
             });
     }
 
+    public void Clear() { lock (_lines) _lines.Clear(); }
+
     public string[] Snapshot() { lock (_lines) return _lines.Reverse().ToArray(); }
 }

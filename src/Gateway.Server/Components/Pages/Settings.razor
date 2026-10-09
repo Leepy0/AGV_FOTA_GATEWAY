@@ -1,0 +1,85 @@
+@page "/settings"
+@using System.Net.NetworkInformation
+@using System.Net.Sockets
+@inject IOptions<GatewayOptions> Gw
+@inject IOptions<UpdateOptions> Up
+@inject IOptions<AcsApiOptions> AcsApi
+@inject UpdateService Upd
+@inject BridgeUdpService Link
+@inject JobService Jobs
+@inject FileLoggerProvider Logs
+@inject AcsRelayService Acs
+@inject AcsPositionPushService Push
+
+<PageTitle>설정 · AGV FOTA</PageTitle>
+<h1>설정</h1>
+<p class="muted">현재 적용된 값입니다. 바꾸려면 <code>@SettingsPath</code> 를 고치고 서비스를 다시 시작하세요 (<code>sc stop AgvFotaGateway &amp; sc start AgvFotaGateway</code> 또는 서비스 관리자). 업데이트해도 appsettings.json 은 유지됩니다.</p>
+
+<section class="card">
+    <h2>서버</h2>
+    <dl class="kv">
+        <dt>버전</dt><dd>v@(Upd.CurrentText) · @Upd.ChannelName @(Upd.Commit is null ? "" : $"({Upd.Commit})")</dd>
+        <dt>실행 파일</dt><dd class="mono">@AppContext.BaseDirectory</dd>
+        <dt>데이터</dt><dd class="mono">@Gw.Value.DataDir <span class="muted">(펌웨어 firmware\, 작업 jobs.json, 업데이트 update\)</span></dd>
+        <dt>로그</dt><dd class="mono">@Logs.Directory <span class="muted">(gateway-날짜.log, 14일 보관)</span></dd>
+        <dt>HTTP</dt><dd>포트 @Jobs.HttpPort · 이 PC 주소: @foreach (var ip in LocalIps()) { <code>http://@ip:@Jobs.HttpPort</code> }</dd>
+        <dt>브리지 UDP</dt><dd>:@Gw.Value.UdpPort (RFID :@(Gw.Value.RfidPort > 0 ? Gw.Value.RfidPort : "사용 안 함")) @(Link.BindError is null ? "" : $"⚠ {Link.BindError}")</dd>
+        <dt>오프라인 판정</dt><dd>heartbeat @(Gw.Value.OfflineAfterSec)초 없음</dd>
+        <dt>OTA 파일 주소</dt><dd>@(string.IsNullOrEmpty(Gw.Value.PublicBaseUrl) ? "자동 (호기 쪽 NIC 의 IP + HTTP 포트)" : Gw.Value.PublicBaseUrl) <span class="muted">— 브리지가 펌웨어를 받아 가는 주소. NIC 이 여러 개라 잘못 잡히면 PublicBaseUrl 로 고정</span></dd>
+        <dt>실행 환경</dt><dd>@Environment.OSVersion · .NET @Environment.Version · @(Environment.UserInteractive ? "콘솔" : "서비스") · 시작 @System.Diagnostics.Process.GetCurrentProcess().StartTime.ToString("MM-dd HH:mm")</dd>
+    </dl>
+</section>
+
+<section class="card">
+    <h2>ACS 중계 (TCP, 기존 ZigBee 게이트웨이 대체)</h2>
+    <dl class="kv">
+        <dt>상태</dt><dd>@(Acs.Enabled ? (Acs.Connected ? $"연결 ({Acs.ConnectedAt?.ToLocalTime():MM-dd HH:mm} 부터) · ACS로 {Acs.ToAcs} / ACS에서 {Acs.FromAcs}" : "끊김 — 재접속 중") : "사용 안 함 (Gateway.Acs.Enabled=false)")</dd>
+        <dt>설정</dt><dd>@Gw.Value.Acs.Mode @Gw.Value.Acs.Host:@Gw.Value.Acs.Port · 재접속 @(Gw.Value.Acs.ReconnectSec)초 · 상향은 E/A 프레임만 전달</dd>
+    </dl>
+</section>
+
+<section class="card">
+    <h2>ACS 위치 보고 (REST)</h2>
+    <dl class="kv">
+        <dt>상태</dt><dd>@(Push.Enabled ? (Push.LogOnly ? "로그만 (LogOnly=true, 실제 전송 안 함)" : Push.FailStreak > 0 ? $"오류 연속 {Push.FailStreak}회" : "발행 중") : "사용 안 함 (AcsApi.Enabled=false)")</dd>
+        <dt>대상</dt><dd class="mono">@Push.Target</dd>
+        <dt>인증</dt><dd>@AcsApi.Value.AuthType @(AcsApi.Value.AuthType != "None" ? (string.IsNullOrEmpty(AcsApi.Value.AuthValue) ? "⚠ 값 없음 (AcsApi__AuthValue 환경변수 또는 appsettings)" : "값 설정됨") : "")</dd>
+        <dt>주기</dt><dd>@(AcsApi.Value.IntervalMs) ms · @(AcsApi.Value.OnlyChanged ? "바뀐 호기만" : "매번 전체") · @(AcsApi.Value.PerAgv ? "호기별 요청" : "묶음 요청") · 타임아웃 @(AcsApi.Value.TimeoutMs) ms · 최대 백오프 @(AcsApi.Value.MaxBackoffSec)초</dd>
+        <dt>최근</dt><dd>@(Push.LastTry is null ? "-" : $"{Push.LastTry?.ToLocalTime():HH:mm:ss} {Push.LastResult}") · 성공 @(Push.SentCount)회 · 마지막 성공 @(Push.LastOk?.ToLocalTime().ToString("HH:mm:ss") ?? "-")</dd>
+    </dl>
+    <p class="muted small">스키마가 정해지면 <code>Gateway.Core/Acs/AcsPositionMapper.cs</code> 와 <code>docs/ACS_API.md</code> 를 맞춥니다. 미리보기: <a href="api/acs/preview" target="_blank">/api/acs/preview</a></p>
+</section>
+
+<section class="card">
+    <h2>서버 업데이트</h2>
+    <dl class="kv">
+        <dt>확인 주소</dt><dd class="mono">@Upd.ManifestUrl</dd>
+        <dt>주기</dt><dd>@(Up.Value.Enabled ? $"시작 {Up.Value.FirstCheckDelaySec}초 후, 이후 {(Up.Value.CheckIntervalMin > 0 ? $"{Up.Value.CheckIntervalMin}분마다" : "자동 확인 없음")}" : "사용 안 함") · @(Up.Value.AutoApply ? "자동 적용 (배포 작업 없을 때)" : "수동 적용")</dd>
+        <dt>자체 교체</dt><dd>@(Upd.CanSelfUpdate ? "가능" : Upd.Channel == "local" ? "로컬 빌드는 교체 안 함" : "Windows 에서만")</dd>
+        <dt>GitHub 토큰</dt><dd>@(string.IsNullOrEmpty(Up.Value.GitHubToken) ? "없음 (저장소가 비공개면 매니페스트 확인이 404 — 공개 전환 또는 사내 BaseUrl 필요)" : "설정됨")</dd>
+    </dl>
+</section>
+
+<section class="card">
+    <h2>REST API</h2>
+    <p class="muted small">화면과 같은 서비스를 쓰는 스크립트용 API 입니다. <code>GET /api/agvs</code> 호기 · <code>GET /api/firmware</code> · <code>POST /api/firmware</code>(multipart kind/version/notes/file) · <code>GET|POST /api/jobs</code> · <code>POST /api/jobs/{id}/cancel</code> · <code>POST /api/agvs/{n}/send|info|cfg</code> · <code>GET /api/positions</code> · <code>GET /api/update</code> · <code>GET /api/health</code>. 자세한 것은 <code>docs/INTERFACES.md</code>.</p>
+</section>
+
+@code {
+    static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    static IEnumerable<string> LocalIps()
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                    if (ua.Address.AddressFamily == AddressFamily.InterNetwork) list.Add(ua.Address.ToString());
+            }
+        }
+        catch { }
+        return list.Count > 0 ? list : ["localhost"];
+    }
+}

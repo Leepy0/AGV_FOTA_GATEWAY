@@ -317,6 +317,7 @@ public sealed class UpdateService : BackgroundService
         set SVC=%5
         set LOG=%~dp0apply.log
         set EXE=%APP%\AgvFotaGateway.exe
+        cd /d "%~dp0"
         echo [%date% %time%] %MODE% %STAGE% -^> %APP% >> "%LOG%"
         set WASSVC=0
         sc query %SVC% 2>nul | findstr /C:"RUNNING" >nul && (set WASSVC=1 & sc stop %SVC% >> "%LOG%" 2>&1)
@@ -336,7 +337,8 @@ public sealed class UpdateService : BackgroundService
         ) else (
             if exist "%EXE%.old" del /f /q "%EXE%.old"
             ren "%EXE%" AgvFotaGateway.exe.old >> "%LOG%" 2>&1
-            xcopy "%STAGE%\*" "%APP%\" /E /Y /I /EXCLUDE:%~dp0exclude.txt >> "%LOG%" 2>&1
+            rem xcopy /EXCLUDE: 는 따옴표 경로를 받지 못하므로 (경로에 공백이 있으면 실패) 스크립트 폴더로 이동해 상대 경로를 쓴다
+            xcopy "%STAGE%\*" "%APP%\" /E /Y /I /EXCLUDE:exclude.txt >> "%LOG%" 2>&1
             if not exist "%EXE%" (echo [%date% %time%] copy failed, restoring .old >> "%LOG%" & ren "%EXE%.old" AgvFotaGateway.exe)
         )
         if "%WASSVC%"=="1" (

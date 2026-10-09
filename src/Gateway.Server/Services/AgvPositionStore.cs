@@ -15,12 +15,15 @@ public sealed class AgvPositionStore
     readonly AgvRegistry _reg;
     readonly int _offlineSec;
     long _ver;
+    readonly Timer _timer;
     public event Action? Changed;
 
     public AgvPositionStore(AgvRegistry reg, IOptions<GatewayOptions> opt)
     {
         _reg = reg; _offlineSec = opt.Value.OfflineAfterSec;
         reg.Changed += OnRegistryChanged;
+        // Registry.Changed 는 패킷이 올 때만 발생하므로, 호기가 (전부) 조용해져도 LOST 로 넘어가도록 1초마다 재평가
+        _timer = new Timer(_ => { try { OnRegistryChanged(); } catch { } }, null, 1000, 1000);
     }
 
     public void Set(AgvPosition p)

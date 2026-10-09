@@ -50,7 +50,9 @@ public sealed class DspOtaClient : IDisposable
 
     public void Dispose() => _sub.Dispose();
 
-    static string Js(string s) => JsonSerializer.Serialize(s);
+    // 브리지의 최소 JSON 파서는 \uXXXX 를 풀지 못하므로 + & < > ' 와 비ASCII 는 그대로 둔다 (" \ 제어문자만 이스케이프)
+    static readonly JsonSerializerOptions JsOpt = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+    static string Js(string s) => JsonSerializer.Serialize(s, JsOpt);
 
     /// <summary>이미지를 브리지에 받아 두게 한다. "staged" 까지 기다린다</summary>
     public async Task StageAsync(string url, DspfwInfo img, long job, Action<DspOtaResult>? progress = null, CancellationToken ct = default)

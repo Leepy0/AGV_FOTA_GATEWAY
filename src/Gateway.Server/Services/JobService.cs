@@ -95,7 +95,7 @@ public sealed class JobService : BackgroundService
         var j = new Job
         {
             Id = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4],
-            Name = string.IsNullOrWhiteSpace(name) ? $"{fw.Kind} {fw.Version}" : name.Trim(),
+            Name = string.IsNullOrWhiteSpace(name) ? $"{(fw.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {fw.Version}" : name.Trim(),
             FirmwareId = fw.Id, Kind = fw.Kind, FirmwareVersion = fw.Version, Targets = t,
             ScheduledAt = scheduledAtUtc, StopOnFailure = stopOnFailure, State = JobState.Scheduled, CreatedAt = DateTime.UtcNow,
             Results = t.Select(a => new TargetResult { Agv = a }).ToList(),
@@ -135,7 +135,9 @@ public sealed class JobService : BackgroundService
     {
         while (!ct.IsCancellationRequested)
         {
-            Job? due;
+            Job? due = null;
+            try
+            {
             lock (_lock)
             {
                 due = _jobs.Where(j => j.State == JobState.Scheduled && (j.ScheduledAt is null || j.ScheduledAt <= DateTime.UtcNow))
@@ -151,11 +153,26 @@ public sealed class JobService : BackgroundService
                 }
             }
             if (due is not null) Notify();
+            }
+            catch (Exception e) { _log.LogError(e, "작업 스케줄러 오류"); }
             try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { break; }
         }
     }
 
     async Task RunJobAsync(Job job, CancellationToken ct)
+    {
+        // 어떤 예외가 나도(저장 실패 등) 작업이 Running 으로 고착되지 않도록 전체를 감싼다
+        try { await RunJobCoreAsync(job, ct); }
+        catch (Exception e)
+        {
+            _log.LogError(e, "job {Id} 실행기 오류", job.Id);
+            foreach (var r in job.Results.Where(r => r.State is TargetState.Running or TargetState.Waiting)) { r.State = TargetState.Failed; r.Message = "실행기 오류: " + e.Message; }
+            job.State = JobState.Failed; job.FinishedAt = DateTime.UtcNow;
+            Persist();
+        }
+    }
+
+    async Task RunJobCoreAsync(Job job, CancellationToken ct)
     {
         _log.LogInformation("job {Id} start: {Kind} {Ver} → {N} agv", job.Id, job.Kind, job.FirmwareVersion, job.Targets.Count);
         var fw = _fw.Get(job.FirmwareId);
@@ -192,8 +209,11 @@ public sealed class JobService : BackgroundService
 
     void Add(TargetResult r, string line)
     {
-        r.Log.Add($"{DateTime.Now:HH:mm:ss} {line}");
-        if (r.Log.Count > 200) r.Log.RemoveAt(0);
+        // 화면·JSON 직렬화가 다른 스레드에서 열거하므로 리스트를 고치지 않고 새 리스트로 바꿔 끼운다 (copy-on-write)
+        var log = new List<string>(r.Log.Count + 1);
+        log.AddRange(r.Log.Count >= 200 ? r.Log.Skip(r.Log.Count - 199) : r.Log);
+        log.Add($"{DateTime.Now:HH:mm:ss} {line}");
+        r.Log = log;
         r.Message = line;
         Notify();
     }
@@ -273,6 +293,11 @@ public sealed class JobService : BackgroundService
     public int HttpPort { get; set; } = 8080;
 
     void Persist() { lock (_lock) Save(); Notify(); }
-    void Save() => File.WriteAllText(_path, JsonSerializer.Serialize(_jobs, Json));
+    void Save()
+    {
+        // 저장 실패(백신이 잠깐 잠금, 디스크 풀)로 서비스 전체가 죽지 않도록 — 메모리 상태는 유지되고 다음 저장 때 다시 쓴다
+        try { File.WriteAllText(_path, JsonSerializer.Serialize(_jobs, Json)); }
+        catch (Exception e) { _log.LogError("jobs.json 저장 실패: {Msg}", e.Message); }
+    }
     void Notify() { try { Changed?.Invoke(); } catch { } }
 }

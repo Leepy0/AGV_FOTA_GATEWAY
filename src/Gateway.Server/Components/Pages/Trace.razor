@@ -1,29 +1,86 @@
 @page "/trace"
 @inject TraceLog Log
 @inject BridgeUdpService Link
-@rendermode InteractiveServer
 @implements IDisposable
 
+<PageTitle>통신 로그 · AGV FOTA</PageTitle>
 <h1>통신 로그</h1>
+<p class="muted">브리지와 주고받는 패킷(최근 300줄, 최신이 위). <code>MAIN&gt;</code> 호기→서버, <code>MAIN&lt;</code> 서버→호기, <code>DSP</code> 메인보드 OTA, <code>CFG</code> 설정, <code>RFID</code> 태그, <code>ACS-API</code> 위치 발행.</p>
+
 <div class="form row">
-    <label>호기 <input @bind="agv" style="width:60px" /></label>
-    <label>프레임 <input @bind="data" placeholder="<STX>W1107C001000 00000<ETX>" style="width:360px" /></label>
-    <button @onclick="Send">MAIN_DOWN 전송</button>
-    <label>설정 명령 <input @bind="cfg" placeholder="cfg | set ip 192.168.10.107 | save | reboot" style="width:300px" /></label>
-    <button @onclick="SendCfg">CFG_CMD 전송</button>
+    <label>호기 필터 <input class="w-sm" @bind="agvFilter" @bind:event="oninput" placeholder="예: 7" /></label>
+    <label>검색 <input class="w-md" @bind="text" @bind:event="oninput" placeholder="MAIN> · DSP · 문자열" /></label>
     <label><input type="checkbox" @bind="paused" /> 멈춤</label>
-    @if (msg is not null) { <span class="msg">@msg</span> }
+    <button @onclick="Clear">지우기</button>
+    <span class="muted small">@shown.Length / @lines.Length 줄</span>
 </div>
-<pre class="log tall">@string.Join("\n", lines)</pre>
+<pre class="log tall">@string.Join("\n", shown)</pre>
+
+<section class="card">
+    <h2>수동 전송</h2>
+    <div class="form row">
+        <label>호기 <input class="w-sm" @bind="agv" /></label>
+        <label>프레임 <input class="w-lg mono" @bind="data" placeholder="W1107C001000 00000 또는 <STX>…<ETX> 전체" /></label>
+        <button @onclick="Send">MAIN_DOWN 전송</button>
+        <label>설정 명령 <input class="w-lg mono" @bind="cfg" placeholder="cfg | set ip 192.168.10.107 | save | reboot" /></label>
+        <button @onclick="SendCfg">CFG_CMD 전송</button>
+        @if (msg is not null) { <span class="msg @(err ? "err" : "")">@msg</span> }
+    </div>
+    <p class="muted small">프레임을 <code>종류·PAN·MSG·호기2자리·본문</code> 로만 적으면 STX·공백·BCC·ETX 를 붙여 보냅니다 (호기 2자리는 프레임 안의 값을 씁니다). <code>&lt;STX&gt;</code> 로 시작하면 적은 그대로 보냅니다.</p>
+</section>
 
 @code {
-    string[] lines = [];
-    string agv = "7", data = "", cfg = "";
+    [SupplyParameterFromQuery] public string? Agv { get; set; }
+
+    string[] lines = [], shown = [];
+    string agv = "7", data = "", cfg = "", agvFilter = "", text = "";
     string? msg;
-    bool paused;
-    protected override void OnInitialized() { Log.Changed += OnChanged; lines = Log.Snapshot(); }
-    void OnChanged() { if (!paused) InvokeAsync(() => { lines = Log.Snapshot(); StateHasChanged(); }); }
+    bool paused, err;
+
+    protected override void OnInitialized()
+    {
+        Log.Changed += OnChanged;
+        if (!string.IsNullOrEmpty(Agv)) { agvFilter = Agv; agv = Agv; }
+        Reload();
+    }
+    protected override void OnParametersSet() => Apply();
+    void Reload() { lines = Log.Snapshot(); Apply(); }
+    void Apply()
+    {
+        IEnumerable<string> q = lines;
+        if (int.TryParse(agvFilter, out var a) && a is >= 0 and <= 99) { var tag = $"[{a:D2}]"; q = q.Where(l => l.Contains(tag)); }
+        if (!string.IsNullOrWhiteSpace(text)) q = q.Where(l => l.Contains(text.Trim(), StringComparison.OrdinalIgnoreCase));
+        shown = q.ToArray();
+    }
+    void OnChanged() { if (!paused) InvokeAsync(() => { Reload(); StateHasChanged(); }); }
     public void Dispose() => Log.Changed -= OnChanged;
-    void Send() => msg = int.TryParse(agv, out var a) && Link.SendMainDown(a, AgvFrame.ParseData(data)) ? "전송" : "실패 (호기 endpoint 없음)";
-    void SendCfg() => msg = int.TryParse(agv, out var a) && Link.SendCfg(a, cfg) ? "전송" : "실패 (호기 endpoint 없음)";
+    void Clear() { Log.Clear(); Reload(); }
+
+    void Send()
+    {
+        err = false;
+        if (!int.TryParse(agv, out var a)) { msg = "호기 번호 오류"; err = true; return; }
+        var s = data.Trim();
+        if (s.Length == 0) { msg = "프레임을 입력하세요"; err = true; return; }
+        byte[] frame;
+        if (s.StartsWith("<STX>", StringComparison.OrdinalIgnoreCase) || s.StartsWith("\\x02")) frame = AgvFrame.ParseData(s);
+        else
+        {
+            // 종류·PAN·MSG·호기(2)·본문 → 프레임 조립 (끝 공백·BCC 자동)
+            if (s.Length < 5 || !char.IsAsciiDigit(s[3]) || !char.IsAsciiDigit(s[4])) { msg = "형식: 종류 PAN MSG 호기2자리 본문 (예: W1107C001000 00000)"; err = true; return; }
+            var fa = (s[3] - '0') * 10 + (s[4] - '0');
+            frame = AgvFrame.Build(s[0], s[1], s[2], fa, System.Text.Encoding.ASCII.GetBytes(s[5..].TrimEnd()));
+            a = fa;
+        }
+        msg = Link.SendMainDown(a, frame) ? $"{a:D2} 전송: {AgvFrame.Fmt(frame)}" : $"실패 (호기 {a:D2} 주소 없음 — heartbeat 를 받은 적이 있어야 합니다)";
+        err = !msg.Contains("전송:");
+    }
+    void SendCfg()
+    {
+        err = false;
+        if (!int.TryParse(agv, out var a)) { msg = "호기 번호 오류"; err = true; return; }
+        if (string.IsNullOrWhiteSpace(cfg)) { msg = "명령을 입력하세요"; err = true; return; }
+        msg = Link.SendCfg(a, cfg.Trim()) ? $"{a:D2} 전송: {cfg.Trim()}" : $"실패 (호기 {a:D2} 주소 없음)";
+        err = !msg.Contains("전송:");
+    }
 }

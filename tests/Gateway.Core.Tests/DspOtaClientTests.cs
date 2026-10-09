@@ -85,6 +85,18 @@ public class DspOtaClientTests
     }
 
     [Fact]
+    public async Task Start_json_keeps_plus_and_ampersand_literal_for_bridge_parser()
+    {
+        // 브리지의 최소 JSON 파서는 \u002B 같은 이스케이프를 풀지 못한다 — 버전·URL 의 + & 는 그대로 가야 한다
+        var link = new FakeEspLink();
+        using var c = new DspOtaClient(link, _ => link.Status(), 7);
+        await c.StageAsync("http://10.0.0.1:8080/fw/x/a%20b.dspfw?x=1&y=2", Img("1.2.3+rc1"), 5);
+        Assert.Contains("\"ver\":\"1.2.3+rc1\"", link.Sent[0]);
+        Assert.Contains("?x=1&y=2", link.Sent[0]);
+        Assert.DoesNotContain("\\u", link.Sent[0]);
+    }
+
+    [Fact]
     public async Task Fail_report_throws_with_err()
     {
         var link = new FakeEspLink { FailAt = "erase" };

@@ -17,7 +17,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | 경로 | 내용 |
 |---|---|
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat, AGV 프레임(BCC, ACS 화이트리스트), `.dspfw` 파서, 메인보드 OTA(B안)·브리지 OTA 클라이언트, 업데이트 피드 파싱 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 5개(호기 현황·펌웨어·배포 작업·통신 로그·서버 업데이트), 서버 자체 업데이트, REST API |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 6개(호기 현황·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`, 가짜 브리지로 메인보드 OTA 단계·실패·job 불일치 |
 | `tests/fake_esp.py` | 가짜 브리지(0.5.0 B안) — 하드웨어 없이 서버 종단 시험 (`--fail-at erase` 로 실패 재현) |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` |
