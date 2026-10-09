@@ -102,6 +102,7 @@ api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version =
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {
+    app.Services.GetRequiredService<TraceLog>();   // 처음부터 통신 로그를 모으도록 미리 생성
     // 실제로 열린 HTTP 포트를 작업 실행기에 알림 (브리지 OTA URL 용)
     var addrs = app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>()
         .Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()?.Addresses ?? [];
