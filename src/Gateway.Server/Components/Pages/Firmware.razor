@@ -19,10 +19,8 @@
         <label>메모 <input @bind="notes" /></label>
         @if (kind == "Dsp")
         {
-            <p class="muted">슬롯 A 용·B 용 이미지를 각각 올립니다. 헤더 없는 raw .bin 이면 위 버전·프로젝트로 헤더를 붙입니다. 위치 독립 이미지(시뮬레이터)는 "any" 하나만.</p>
-            <label>슬롯 A <InputFile OnChange="e => fileA = e.File" /></label>
-            <label>슬롯 B <InputFile OnChange="e => fileB = e.File" /></label>
-            <label>any <InputFile OnChange="e => fileAny = e.File" /></label>
+            <p class="muted">CCS 빌드 결과를 <code>dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전은 파일 헤더에서 읽습니다(입력하면 일치 확인). 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
+            <label>.dspfw <InputFile OnChange="e => fileDsp = e.File" /></label>
         }
         else
         {
@@ -54,7 +52,7 @@
 
 @code {
     string kind = "Dsp", version = "", project = "", notes = "";
-    IBrowserFile? fileA, fileB, fileAny, fileEsp;
+    IBrowserFile? fileDsp, fileEsp;
     bool busy, err;
     string? msg;
 
@@ -65,18 +63,13 @@
         {
             var files = new List<(string, string, Stream)>();
             const long max = 64L * 1024 * 1024;
-            if (kind == "Dsp")
-            {
-                if (fileA is not null) files.Add(("A", fileA.Name, fileA.OpenReadStream(max)));
-                if (fileB is not null) files.Add(("B", fileB.Name, fileB.OpenReadStream(max)));
-                if (fileAny is not null) files.Add(("any", fileAny.Name, fileAny.OpenReadStream(max)));
-            }
+            if (kind == "Dsp") { if (fileDsp is not null) files.Add(("dspfw", fileDsp.Name, fileDsp.OpenReadStream(max))); }
             else if (fileEsp is not null) files.Add(("esp", fileEsp.Name, fileEsp.OpenReadStream(max)));
             if (files.Count == 0) { msg = "파일을 선택하세요"; err = true; return; }
             var e = await Store.AddAsync(kind == "Dsp" ? FirmwareKind.Dsp : FirmwareKind.Esp, version, project, notes, files);
             foreach (var (_, _, s) in files) s.Dispose();
             msg = $"등록: {e.Kind} {e.Version} — {e.FilesText}";
-            fileA = fileB = fileAny = fileEsp = null;
+            fileDsp = fileEsp = null;
         }
         catch (Exception ex) { msg = ex.Message; err = true; }
         finally { busy = false; }

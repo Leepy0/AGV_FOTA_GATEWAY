@@ -186,41 +186,46 @@ public sealed class JobService : BackgroundService
         Notify();
     }
 
+    // 메인보드 OTA B안: 브리지에 .dspfw 스테이징(0x32) → 적용(0x34) → 보고(0x33) → heartbeat 의 dsp 버전 확인
     async Task RunDspAsync(FirmwareEntry fw, TargetResult r, CancellationToken ct)
     {
         var agv = _reg.Get(r.Agv);
         if (agv is null || !agv.Online(_opt.OfflineAfterSec)) throw new InvalidOperationException("호기 오프라인 (heartbeat 없음)");
-        using var c = new DspOtaClient(_link, r.Agv);
-        var st = await c.StatusAsync(ct);
-        agv.Dsp = st; agv.DspSeen = DateTime.UtcNow;
-        r.VersionBefore = st.Version;
-        Add(r, $"현재 {st}");
-        if (st.State == 'T') throw new InvalidOperationException("DSP 가 미확정(trial) 상태 — 먼저 확정 필요");
-        var file = _fw.PickDspFile(fw, st.Slot) ?? throw new InvalidOperationException($"실행 슬롯 {st.Slot} 의 반대쪽 이미지가 없음");
-        var image = await File.ReadAllBytesAsync(_fw.PathOf(fw, file), ct);
-        var info = FirmwareImage.Parse(image) ?? throw new InvalidOperationException("이미지 헤더 오류");
-        Add(r, $"전송 {file.FileName} ({image.Length:N0}B, slot {info.SlotName}, ver {info.Version})");
-        int lastPct = -1;
-        var target = await c.UpdateAsync(image, _opt.DspBlockSize, (done, total) =>
+        var st = agv.Status;
+        if (st is null || string.IsNullOrEmpty(st.DspState)) throw new InvalidOperationException($"브리지 펌웨어가 메인보드 OTA 를 지원하지 않음 (fw {st?.Fw ?? "?"}, 0.5.0 이상 필요)");
+        if (st.DspState == "programming") throw new InvalidOperationException("브리지가 이미 메인보드를 프로그래밍 중");
+        r.VersionBefore = st.Dsp;
+        var file = fw.Files.First();
+        var img = DspfwImage.Parse(await File.ReadAllBytesAsync(_fw.PathOf(fw, file), ct)) ?? throw new InvalidOperationException("이미지 파일 손상 (.dspfw CRC)");
+        var url = $"{BaseUrlFor(r.Agv)}/fw/{fw.Id}/{file.FileName}";
+        // 브리지 보고와 대조할 작업 번호 — 브리지가 u32 로 읽으므로 4,294,967,295 이하 (초 단위 시각 × 100 + 호기, 약 115일 주기)
+        long job = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() % 10_000_000) * 100 + r.Agv;
+        Add(r, $"현재 {(st.HasDsp ? st.Dsp : "?")} (부트로더 {st.DspBoot}) → {img.Version} 스테이징 {file.FileName} ({img.Size:N0}B)");
+        using var c = new DspOtaClient(_link, _reg.StatusOf, r.Agv);
+        void OnStage(DspOtaResult x)
         {
-            int pct = done * 90 / total;
-            if (pct / 10 != lastPct / 10) { lastPct = pct; r.Percent = pct; Add(r, $"{done}/{total} 블록 (재전송 {c.Retries})"); }
-        }, ct);
-        Add(r, $"기록 완료 → slot {target} pending, 재부팅");
-        await c.RebootAsync(ct);
-        r.Percent = 92;
-        st = await c.WaitBackAsync(TimeSpan.FromSeconds(60), ct);
-        Add(r, $"재부팅 후 {st}");
-        if (st.State == 'T')
-        {
-            await c.ConfirmAsync(ct);
-            st = await c.StatusAsync(ct);
+            r.Percent = x.Stage switch
+            {
+                "download" => 5 + x.Pct * 25 / 100, "staged" => 30, "start" => 32, "enter" => 35, "erase" => 40,
+                "progress" => 45 + x.Pct * 45 / 100, "verify" => 92, "done" => 100, _ => r.Percent,
+            };
+            Add(r, x.Stage + (x.Pct >= 0 ? $" {x.Pct}%" : "") + (x.Ver.Length > 0 ? $" ver {x.Ver}" : "") + (x.Err.Length > 0 ? $" err {x.Err}" : ""));
         }
-        agv.Dsp = st; agv.DspSeen = DateTime.UtcNow;
-        r.VersionAfter = st.Version;
-        if (st.State != 'V') throw new InvalidOperationException($"확정 실패: {st}");
-        if (st.Version != info.Version) throw new InvalidOperationException($"버전 불일치: 기대 {info.Version}, 실제 {st.Version}");
-        Add(r, $"완료 ver {st.Version} slot {st.Slot}");
+        await c.StageAsync(url, img, job, OnStage, ct);
+        Add(r, "스테이징 완료 — 적용 (메인보드 앱 정지, 약 20~30초)");
+        var ver = await c.ApplyAsync(job, OnStage, ct);
+        r.VersionAfter = ver;
+        if (ver != img.Version) throw new InvalidOperationException($"적용 후 앱 버전 {ver} 이 이미지 {img.Version} 과 다름");
+        var after = await c.WaitVersionAsync(img.Version, TimeSpan.FromSeconds(30), ct);
+        Add(r, $"완료 ver {after.Dsp} (heartbeat 확인)");
+    }
+
+    string BaseUrlFor(int agv)
+    {
+        var baseUrl = _opt.PublicBaseUrl?.TrimEnd('/');
+        if (!string.IsNullOrEmpty(baseUrl)) return baseUrl;
+        var ip = _link.LocalAddressToward(agv) ?? throw new InvalidOperationException("서버 IP 를 알 수 없음 — PublicBaseUrl 설정");
+        return $"http://{ip}:{HttpPort}";
     }
 
     async Task RunEspAsync(FirmwareEntry fw, TargetResult r, CancellationToken ct)
@@ -229,13 +234,7 @@ public sealed class JobService : BackgroundService
         if (agv is null || !agv.Online(_opt.OfflineAfterSec)) throw new InvalidOperationException("호기 오프라인 (heartbeat 없음)");
         r.VersionBefore = agv.Status?.Fw ?? "";
         var file = fw.Files.First();
-        var baseUrl = _opt.PublicBaseUrl?.TrimEnd('/');
-        if (string.IsNullOrEmpty(baseUrl))
-        {
-            var ip = _link.LocalAddressToward(r.Agv) ?? throw new InvalidOperationException("서버 IP 를 알 수 없음 — PublicBaseUrl 설정");
-            baseUrl = $"http://{ip}:{HttpPort}";
-        }
-        var url = $"{baseUrl}/fw/{fw.Id}/{file.FileName}";
+        var url = $"{BaseUrlFor(r.Agv)}/fw/{fw.Id}/{file.FileName}";
         var client = new EspOtaClient(_link, _reg.StatusOf);
         r.Percent = 10;
         var ver = await client.RunAsync(r.Agv, url, fw.Version, line => { Add(r, line); if (line.StartsWith("재부팅")) r.Percent = 70; }, ct);

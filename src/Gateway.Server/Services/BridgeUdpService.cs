@@ -13,7 +13,7 @@ namespace Gateway.Server.Services;
 /// <summary>
 /// 브리지 UDP 서버 (AGV_Wifi_Bridge 규격). 호기별 endpoint 를 기억했다가 그곳으로 하향 송신한다.
 ///  - MAIN_UP: 모두 구독자(OTA 클라이언트 등)에게, ACS 중계는 E·A(OTA 응답 제외)만 (AgvFrame.IsForAcs)
-///  - STATUS: 레지스트리 갱신   - OTA_RESULT: 구독자   - CFG_RESULT/PONG: 로그
+///  - STATUS/INFO: 레지스트리 갱신   - OTA_RESULT/DSP_OTA_RESULT: 구독자   - CFG_RESULT/PONG: 로그
 /// </summary>
 public sealed class BridgeUdpService : BackgroundService, IAgvLink
 {
@@ -81,9 +81,16 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
         switch (h.Type)
         {
             case BridgePacket.Status:
+            case BridgePacket.Info:
                 a.StatusRaw = Encoding.UTF8.GetString(pl);
                 a.Status = BridgeStatus.Parse(pl) ?? a.Status;
+                if (h.Type == BridgePacket.Info) Trace?.Invoke($"[{h.Agv:D2}] INFO {a.StatusRaw}");
                 _reg.NotifyChanged();
+                break;
+            case BridgePacket.DspOtaResult:
+                var dj = Encoding.UTF8.GetString(pl);
+                Trace?.Invoke($"[{h.Agv:D2}] DSP  {dj}");
+                foreach (var s in Subscribers(h.Agv)) s.DspOtaResults.Writer.TryWrite(dj);
                 break;
             case BridgePacket.MainUp:
                 Interlocked.Increment(ref a.MainUp);
@@ -136,6 +143,9 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
     }
 
     public bool SendOtaStart(int agv, string url) => Send(agv, BridgePacket.OtaStart, Encoding.ASCII.GetBytes(url));
+    public bool SendDspOtaStart(int agv, string json) { Trace?.Invoke($"[{agv:D2}] DSP< START {json}"); return Send(agv, BridgePacket.DspOtaStart, Encoding.UTF8.GetBytes(json)); }
+    public bool SendDspOtaApply(int agv, string json) { Trace?.Invoke($"[{agv:D2}] DSP< APPLY {json}"); return Send(agv, BridgePacket.DspOtaApply, Encoding.UTF8.GetBytes(json)); }
+    public bool SendInfoRequest(int agv) => Send(agv, BridgePacket.InfoReq, ReadOnlySpan<byte>.Empty);
     public bool SendPing(int agv) => Send(agv, BridgePacket.Ping, BitConverter.GetBytes(DateTime.UtcNow.Ticks));
     public bool SendCfg(int agv, string cmd) => Send(agv, BridgePacket.CfgCmd, Encoding.UTF8.GetBytes(cmd));
 

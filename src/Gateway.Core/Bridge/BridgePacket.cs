@@ -16,10 +16,15 @@ public static class BridgePacket
     public const byte MainDown = 0x02;   // 서버 → ESP: 메인보드로 보낼 UART 원본
     public const byte Rfid = 0x03;       // ESP → rfid_dst
     public const byte Status = 0x10;     // heartbeat JSON
+    public const byte InfoReq = 0x11;    // 서버 → ESP: 장치 정보 요청
+    public const byte Info = 0x12;       // ESP → 서버: JSON (agv, mac, ip, fw, part, ota, cfg, dsp, dspb, staged …)
     public const byte Ping = 0x20;
     public const byte Pong = 0x21;
     public const byte OtaStart = 0x30;   // 서버 → ESP: 펌웨어 URL
     public const byte OtaResult = 0x31;  // ESP → 서버: JSON stage
+    public const byte DspOtaStart = 0x32;  // 서버 → ESP: JSON {url, ver, crc32, size, job, apply} — 메인보드 이미지 스테이징
+    public const byte DspOtaResult = 0x33; // ESP → 서버: JSON {job, stage, pct, ver, err}
+    public const byte DspOtaApply = 0x34;  // 서버 → ESP: JSON {job} — 스테이징된 이미지를 메인보드에 적용
     public const byte CfgCmd = 0x40;
     public const byte CfgResult = 0x41;
 
@@ -48,7 +53,9 @@ public static class BridgePacket
     public static string TypeName(byte type) => type switch
     {
         MainUp => "MAIN_UP", MainDown => "MAIN_DOWN", Rfid => "RFID", Status => "STATUS", Ping => "PING", Pong => "PONG",
+        InfoReq => "INFO_REQ", Info => "INFO",
         OtaStart => "OTA_START", OtaResult => "OTA_RESULT", CfgCmd => "CFG_CMD", CfgResult => "CFG_RESULT",
+        DspOtaStart => "DSP_OTA_START", DspOtaResult => "DSP_OTA_RESULT", DspOtaApply => "DSP_OTA_APPLY",
         _ => $"0x{type:X2}"
     };
 }

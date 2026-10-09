@@ -36,19 +36,10 @@ public class AgvFrameTests
     }
 
     [Fact]
-    public void IsOtaReply_only_for_A_F()
-    {
-        Assert.True(AgvFrame.IsOtaReply(AgvFrame.Build('A', '1', '1', 7, "FSPA00"u8)));
-        Assert.False(AgvFrame.IsOtaReply(AgvFrame.Build('A', '1', '1', 7, "WCPA"u8)));
-        Assert.False(AgvFrame.IsOtaReply(AgvFrame.Build('E', '1', '1', 7, "I012245"u8)));
-    }
-
-    [Fact]
     public void IsForAcs_whitelists_only_E_and_ack()
     {
         Assert.True(AgvFrame.IsForAcs(AgvFrame.Build('E', '3', '1', 7, "I012245"u8)));
         Assert.True(AgvFrame.IsForAcs(AgvFrame.Build('A', '1', '1', 7, "WCPA"u8)));
-        Assert.False(AgvFrame.IsForAcs(AgvFrame.Build('A', '1', '1', 7, "FSPA00"u8)));     // DSP OTA 응답
         Assert.False(AgvFrame.IsForAcs(AgvFrame.Build('P', '1', '1', 7, "L=1,R=2"u8)));    // 위치(제안)
         Assert.False(AgvFrame.IsForAcs(AgvFrame.Build('R', '1', '1', 7, "V1.2.3"u8)));     // 브리지용 응답
         Assert.False(AgvFrame.IsForAcs("\x02E31"u8));

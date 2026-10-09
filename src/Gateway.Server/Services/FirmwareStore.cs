@@ -8,7 +8,7 @@ public enum FirmwareKind { Dsp, Esp }
 
 public sealed class FirmwareFile
 {
-    /// <summary>DSP: "A" / "B" / "any", ESP: "esp"</summary>
+    /// <summary>DSP: "dspfw", ESP: "esp"</summary>
     public string Slot { get; set; } = "";
     public string FileName { get; set; } = "";
     public long Size { get; set; }
@@ -50,8 +50,8 @@ public sealed class FirmwareStore
     public string PathOf(FirmwareEntry e, FirmwareFile f) => Path.Combine(_root, e.Id, f.FileName);
 
     /// <summary>
-    /// DSP: raw .bin 이면 헤더를 붙여 .img 로 저장(slot/version/project 는 인자), 이미 헤더가 있으면 헤더 값을 우선.
-    /// ESP: 파일 그대로.
+    /// DSP: dsp_pack.py 가 만든 .dspfw 한 파일 (헤더의 버전·CRC 를 읽어 기록, 버전 인자는 비어 있을 때만 보조).
+    /// ESP: agv_wifi_bridge.bin 그대로.
     /// </summary>
     public async Task<FirmwareEntry> AddAsync(FirmwareKind kind, string version, string project, string notes,
                                               IEnumerable<(string slot, string fileName, Stream data)> files, CancellationToken ct = default)
@@ -63,7 +63,6 @@ public sealed class FirmwareStore
         };
         var dir = Path.Combine(_root, e.Id);
         Directory.CreateDirectory(dir);
-        uint seq = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         foreach (var (slot, name, data) in files)
         {
             using var ms = new MemoryStream();
@@ -72,20 +71,10 @@ public sealed class FirmwareStore
             string outName = Path.GetFileName(name);
             if (kind == FirmwareKind.Dsp)
             {
-                var info = FirmwareImage.Parse(bytes);
-                if (info is null)
-                {
-                    bytes = FirmwareImage.Build(bytes, e.Version, seq, FirmwareImage.SlotFromName(slot), string.IsNullOrEmpty(e.Project) ? FirmwareImage.DefaultProject : e.Project);
-                    info = FirmwareImage.Parse(bytes)!;
-                    outName = Path.ChangeExtension(outName, ".img");
-                }
-                else
-                {
-                    if (string.IsNullOrEmpty(e.Version)) e.Version = info.Version;
-                    if (string.IsNullOrEmpty(e.Project)) e.Project = info.Project;
-                }
-                var f = new FirmwareFile { Slot = info.SlotName, FileName = outName, Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) };
-                e.Files.Add(f);
+                var info = DspfwImage.Parse(bytes) ?? throw new InvalidOperationException($"{name}: .dspfw 형식이 아니거나 CRC 가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)");
+                if (string.IsNullOrEmpty(e.Version)) e.Version = info.Version;
+                else if (e.Version != info.Version) throw new InvalidOperationException($"입력한 버전 {e.Version} 과 파일 헤더 버전 {info.Version} 이 다릅니다");
+                e.Files.Add(new FirmwareFile { Slot = "dspfw", FileName = outName, Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) });
             }
             else
             {
@@ -94,9 +83,8 @@ public sealed class FirmwareStore
             await File.WriteAllBytesAsync(Path.Combine(dir, outName), bytes, ct);
         }
         if (e.Files.Count == 0) throw new InvalidOperationException("파일이 없습니다");
-        if (kind == FirmwareKind.Dsp && e.Files.Select(f => f.Slot).Distinct().Count() != e.Files.Count)
-            throw new InvalidOperationException("같은 슬롯 파일이 둘입니다");
-        if (string.IsNullOrEmpty(e.Project)) e.Project = kind == FirmwareKind.Dsp ? FirmwareImage.DefaultProject : "agv_wifi_bridge";
+        if (e.Files.Count != 1) throw new InvalidOperationException("파일은 하나만 올립니다");
+        if (string.IsNullOrEmpty(e.Project)) e.Project = kind == FirmwareKind.Dsp ? "agv-dsp" : "agv_wifi_bridge";
         lock (_lock) { _entries.Add(e); Save(); }
         return e;
     }
@@ -112,14 +100,6 @@ public sealed class FirmwareStore
             try { Directory.Delete(Path.Combine(_root, id), true); } catch (IOException) { }
             return true;
         }
-    }
-
-    /// <summary>DSP: 실행 중 슬롯의 반대쪽에 맞는 파일. "any" 파일이 있으면 그것</summary>
-    public FirmwareFile? PickDspFile(FirmwareEntry e, char runningSlot)
-    {
-        var target = runningSlot == 'A' ? "B" : runningSlot == 'B' ? "A" : null;
-        return e.Files.FirstOrDefault(f => f.Slot == "any")
-            ?? (target is null ? e.Files.FirstOrDefault(f => f.Slot == "A") : e.Files.FirstOrDefault(f => f.Slot == target));
     }
 
     void Save() => File.WriteAllText(_index, JsonSerializer.Serialize(_entries, Json));

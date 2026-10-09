@@ -1,11 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
 using Gateway.Core.Bridge;
-using Gateway.Core.Fota;
 
 namespace Gateway.Server.Services;
 
-/// <summary>호기 하나의 최신 상태 (heartbeat + 최근 OTA 상태). UI 와 작업 실행기가 읽는다</summary>
+/// <summary>호기 하나의 최신 상태 (heartbeat/INFO). 메인보드 버전·스테이징 상태도 heartbeat 의 dsp 필드로 온다</summary>
 public sealed class AgvState
 {
     public int Id { get; init; }
@@ -14,8 +13,6 @@ public sealed class AgvState
     public BridgeStatus? Status { get; set; }
     /// <summary>heartbeat 원문 (JSON 파싱에 실패해도 보관)</summary>
     public string StatusRaw { get; set; } = "";
-    public DspStatus? Dsp { get; set; }
-    public DateTime? DspSeen { get; set; }
     public long MainUp, MainDown, SeqLoss;
     public string LastFrame { get; set; } = "";
     public Dictionary<byte, ushort> LastSeq { get; } = new();

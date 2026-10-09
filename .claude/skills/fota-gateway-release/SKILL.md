@@ -29,8 +29,9 @@ description: "AGV FOTA Gateway(ASP.NET Core Blazor 웹 서버, 사내 PC Windows
 dotnet build && dotnet test
 ```
 
-하드웨어 없이 동작 확인: DSP_OTA 저장소의 `dsp_ota_sim --agv 7 --server 127.0.0.1:50000 --listen 50010` 을 띄우고
-`dotnet run --project src/Gateway.Server` → `GET /api/agvs` 에 7번이 보이면 REST(`/api/firmware`, `/api/jobs`)로 작업을 돌려 본다.
+하드웨어 없이 동작 확인: `python3 tests/fake_esp.py --agv 7 --server 127.0.0.1:50000 --listen 50010` (가짜 브리지 0.5.0, B안) 을 띄우고
+`dotnet run --project src/Gateway.Server` → `GET /api/agvs` 에 7번이 보이면 REST(`/api/firmware` 에 `.dspfw`, `/api/jobs`)로 작업을 돌려 본다.
+메인보드 OTA 는 브리지 B안(0x32 스테이징 → 0x34 적용 → 0x33 보고)이며 서버는 메인보드와 직접 프레임을 주고받지 않는다.
 
 ## 2. 릴리스 (정식 배포)
 

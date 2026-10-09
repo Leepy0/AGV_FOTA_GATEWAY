@@ -13,8 +13,6 @@ public sealed class GatewayOptions
     public string DataDir { get; set; } = "data";
     /// <summary>heartbeat 가 이 시간 넘게 없으면 오프라인 표시</summary>
     public int OfflineAfterSec { get; set; } = 5;
-    /// <summary>DSP OTA 블록 크기 (16~112, 16 배수)</summary>
-    public int DspBlockSize { get; set; } = 64;
     /// <summary>브리지 OTA 파일 URL 에 쓸 이 서버 주소. 비우면 호기 쪽 NIC 의 IP 와 Kestrel 포트를 자동으로 씀</summary>
     public string? PublicBaseUrl { get; set; }
     public AcsOptions Acs { get; set; } = new();

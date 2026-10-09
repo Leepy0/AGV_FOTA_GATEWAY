@@ -4,7 +4,7 @@
 @implements IDisposable
 
 <h1>호기 현황</h1>
-<p class="muted">브리지 heartbeat 기준. DSP 열은 마지막 OTA 작업 때 조회한 값입니다.</p>
+<p class="muted">브리지 heartbeat 기준. 메인보드 열은 브리지 0.5.0 이상이 앱에 물어본 버전(앱/부트로더)과 스테이징 상태입니다.</p>
 
 @if (agvs.Count == 0)
 {
@@ -14,7 +14,7 @@ else
 {
     <table class="grid">
         <thead>
-            <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>DSP</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+            <tr><th>호기</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
         </thead>
         <tbody>
             @foreach (var a in agvs)
@@ -29,7 +29,8 @@ else
                     <td>@a.Status?.Ota</td>
                     <td>@a.Status?.Cfg @(a.Status?.SetupAp == true ? "(AP)" : "")</td>
                     <td>@a.Status?.Rssi</td>
-                    <td>@(a.Dsp is null ? "-" : $"{a.Dsp.Version} {a.Dsp.Slot}/{a.Dsp.State}")</td>
+                    <td>@(a.Status is null || string.IsNullOrEmpty(a.Status.DspState) ? "-" : $"{(a.Status.HasDsp ? a.Status.Dsp : "?")} / {a.Status.DspBoot}")@(a.Status?.DspState == "programming" ? " ⟳" : "")</td>
+                    <td>@(a.Status?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {a.Status.StagedJob})" : a.Status?.DspState is "downloading" ? "받는 중" : "")</td>
                     <td>@a.MainUp / @a.MainDown</td>
                     <td>@a.SeqLoss</td>
                     <td class="mono small" title="@a.StatusRaw">@a.LastFrame</td>

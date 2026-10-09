@@ -1,124 +1,103 @@
-using System.Text;
-using Gateway.Core.Agv;
+using System.Threading.Channels;
+using System.Text.Json;
+using Gateway.Core.Bridge;
 
 namespace Gateway.Core.Fota;
 
 public sealed class DspOtaException(string message) : Exception(message);
 
-/// <summary>DSP OTA 상태 (S 응답). 상태 문자: N 없음, P pending, T trial(미확정), V valid, X invalid, D 다운로드 중</summary>
-public sealed record DspStatus(char Slot, char State, char Other, uint Seq, uint Size, string Version)
+/// <summary>DSP_OTA_RESULT 한 건: {job, stage, pct?, ver?, err?}</summary>
+public sealed record DspOtaResult(long Job, string Stage, int Pct, string Ver, string Err)
 {
-    public static string StateName(char c) => c switch
+    public static DspOtaResult? Parse(string json)
     {
-        'N' => "none", 'P' => "pending", 'T' => "trial", 'V' => "valid", 'X' => "invalid", 'D' => "downloading", _ => "?"
-    };
-    public override string ToString() => $"slot={Slot} state={State}({StateName(State)}) other={Other} seq={Seq} size={Size} ver={Version}";
+        try
+        {
+            using var d = JsonDocument.Parse(json);
+            var r = d.RootElement;
+            return new DspOtaResult(
+                r.TryGetProperty("job", out var j) && j.TryGetInt64(out var jv) ? jv : 0,
+                r.TryGetProperty("stage", out var s) ? s.GetString() ?? "" : "",
+                r.TryGetProperty("pct", out var p) && p.TryGetInt32(out var pv) ? pv : -1,
+                r.TryGetProperty("ver", out var v) ? v.GetString() ?? "" : "",
+                r.TryGetProperty("err", out var e) ? e.GetString() ?? "" : "");
+        }
+        catch (JsonException) { return null; }
+    }
 }
 
 /// <summary>
-/// DSP OTA 클라이언트 — DSP_OTA/docs/PROTOCOL.md 의 F 프레임을 보내고 A 응답을 기다린다.
-/// 응답이 없으면 같은 MSG ID 로 재전송(ACS 와 같은 0.5초 × 9회).
+/// 메인보드(F2808) OTA — B안 (AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md).
+///  1. 스테이징: DSP_OTA_START {url, ver, crc32, size, job, apply:0} → 브리지가 HTTP 로 받아 보관 → "download"(pct) → "staged"
+///  2. 적용:     DSP_OTA_APPLY {job} → "start" → "enter" → "erase" → "progress"(pct) → "verify" → "done"{ver} / "fail"{err}
+/// 브리지가 메인보드를 부트로더로 보내 UART 로 직접 굽는다. 적용 중 메인보드 앱은 멈추므로 AGV 정지 상태에서만.
 /// </summary>
 public sealed class DspOtaClient : IDisposable
 {
-    public const int DefaultBlock = 64, BlockMax = 112;
-    const int Retry = 9, TimeoutMs = 500;
-
     readonly IAgvLink _link;
+    readonly Func<int, BridgeStatus?> _status;
     readonly AgvSubscription _sub;
     readonly int _agv;
-    int _msg;
 
-    public int Retries { get; private set; }
-    public Action<string>? Log { get; set; }
+    public static readonly TimeSpan StageTimeout = TimeSpan.FromMinutes(3);     // 다운로드 전체
+    public static readonly TimeSpan ApplyIdleTimeout = TimeSpan.FromSeconds(90); // 단계 보고가 이만큼 끊기면 실패 (erase 1~2초×섹터, 쓰기 수십 초)
 
-    public DspOtaClient(IAgvLink link, int agv)
+    public DspOtaClient(IAgvLink link, Func<int, BridgeStatus?> status, int agv)
     {
-        _link = link; _agv = agv;
+        _link = link; _status = status; _agv = agv;
         _sub = link.Subscribe(agv);
     }
 
     public void Dispose() => _sub.Dispose();
 
-    char NextMsg() { _msg = _msg % 15 + 1; return "123456789ABCDEF"[_msg - 1]; }
+    static string Js(string s) => JsonSerializer.Serialize(s);
 
-    public async Task<(bool ok, int code, byte[] extra)> RequestAsync(char cmd, byte[]? body, int timeoutMs, int retry, CancellationToken ct)
+    /// <summary>이미지를 브리지에 받아 두게 한다. "staged" 까지 기다린다</summary>
+    public async Task StageAsync(string url, DspfwInfo img, long job, Action<DspOtaResult>? progress = null, CancellationToken ct = default)
     {
-        var msg = NextMsg();
-        var fr = AgvFrame.Build('F', '1', msg, _agv, [(byte)cmd, .. body ?? []]);
-        for (int attempt = 0; attempt <= retry; attempt++)
-        {
-            if (attempt > 0) Retries++;
-            if (!_link.SendMainDown(_agv, fr)) throw new DspOtaException($"AGV {_agv:D2}: 브리지 endpoint 없음 (heartbeat 미수신)");
-            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            while (true)
-            {
-                var rest = deadline - DateTime.UtcNow;
-                if (rest <= TimeSpan.Zero) break;
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(rest);
-                byte[] r;
-                try { r = await _sub.Frames.Reader.ReadAsync(cts.Token); }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; }
-                if (!AgvFrame.TryParse(r, out var p)) continue;
-                var b = p.Body;
-                if (p.Type != 'A' || p.Agv != _agv || b.Length < 6 || b[0] != 'F') continue;
-                if ((char)b[1] != cmd || p.Msg != msg) continue;        // 지난 요청의 늦은 응답
-                bool ok = b[2] == 'P' && b[3] == 'A';
-                return (ok, Convert.ToInt32(Encoding.ASCII.GetString(b, 4, 2), 16), b[6..]);
-            }
-        }
-        throw new DspOtaException($"{cmd}: 응답 없음 ({retry + 1}회)");
+        var json = $"{{\"url\":{Js(url)},\"ver\":{Js(img.Version)},\"crc32\":{img.Crc32},\"size\":{img.Size},\"job\":{job},\"apply\":0}}";
+        if (!_link.SendDspOtaStart(_agv, json)) throw new DspOtaException("브리지 endpoint 없음 (heartbeat 미수신)");
+        await WaitAsync(job, "staged", StageTimeout, progress, ct);
     }
 
-    Task<(bool ok, int code, byte[] extra)> RequestAsync(char cmd, CancellationToken ct, byte[]? body = null) =>
-        RequestAsync(cmd, body, TimeoutMs, Retry, ct);
-
-    static string Err(char cmd, int code, byte[] x) => $"{cmd} NG {code:X2} {Encoding.ASCII.GetString(x)}";
-
-    public async Task<DspStatus> StatusAsync(CancellationToken ct = default)
+    /// <summary>스테이징된 이미지를 메인보드에 굽는다. "done" 의 ver(앱이 보고한 새 버전)를 돌려준다</summary>
+    public async Task<string> ApplyAsync(long job, Action<DspOtaResult>? progress = null, CancellationToken ct = default)
     {
-        var (ok, code, x) = await RequestAsync('S', ct);
-        if (!ok || x.Length < 35) throw new DspOtaException(Err('S', code, x));
-        return new DspStatus((char)x[0], (char)x[1], (char)x[2], Convert.ToUInt32(Encoding.ASCII.GetString(x, 3, 8), 16),
-                             Convert.ToUInt32(Encoding.ASCII.GetString(x, 11, 8), 16), Encoding.ASCII.GetString(x, 19, 16).Trim());
+        if (!_link.SendDspOtaApply(_agv, $"{{\"job\":{job}}}")) throw new DspOtaException("브리지 endpoint 없음");
+        var r = await WaitAsync(job, "done", ApplyIdleTimeout, progress, ct);
+        return r.Ver;
     }
 
-    /// <summary>B → D… → E. 반환: 기록된 슬롯 문자</summary>
-    public async Task<char> UpdateAsync(byte[] image, int block, Action<int, int>? progress, CancellationToken ct = default)
-    {
-        if (block % 16 != 0 || block < 16 || block > BlockMax) throw new DspOtaException("block 은 16~112 의 16 배수");
-        var (ok, code, x) = await RequestAsync('B', Encoding.ASCII.GetBytes($"{image.Length:X8}{FirmwareImage.Crc32(image):X8}{block:X4}"), 15000, 1, ct);
-        if (!ok) throw new DspOtaException(Err('B', code, x));
-        char target = (char)x[0];
-        int blocks = Convert.ToInt32(Encoding.ASCII.GetString(x, 1, 4), 16);
-        for (int i = 0; i < blocks; i++)
-        {
-            ct.ThrowIfCancellationRequested();
-            var chunk = image.AsSpan(i * block, Math.Min(block, image.Length - i * block)).ToArray();
-            (ok, code, x) = await RequestAsync('D', ct, Encoding.ASCII.GetBytes($"{i:X4}{AgvFrame.Crc16(chunk):X4}{Convert.ToHexString(chunk)}"));
-            if (!ok) throw new DspOtaException($"D#{i}: " + Err('D', code, x));
-            progress?.Invoke(i + 1, blocks);
-        }
-        (ok, code, x) = await RequestAsync('E', null, 15000, 1, ct);
-        if (!ok) throw new DspOtaException(Err('E', code, x));
-        return target;
-    }
-
-    public async Task<bool> RebootAsync(CancellationToken ct = default) => (await RequestAsync('R', null, 2000, 2, ct)).ok;
-    public async Task<char?> ConfirmAsync(CancellationToken ct = default) { var (ok, _, x) = await RequestAsync('C', ct); return ok && x.Length > 0 ? (char)x[0] : null; }
-    public async Task<bool> AbortAsync(CancellationToken ct = default) => (await RequestAsync('X', ct)).ok;
-
-    /// <summary>재부팅 뒤 S 에 응답할 때까지 기다린다</summary>
-    public async Task<DspStatus> WaitBackAsync(TimeSpan timeout, CancellationToken ct = default)
+    /// <summary>heartbeat 의 dsp 버전이 기대값이 될 때까지 (브리지가 적용 후 앱에 버전을 다시 묻는다)</summary>
+    public async Task<BridgeStatus> WaitVersionAsync(string expected, TimeSpan timeout, CancellationToken ct = default)
     {
         var t0 = DateTime.UtcNow;
-        await Task.Delay(1000, ct);
+        BridgeStatus? last = null;
         while (DateTime.UtcNow - t0 < timeout)
         {
-            try { return await StatusAsync(ct); }
-            catch (DspOtaException) { await Task.Delay(500, ct); }
+            last = _status(_agv);
+            if (last is not null && last.Dsp == expected) return last;
+            await Task.Delay(500, ct);
         }
-        throw new DspOtaException("재부팅 후 응답 없음");
+        throw new DspOtaException($"heartbeat 의 메인보드 버전이 {expected} 가 아님 (현재 {last?.Dsp ?? "?"})");
+    }
+
+    // 같은 job 의 결과만 본다. "fail" 이면 예외, 목표 stage 가 오면 반환. 보고가 idle 만큼 끊기면 시간 초과
+    async Task<DspOtaResult> WaitAsync(long job, string target, TimeSpan idle, Action<DspOtaResult>? progress, CancellationToken ct)
+    {
+        while (true)
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(idle);
+            string js;
+            try { js = await _sub.DspOtaResults.Reader.ReadAsync(cts.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new DspOtaException($"브리지 보고 없음 ({idle.TotalSeconds:F0}초, '{target}' 대기 중)"); }
+            catch (ChannelClosedException) { throw new DspOtaException("구독 종료"); }
+            var r = DspOtaResult.Parse(js);
+            if (r is null || (r.Job != 0 && job != 0 && r.Job != job)) continue;
+            progress?.Invoke(r);
+            if (r.Stage == "fail") throw new DspOtaException($"브리지 보고 실패: {r.Err}{(r.Ver.Length > 0 ? $" (ver {r.Ver})" : "")}");
+            if (r.Stage == target) return r;
+        }
     }
 }

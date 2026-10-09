@@ -62,12 +62,13 @@ api.MapGet("/agvs", (AgvRegistry reg, Microsoft.Extensions.Options.IOptions<Gate
     {
         a.Id, Online = a.Online(o.Value.OfflineAfterSec), EndPoint = a.EndPoint?.ToString(), a.LastSeen,
         Fw = a.Status?.Fw, Part = a.Status?.Part, Ota = a.Status?.Ota, Rssi = a.Status?.Rssi, Cfg = a.Status?.Cfg,
-        Dsp = a.Dsp?.ToString(), a.MainUp, a.MainDown, a.SeqLoss, a.LastFrame, a.StatusRaw,
+        Dsp = a.Status?.Dsp, DspBoot = a.Status?.DspBoot, DspState = a.Status?.DspState, a.Status?.StagedJob, a.Status?.StagedVer,
+        a.MainUp, a.MainDown, a.SeqLoss, a.LastFrame, a.StatusRaw,
     }));
 api.MapGet("/firmware", (FirmwareStore fw) => fw.List());
 api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
 {
-    // multipart: kind=dsp|esp, version, project, notes, 파일 필드 이름 = 슬롯 (A, B, any, esp)
+    // multipart: kind=dsp|esp, version, project, notes, 파일 하나 (dsp: .dspfw, esp: agv_wifi_bridge.bin)
     var form = await req.ReadFormAsync();
     var kind = form["kind"].ToString().Equals("esp", StringComparison.OrdinalIgnoreCase) ? FirmwareKind.Esp : FirmwareKind.Dsp;
     var files = form.Files.Select(f => (f.Name, f.FileName, f.OpenReadStream())).ToList();
@@ -91,6 +92,7 @@ api.MapPost("/jobs/{id}/cancel", (string id, JobService jobs) => jobs.Cancel(id)
 api.MapDelete("/jobs/{id}", (string id, JobService jobs) => jobs.Delete(id) ? Results.Ok() : Results.Conflict());
 api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService link) =>
     link.SendMainDown(agv, AgvFrame.ParseData(r.Data)) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
+api.MapPost("/agvs/{agv:int}/info", (int agv, BridgeUdpService link) => link.SendInfoRequest(agv) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
 api.MapPost("/agvs/{agv:int}/cfg", (int agv, SendRequest r, BridgeUdpService link) =>
     link.SendCfg(agv, r.Data) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
 api.MapGet("/update", (UpdateService u) => new { current = u.CurrentText, u.Channel, u.Commit, stage = u.Stage.ToString(), u.Message, latest = u.Latest?.Tag, sha256 = u.Latest?.Sha256, u.LastCheck, manifest = u.ManifestUrl, old = u.OldVersionText });
