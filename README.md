@@ -19,7 +19,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 5개(호기 현황·펌웨어·배포 작업·통신 로그·서버 업데이트), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임/헤더 왕복, DSP OTA 재전송 |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` |
-| `docs/` | [DEPLOY.md](docs/DEPLOY.md) 설치·운영, [INTERFACES.md](docs/INTERFACES.md) 접점 규격 출처 |
+| `docs/` | [DEPLOY.md](docs/DEPLOY.md) 설치·운영, [INTERFACES.md](docs/INTERFACES.md) 접점 규격 출처, [RTLS.md](docs/RTLS.md) 위치 추정 기능 설계 검토(구현 전) |
 
 ## 개발
 
