@@ -56,7 +56,7 @@ else
                         <td class="@(st?.Ota == "pending" ? "warn-text" : "")" title="@(st?.Ota == "pending" ? "재부팅 후 미확정 — 서버 PING 을 받으면 valid 로 확정" : "")">@st?.Ota</td>
                         <td>@st?.Cfg @(st?.SetupAp == true ? "(AP)" : "")</td>
                         <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null ? "" : st.Rssi)</td>
-                        <td>@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : "")</td>
+                        <td title="@(st?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 — USB 전체 굽기 필요" : st?.DspState == "" ? "브리지 0.5.0 미만" : "")">@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : st?.DspState == "nopart" ? " ⚠ 파티션 없음" : "")</td>
                         <td>@(st?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {st.StagedJob})" : st?.DspState is "downloading" ? "받는 중" : "")</td>
                         <td>@a.MainUp / @a.MainDown</td>
                         <td class="@(a.SeqLoss > 0 ? "warn-text" : "")">@a.SeqLoss</td>
@@ -83,7 +83,7 @@ else
                                         <dt>주소</dt><dd class="mono">@st.Ip @(st.Mac.Length > 0 ? $"({st.Mac})" : "") ← @a.EndPoint</dd>
                                         <dt>UART</dt><dd>MAIN rx @st.MainRx / tx @st.MainTx · RFID rx @st.RfidRx · 오류 @st.UartErrors</dd>
                                         <dt>네트</dt><dd>오프라인 @st.NetOffline · 오류 @st.NetErrors · heap @st.Heap.ToString("N0")</dd>
-                                        <dt>메인보드</dt><dd>@(string.IsNullOrEmpty(st.DspState) ? "지원 안 함 (브리지 0.5.0 미만)" : $"앱 {(st.HasDsp ? st.Dsp : "?")} · 부트로더 {st.DspBoot} · 빌드 {st.DspBuild} · 상태 {st.DspState}")</dd>
+                                        <dt>메인보드</dt><dd>@(string.IsNullOrEmpty(st.DspState) ? "지원 안 함 (브리지 0.5.0 미만)" : $"앱 {(st.HasDsp ? st.Dsp : "?")} · 부트로더 {st.DspBoot} · 빌드 {st.DspBuild} · 상태 {st.DspState}{(st.DspState == "nopart" ? " — dspfw 파티션 없음, USB 전체 굽기 필요" : "")}")</dd>
                                     </dl>
                                 }
                                 <pre class="log small">@Pretty(a.StatusRaw)</pre>

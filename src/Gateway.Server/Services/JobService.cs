@@ -225,6 +225,7 @@ public sealed class JobService : BackgroundService
         if (agv is null || !agv.Online(_opt.OfflineAfterSec)) throw new InvalidOperationException("호기 오프라인 (heartbeat 없음)");
         var st = agv.Status;
         if (st is null || string.IsNullOrEmpty(st.DspState)) throw new InvalidOperationException($"브리지 펌웨어가 메인보드 OTA 를 지원하지 않음 (fw {st?.Fw ?? "?"}, 0.5.0 이상 필요)");
+        if (st.DspState == "nopart") throw new InvalidOperationException($"브리지에 dspfw 파티션이 없음 (fw {st.Fw}) — 구 파티션 테이블인 채 OTA 로 올라온 브리지. USB 로 한 번 전체 굽기 필요");
         if (st.DspState == "programming") throw new InvalidOperationException("브리지가 이미 메인보드를 프로그래밍 중");
         r.VersionBefore = st.Dsp;
         var file = fw.Files.First();

@@ -6,6 +6,7 @@
 |---|---|---|
 | 브리지 UDP 패킷 (헤더 10B, 타입 0x01~0x41) | `AGV_Wifi_Bridge/main/proto.h` (커밋 74da5df, PR #3) | `Gateway.Core/Bridge/BridgePacket.cs` |
 | 브리지 INFO(0x11/0x12), heartbeat `dsp`/`dspb`/`dsp_st`/`staged` | `AGV_Wifi_Bridge/main/dsp_ota.c` dsp_ota_status_json | `Gateway.Core/Bridge/BridgeStatus.cs` |
+| 브리지 0.5.1 `dsp_st=nopart` (dspfw 파티션 없음 → `no_partition` 거부) | `AGV_Wifi_Bridge/main/dsp_ota.c` | `JobService.RunDspAsync` 가 작업 시작 전에 거부, 호기 현황 ⚠ 표시 |
 | **메인보드 OTA B안** DSP_OTA_START(0x32) {url, ver, crc32, size, job, apply} → DSP_OTA_RESULT(0x33) {job, stage, pct, ver, err} / DSP_OTA_APPLY(0x34) {job} | `AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md`, `main/dsp_ota.c` | `Gateway.Core/Fota/DspOtaClient.cs` (스테이징 → 적용 → heartbeat 버전 확인) |
 | `.dspfw` 이미지 파일 (헤더 32B: magic/total_len/crc32/ver) | `AGV_Wifi_Bridge/tools/dsp_pack.py` | `Gateway.Core/Fota/DspfwImage.cs` |
 | 브리지 프레임 제한: ETX(0x03) 프레이밍, 256B | `AGV_Wifi_Bridge/main/uart_bridge.h` | `AgvFrame.BridgeFrameMax` |
