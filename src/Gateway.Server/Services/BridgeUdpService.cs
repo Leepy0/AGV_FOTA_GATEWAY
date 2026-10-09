@@ -106,6 +106,7 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 a.StatusRaw = Encoding.UTF8.GetString(pl);
                 a.Status = BridgeStatus.Parse(pl) ?? a.Status;
                 if (h.Type == BridgePacket.Info) Trace?.Invoke($"[{h.Agv:D2}] INFO {a.StatusRaw}");
+                _reg.Touch(a);
                 _reg.NotifyChanged();
                 break;
             case BridgePacket.DspOtaResult:

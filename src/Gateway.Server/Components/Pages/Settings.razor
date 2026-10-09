@@ -13,6 +13,7 @@
 @inject AcsInventoryPullService Inv
 @inject IOptions<AcsInventoryOptions> InvOpt
 @inject AgvGroupStore Groups
+@inject Gateway.Server.Data.GatewayDb Db
 
 <PageTitle>설정 · AGV FOTA</PageTitle>
 <h1>설정</h1>
@@ -25,6 +26,7 @@
         <dt>실행 파일</dt><dd class="mono">@AppContext.BaseDirectory</dd>
         <dt>데이터</dt><dd class="mono">@Gw.Value.DataDir <span class="muted">(펌웨어 firmware\, 작업 jobs.json, 업데이트 update\)</span></dd>
         <dt>로그</dt><dd class="mono">@Logs.Directory <span class="muted">(gateway-날짜.log, 14일 보관)</span></dd>
+        <dt>데이터베이스</dt><dd><span class="mono">@Db.Path</span> <span class="muted">(SQLite, @((Db.FileSize / 1024.0).ToString("N0")) KB · 펌웨어 @Db.Count("firmware") · 작업 @Db.Count("jobs") · 소속 @Db.Count("agv_groups") · 위치 @Db.Count("agv_positions") · 접속 기록 @Db.Count("agv_last_seen"))</span> <a href="api/db/backup">백업 내려받기</a></dd>
         <dt>HTTP</dt><dd>포트 @Jobs.HttpPort · 이 PC 주소: @foreach (var ip in LocalIps()) { <code>http://@ip:@Jobs.HttpPort</code> }</dd>
         <dt>브리지 UDP</dt><dd>:@Gw.Value.UdpPort (RFID :@(Gw.Value.RfidPort > 0 ? Gw.Value.RfidPort : "사용 안 함")) @(Link.BindError is null ? "" : $"⚠ {Link.BindError}")</dd>
         <dt>오프라인 판정</dt><dd>heartbeat @(Gw.Value.OfflineAfterSec)초 없음</dd>

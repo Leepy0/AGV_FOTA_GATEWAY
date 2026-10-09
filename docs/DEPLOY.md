@@ -14,7 +14,8 @@
 
 3. 브라우저에서 `http://<이 PC IP>:8080` 을 엽니다. 사내 다른 PC·태블릿에서도 같은 주소로 접속합니다.
 
-삭제는 `uninstall-service.bat`(관리자). 업로드한 펌웨어와 작업 기록은 `data\` 폴더에, 서버 로그는 `data\logs\gateway-날짜.log`(14일 보관)에 남습니다.
+삭제는 `uninstall-service.bat`(관리자). 업로드한 펌웨어 파일은 `data\firmware\` 에, 펌웨어 목록·배포 작업·호기 소속·최근 위치·마지막 접속은 **SQLite 데이터베이스 `data\gateway.db`** 에, 서버 로그는 `data\logs\gateway-날짜.log`(14일 보관)에 남습니다.
+이전 버전의 `jobs.json`·`firmware\index.json`·`agv_groups.json` 은 첫 실행 때 자동으로 DB 로 옮겨지고 `.migrated` 로 이름이 바뀝니다.
 `C:\Program Files` 아래는 쓰기 권한 때문에 업데이트·데이터 저장이 막히므로 `C:\AgvFotaGateway` 같은 일반 폴더를 쓰세요 (설치 스크립트가 경고합니다).
 현재 적용된 설정·경로·이 PC 의 IP 는 화면 **설정** 에서 봅니다.
 
@@ -51,6 +52,15 @@
 | `AcsInventory.*` | 비활성 | ACS 에서 호기 소속(제품군·층·라인·공정·라우트) 받기. 꺼져 있어도 **구역** 화면에서 직접 입력·CSV 로 관리 (`docs/ACS_API.md`) |
 
 바꾼 뒤 서비스를 재시작합니다 (`sc stop AgvFotaGateway` / `sc start AgvFotaGateway`).
+
+## 4-1. 데이터베이스 (`data\gateway.db`, SQLite)
+
+- 파일 하나(WAL 모드라 `-wal`·`-shm` 보조 파일이 함께 생깁니다). 별도 설치·서비스 없음.
+- 표: `firmware`(펌웨어 목록), `jobs`·`job_targets`(배포 작업과 호기별 결과·로그), `agv_groups`(호기 소속), `agv_positions`(최근 위치), `agv_last_seen`(호기별 마지막 접속·상태), `meta`(스키마 버전).
+- **백업**: 화면 **설정** 의 "백업 내려받기"(`GET /api/db/backup`) — 실행 중에도 일관된 사본을 받습니다. 파일을 그냥 복사하려면 서비스를 멈추고 `gateway.db`·`-wal`·`-shm` 을 함께 복사하세요.
+- 다른 프로그램에서 보려면 [DB Browser for SQLite](https://sqlitebrowser.org/) 로 열면 됩니다 (읽기 전용으로 여세요. 서버가 쓰는 중이면 잠깐 잠길 수 있습니다).
+- 스키마 변경은 서버가 시작할 때 `meta.schema_version` 을 보고 자동으로 적용합니다. 열을 지우지 않으므로 되돌려도 됩니다.
+- 부하: 호기 50대 heartbeat 1Hz 기준 DB 쓰기는 분당 100번 이하(마지막 접속은 30초에 한 번, 버전이 바뀌면 바로). RTLS 위치는 호기별 최신값만 덮어씁니다(이력은 아직 없음).
 
 ## 5. 업데이트 (자동, 사내망 대응)
 

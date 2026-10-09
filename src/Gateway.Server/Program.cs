@@ -3,6 +3,7 @@ using Gateway.Core.Agv;
 using Gateway.Core.Groups;
 using Gateway.Core.Positions;
 using Gateway.Server.Components;
+using Gateway.Server.Data;
 using Gateway.Server.Options;
 using Gateway.Server.Services;
 using Microsoft.AspNetCore.Http.Features;
@@ -34,12 +35,14 @@ builder.Services.AddSingleton(fileLog);
 
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
-builder.Services.AddSingleton<AgvRegistry>();
+// 데이터베이스: SQLite 파일 하나 (펌웨어 목록·작업·호기 소속·최근 위치·마지막 접속). 예전 JSON 파일은 첫 실행 때 옮긴다
+builder.Services.AddSingleton(sp => new GatewayDb(dataDir));
+builder.Services.AddSingleton(sp => new AgvRegistry(sp.GetRequiredService<GatewayDb>()));
 builder.Services.AddSingleton<BridgeUdpService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BridgeUdpService>());
 builder.Services.AddSingleton<AcsRelayService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsRelayService>());
-builder.Services.AddSingleton(sp => new FirmwareStore(dataDir));
+builder.Services.AddSingleton(sp => new FirmwareStore(dataDir, sp.GetRequiredService<GatewayDb>()));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<JobService>());
 builder.Services.AddSingleton<TraceLog>();
@@ -47,7 +50,7 @@ builder.Services.AddSingleton<AgvPositionStore>();
 builder.Services.AddHttpClient<AcsRestPublisher>();
 builder.Services.AddSingleton<AcsPositionPushService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsPositionPushService>());
-builder.Services.AddSingleton(sp => new AgvGroupStore(dataDir));
+builder.Services.AddSingleton(sp => new AgvGroupStore(dataDir, sp.GetRequiredService<GatewayDb>()));
 builder.Services.AddSingleton<AcsInventoryPullService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullService>());
 builder.Services.AddSingleton<UpdateService>();
@@ -169,6 +172,13 @@ api.MapPost("/acs/inventory/preview", async (AcsInventoryPullService p) =>
     var (http, parsed, sample) = await p.PreviewAsync();
     return Results.Ok(new { ok = http.Ok, http = http.ToString(), parsed?.TotalRecords, items = parsed?.Items, parsed?.Warnings, sample });
 });
+// ───── 데이터베이스 ─────
+api.MapGet("/db", (GatewayDb db) => new
+{
+    db.Path, Size = db.FileSize, Schema = GatewayDb.SchemaVersion,
+    Tables = new { firmware = db.Count("firmware"), jobs = db.Count("jobs"), job_targets = db.Count("job_targets"), agv_groups = db.Count("agv_groups"), agv_positions = db.Count("agv_positions"), agv_last_seen = db.Count("agv_last_seen") },
+});
+api.MapGet("/db/backup", (GatewayDb db) => Results.File(db.Backup(), "application/octet-stream", $"gateway-{DateTime.Now:yyyyMMdd-HHmm}.db"));
 api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, channel = u.Channel, time = DateTime.UtcNow }));
 
 app.Lifetime.ApplicationStarted.Register(() =>

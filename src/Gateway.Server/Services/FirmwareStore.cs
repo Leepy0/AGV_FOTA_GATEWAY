@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Gateway.Core.Fota;
+using Gateway.Server.Data;
 
 namespace Gateway.Server.Services;
 
@@ -27,22 +28,65 @@ public sealed class FirmwareEntry
     public string FilesText => string.Join(", ", Files.Select(f => $"{f.Slot}:{f.FileName} ({f.Size:N0}B)"));
 }
 
-/// <summary>펌웨어 저장소 — {DataDir}/firmware/{id}/ 에 파일, index.json 에 목록</summary>
+/// <summary>펌웨어 저장소 — 파일은 {DataDir}/firmware/{id}/ 에, 목록은 SQLite firmware 표에 (예전 index.json 은 첫 실행 때 옮긴다)</summary>
 public sealed class FirmwareStore
 {
     readonly string _root;
-    readonly string _index;
+    readonly GatewayDb _db;
     readonly object _lock = new();
-    List<FirmwareEntry> _entries = new();
+    readonly List<FirmwareEntry> _entries = new();
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
-    public FirmwareStore(string dataDir)
+    public FirmwareStore(string dataDir, GatewayDb db)
     {
         _root = Path.Combine(dataDir, "firmware");
-        _index = Path.Combine(_root, "index.json");
+        _db = db;
         Directory.CreateDirectory(_root);
-        if (File.Exists(_index))
-            _entries = JsonSerializer.Deserialize<List<FirmwareEntry>>(File.ReadAllText(_index), Json) ?? new();
+        Load();
+        MigrateJson(Path.Combine(_root, "index.json"));
+    }
+
+    void Load()
+    {
+        using var c = _db.Open();
+        using var cmd = GatewayDb.Cmd(c, "SELECT id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256 FROM firmware");
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            _entries.Add(new FirmwareEntry
+            {
+                Id = r.GetString(0), Kind = Enum.Parse<FirmwareKind>(r.GetString(1)), Version = r.GetString(2), Project = r.GetString(3), Notes = r.GetString(4),
+                UploadedAt = GatewayDb.Dt(r.GetString(5)),
+                Files = { new FirmwareFile { Slot = r.GetString(6), FileName = r.GetString(7), Size = r.GetInt64(8), Sha256 = r.GetString(9) } },
+            });
+    }
+
+    /// <summary>SQLite 도입 전 index.json 이 있으면 한 번 가져오고 .migrated 로 이름을 바꾼다</summary>
+    void MigrateJson(string indexPath)
+    {
+        if (!File.Exists(indexPath)) return;
+        try
+        {
+            var old = JsonSerializer.Deserialize<List<FirmwareEntry>>(File.ReadAllText(indexPath), Json) ?? new();
+            int n = 0;
+            foreach (var e in old.Where(e => e.Files.Count == 1 && !_entries.Any(x => x.Id == e.Id)))
+            {
+                Insert(e); _entries.Add(e); n++;
+            }
+            File.Move(indexPath, indexPath + ".migrated", true);
+            if (n > 0) Console.WriteLine($"firmware index.json → SQLite: {n}개 이전");
+        }
+        catch (Exception e) { Console.Error.WriteLine("firmware index.json 이전 실패: " + e.Message); }
+    }
+
+    void Insert(FirmwareEntry e)
+    {
+        var f = e.Files[0];
+        using var c = _db.Open();
+        GatewayDb.Exec(c, """
+            INSERT OR REPLACE INTO firmware(id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256)
+            VALUES($id, $kind, $ver, $proj, $notes, $up, $slot, $file, $size, $sha)
+            """, ("$id", e.Id), ("$kind", e.Kind.ToString()), ("$ver", e.Version), ("$proj", e.Project), ("$notes", e.Notes),
+            ("$up", GatewayDb.Ts(e.UploadedAt)), ("$slot", f.Slot), ("$file", f.FileName), ("$size", f.Size), ("$sha", f.Sha256));
     }
 
     public IReadOnlyList<FirmwareEntry> List() { lock (_lock) return _entries.OrderByDescending(e => e.UploadedAt).ToList(); }
@@ -107,7 +151,7 @@ public sealed class FirmwareStore
             try { Directory.Delete(dir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             throw;
         }
-        lock (_lock) { _entries.Add(e); Save(); }
+        lock (_lock) { Insert(e); _entries.Add(e); }
         return e;
     }
 
@@ -131,11 +175,9 @@ public sealed class FirmwareStore
             var e = _entries.FirstOrDefault(x => x.Id == id);
             if (e is null) return false;
             _entries.Remove(e);
-            Save();
+            using (var c = _db.Open()) GatewayDb.Exec(c, "DELETE FROM firmware WHERE id=$id", ("$id", id));
             try { Directory.Delete(Path.Combine(_root, id), true); } catch (IOException) { }
             return true;
         }
     }
-
-    void Save() => File.WriteAllText(_index, JsonSerializer.Serialize(_entries, Json));
 }

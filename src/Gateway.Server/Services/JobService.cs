@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Gateway.Core.Fota;
+using Gateway.Server.Data;
 using Gateway.Server.Options;
 using Microsoft.Extensions.Options;
 
@@ -50,7 +51,7 @@ public sealed class JobService : BackgroundService
     readonly AgvRegistry _reg;
     readonly BridgeUdpService _link;
     readonly ILogger<JobService> _log;
-    readonly string _path;
+    readonly GatewayDb _db;
     readonly object _lock = new();
     readonly List<Job> _jobs = new();
     readonly Dictionary<string, CancellationTokenSource> _running = new();
@@ -58,18 +59,19 @@ public sealed class JobService : BackgroundService
 
     public event Action? Changed;
 
-    public JobService(IOptions<GatewayOptions> opt, FirmwareStore fw, AgvRegistry reg, BridgeUdpService link, ILogger<JobService> log)
+    public JobService(IOptions<GatewayOptions> opt, FirmwareStore fw, AgvRegistry reg, BridgeUdpService link, GatewayDb db, ILogger<JobService> log)
     {
-        _opt = opt.Value; _fw = fw; _reg = reg; _link = link; _log = log;
-        _path = Path.Combine(_opt.DataDir, "jobs.json");
-        if (File.Exists(_path))
-            _jobs = JsonSerializer.Deserialize<List<Job>>(File.ReadAllText(_path), Json) ?? new();
+        _opt = opt.Value; _fw = fw; _reg = reg; _link = link; _db = db; _log = log;
+        Load();
+        MigrateJson(Path.Combine(_opt.DataDir, "jobs.json"));
+        var touched = new List<Job>();
         // 서버가 재시작됐을 때 실행 중이던 작업은 실패로 정리
         foreach (var j in _jobs.Where(j => j.State == JobState.Running))
         {
             j.State = JobState.Failed; j.FinishedAt = DateTime.UtcNow;
             foreach (var r in j.Results.Where(r => r.State == TargetState.Running)) { r.State = TargetState.Failed; r.Message = "서버 재시작"; }
             foreach (var r in j.Results.Where(r => r.State == TargetState.Waiting)) { r.State = TargetState.Skipped; r.Message = "서버 재시작"; }
+            touched.Add(j);
         }
         // 서버가 꺼져 있는 동안 예약 시각이 한참 지난 작업은 몰래 실행하지 않고 취소 (야간 예약이 아침에 갑자기 도는 사고 방지)
         var stale = DateTime.UtcNow.AddMinutes(-StaleScheduleMinutes);
@@ -77,8 +79,89 @@ public sealed class JobService : BackgroundService
         {
             j.State = JobState.Cancelled; j.FinishedAt = DateTime.UtcNow;
             foreach (var r in j.Results) { r.State = TargetState.Skipped; r.Message = $"서버 중단 중 예약 시각 경과 ({StaleScheduleMinutes}분 초과) — 다시 예약하세요"; }
+            touched.Add(j);
         }
-        if (_jobs.Count > 0) Save();
+        foreach (var j in touched) Save(j);
+    }
+
+    // ───── SQLite (jobs + job_targets) ─────
+
+    void Load()
+    {
+        using var c = _db.Open();
+        using (var cmd = GatewayDb.Cmd(c, "SELECT id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at FROM jobs"))
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+                _jobs.Add(new Job
+                {
+                    Id = r.GetString(0), Name = r.GetString(1), FirmwareId = r.GetString(2), Kind = Enum.Parse<FirmwareKind>(r.GetString(3)), FirmwareVersion = r.GetString(4),
+                    ScheduledAt = GatewayDb.DtN(r.IsDBNull(5) ? null : r.GetString(5)), StopOnFailure = r.GetInt64(6) != 0, State = Enum.Parse<JobState>(r.GetString(7)),
+                    CreatedAt = GatewayDb.Dt(r.GetString(8)), StartedAt = GatewayDb.DtN(r.IsDBNull(9) ? null : r.GetString(9)), FinishedAt = GatewayDb.DtN(r.IsDBNull(10) ? null : r.GetString(10)),
+                });
+        var byId = _jobs.ToDictionary(j => j.Id);
+        using (var cmd = GatewayDb.Cmd(c, "SELECT job_id, agv, state, percent, message, version_before, version_after, started_at, finished_at, log FROM job_targets ORDER BY job_id, seq"))
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+            {
+                if (!byId.TryGetValue(r.GetString(0), out var j)) continue;
+                var t = new TargetResult
+                {
+                    Agv = r.GetInt32(1), State = Enum.Parse<TargetState>(r.GetString(2)), Percent = r.GetInt32(3), Message = r.GetString(4),
+                    VersionBefore = r.GetString(5), VersionAfter = r.GetString(6),
+                    StartedAt = GatewayDb.DtN(r.IsDBNull(7) ? null : r.GetString(7)), FinishedAt = GatewayDb.DtN(r.IsDBNull(8) ? null : r.GetString(8)),
+                };
+                var log = r.GetString(9);
+                if (log.Length > 0) t.Log = log.Split('\n').ToList();
+                j.Results.Add(t);
+                j.Targets.Add(t.Agv);
+            }
+    }
+
+    /// <summary>SQLite 도입 전 jobs.json 이 있으면 한 번 가져오고 .migrated 로 이름을 바꾼다</summary>
+    void MigrateJson(string path)
+    {
+        if (!File.Exists(path)) return;
+        try
+        {
+            var old = JsonSerializer.Deserialize<List<Job>>(File.ReadAllText(path), Json) ?? new();
+            int n = 0;
+            foreach (var j in old.Where(j => !_jobs.Any(x => x.Id == j.Id))) { _jobs.Add(j); Save(j); n++; }
+            File.Move(path, path + ".migrated", true);
+            if (n > 0) _log.LogInformation("jobs.json → SQLite: {N}건 이전", n);
+        }
+        catch (Exception e) { _log.LogError("jobs.json 이전 실패: {Msg}", e.Message); }
+    }
+
+    /// <summary>작업 한 건(대상 포함) 저장. 저장 실패로 서비스가 죽지 않도록 로그만 남긴다 — 메모리 상태는 유지</summary>
+    void Save(Job j)
+    {
+        try
+        {
+            using var c = _db.Open();
+            using var tx = c.BeginTransaction();
+            GatewayDb.Exec(c, """
+                INSERT OR REPLACE INTO jobs(id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at)
+                VALUES($id, $name, $fw, $kind, $ver, $sched, $stop, $state, $created, $started, $finished)
+                """, ("$id", j.Id), ("$name", j.Name), ("$fw", j.FirmwareId), ("$kind", j.Kind.ToString()), ("$ver", j.FirmwareVersion),
+                ("$sched", GatewayDb.Ts(j.ScheduledAt)), ("$stop", j.StopOnFailure ? 1 : 0), ("$state", j.State.ToString()),
+                ("$created", GatewayDb.Ts(j.CreatedAt)), ("$started", GatewayDb.Ts(j.StartedAt)), ("$finished", GatewayDb.Ts(j.FinishedAt)));
+            int seq = 0;
+            foreach (var r in j.Results)
+                GatewayDb.Exec(c, """
+                    INSERT OR REPLACE INTO job_targets(job_id, agv, seq, state, percent, message, version_before, version_after, started_at, finished_at, log)
+                    VALUES($job, $agv, $seq, $state, $pct, $msg, $vb, $va, $started, $finished, $log)
+                    """, ("$job", j.Id), ("$agv", r.Agv), ("$seq", seq++), ("$state", r.State.ToString()), ("$pct", r.Percent), ("$msg", r.Message),
+                    ("$vb", r.VersionBefore), ("$va", r.VersionAfter), ("$started", GatewayDb.Ts(r.StartedAt)), ("$finished", GatewayDb.Ts(r.FinishedAt)),
+                    ("$log", string.Join('\n', r.Log)));
+            tx.Commit();
+        }
+        catch (Exception e) { _log.LogError("작업 저장 실패 ({Id}): {Msg}", j.Id, e.Message); }
+    }
+
+    void DeleteRow(string id)
+    {
+        try { using var c = _db.Open(); GatewayDb.Exec(c, "DELETE FROM jobs WHERE id=$id", ("$id", id)); }   // job_targets 는 CASCADE
+        catch (Exception e) { _log.LogError("작업 삭제 실패 ({Id}): {Msg}", id, e.Message); }
     }
 
     /// <summary>예약 시각이 이보다 오래 지난 채 서버가 켜지면 자동 취소</summary>
@@ -100,7 +183,7 @@ public sealed class JobService : BackgroundService
             ScheduledAt = scheduledAtUtc, StopOnFailure = stopOnFailure, State = JobState.Scheduled, CreatedAt = DateTime.UtcNow,
             Results = t.Select(a => new TargetResult { Agv = a }).ToList(),
         };
-        lock (_lock) { _jobs.Add(j); Save(); }
+        lock (_lock) { _jobs.Add(j); Save(j); }
         Notify();
         return j;
     }
@@ -111,7 +194,7 @@ public sealed class JobService : BackgroundService
         {
             var j = _jobs.FirstOrDefault(x => x.Id == id);
             if (j is null) return false;
-            if (j.State == JobState.Scheduled) { j.State = JobState.Cancelled; j.FinishedAt = DateTime.UtcNow; Save(); }
+            if (j.State == JobState.Scheduled) { j.State = JobState.Cancelled; j.FinishedAt = DateTime.UtcNow; Save(j); }
             else if (j.State == JobState.Running && _running.TryGetValue(id, out var cts)) cts.Cancel();
             else return false;
         }
@@ -125,7 +208,7 @@ public sealed class JobService : BackgroundService
         {
             var j = _jobs.FirstOrDefault(x => x.Id == id);
             if (j is null || j.State == JobState.Running) return false;
-            _jobs.Remove(j); Save();
+            _jobs.Remove(j); DeleteRow(id);
         }
         Notify();
         return true;
@@ -148,7 +231,7 @@ public sealed class JobService : BackgroundService
                     due.State = JobState.Running; due.StartedAt = DateTime.UtcNow;
                     var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     _running[due.Id] = cts;
-                    Save();
+                    Save(due);
                     _ = RunJobAsync(due, cts.Token).ContinueWith(_ => { lock (_lock) { _running.Remove(due.Id); } }, CancellationToken.None);
                 }
             }
@@ -168,7 +251,7 @@ public sealed class JobService : BackgroundService
             _log.LogError(e, "job {Id} 실행기 오류", job.Id);
             foreach (var r in job.Results.Where(r => r.State is TargetState.Running or TargetState.Waiting)) { r.State = TargetState.Failed; r.Message = "실행기 오류: " + e.Message; }
             job.State = JobState.Failed; job.FinishedAt = DateTime.UtcNow;
-            Persist();
+            Persist(job);
         }
     }
 
@@ -185,7 +268,7 @@ public sealed class JobService : BackgroundService
                 continue;
             }
             r.State = TargetState.Running; r.StartedAt = DateTime.UtcNow; r.Percent = 0;
-            Persist();
+            Persist(job);
             try
             {
                 if (job.Kind == FirmwareKind.Dsp) await RunDspAsync(fw, r, ct);
@@ -199,11 +282,11 @@ public sealed class JobService : BackgroundService
                 if (job.StopOnFailure) stop = true;
             }
             r.FinishedAt = DateTime.UtcNow;
-            Persist();
+            Persist(job);
         }
         job.State = ct.IsCancellationRequested ? JobState.Cancelled : job.FailCount > 0 ? JobState.Failed : JobState.Done;
         job.FinishedAt = DateTime.UtcNow;
-        Persist();
+        Persist(job);
         _log.LogInformation("job {Id} {State}: done {Done} fail {Fail}", job.Id, job.State, job.DoneCount, job.FailCount);
     }
 
@@ -293,12 +376,6 @@ public sealed class JobService : BackgroundService
     /// <summary>Kestrel 이 실제로 연 HTTP 포트 (Program.cs 가 기동 후 설정)</summary>
     public int HttpPort { get; set; } = 8080;
 
-    void Persist() { lock (_lock) Save(); Notify(); }
-    void Save()
-    {
-        // 저장 실패(백신이 잠깐 잠금, 디스크 풀)로 서비스 전체가 죽지 않도록 — 메모리 상태는 유지되고 다음 저장 때 다시 쓴다
-        try { File.WriteAllText(_path, JsonSerializer.Serialize(_jobs, Json)); }
-        catch (Exception e) { _log.LogError("jobs.json 저장 실패: {Msg}", e.Message); }
-    }
+    void Persist(Job j) { lock (_lock) Save(j); Notify(); }
     void Notify() { try { Changed?.Invoke(); } catch { } }
 }

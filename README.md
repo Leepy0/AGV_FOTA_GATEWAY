@@ -17,7 +17,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | 경로 | 내용 |
 |---|---|
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat, AGV 프레임(BCC, ACS 화이트리스트), `.dspfw` 파서, 메인보드 OTA(B안)·브리지 OTA 클라이언트, 업데이트 피드 파싱 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, 서버 자체 업데이트, REST API |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기, 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db` — 펌웨어 목록·작업·소속·최근 위치·마지막 접속), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`, 가짜 브리지로 메인보드 OTA 단계·실패·job 불일치 |
 | `tests/fake_esp.py` | 가짜 브리지(0.5.0 B안) — 하드웨어 없이 서버 종단 시험 (`--fail-at erase` 로 실패 재현) |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` |
@@ -54,3 +54,5 @@ REST API (화면과 같은 기능, 스크립트용): `GET /api/agvs`, `GET|POST|
 - **메인보드 OTA 실기 검증**: 브리지 0.5.0 과 부트로더·앱은 실기 검증 전. 서버 쪽은 가짜 브리지로만 확인.
 - **로그인·권한**: 사내망 전제로 없음. 필요하면 ASP.NET Core 인증을 붙인다.
 - **AGV 정지 확인 자동화**: 지금은 운용자가 정지 상태에서 실행. ACS 중계가 붙으면 마지막 W/E 패킷으로 판단 가능.
+- **ACS REST 스키마 2건**: 위치 보고(보내기)와 호기 소속(받기). 임시 형식으로 틀만 있음 (`docs/ACS_API.md`).
+- **DB**: SQLite 로 결정(2026-10-09). 위치 이력·이벤트 이력 표는 RTLS 구현 때 추가.

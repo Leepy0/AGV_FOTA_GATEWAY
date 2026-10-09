@@ -1,33 +1,65 @@
 using System.Text.Json;
 using Gateway.Core.Groups;
+using Gateway.Server.Data;
 
 namespace Gateway.Server.Services;
 
 /// <summary>
-/// 호기 소속 저장소 ({DataDir}/agv_groups.json). ACS 에서 받은 값(acs)과 화면·CSV 로 넣은 값(manual/import)을 함께 둔다.
+/// 호기 소속 저장소 (SQLite agv_groups 표. 예전 agv_groups.json 은 첫 실행 때 옮긴다). ACS 에서 받은 값(acs)과 화면·CSV 로 넣은 값(manual/import)을 함께 둔다.
 /// 트리는 바뀔 때마다 다시 만든다 (호기 수백 대 규모라 비용 없음).
 /// </summary>
 public sealed class AgvGroupStore
 {
-    readonly string _path;
+    readonly GatewayDb _db;
     readonly object _lock = new();
     readonly Dictionary<int, AgvAssignment> _items = new();
     GroupNode? _tree;
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     public event Action? Changed;
 
-    public AgvGroupStore(string dataDir)
+    public AgvGroupStore(string dataDir, GatewayDb db)
     {
-        _path = Path.Combine(dataDir, "agv_groups.json");
-        if (File.Exists(_path))
+        _db = db;
+        using (var c = _db.Open())
+        {
+            using var cmd = GatewayDb.Cmd(c, "SELECT agv, name, product_family, floor, line, process, route, source, updated_at, note FROM agv_groups");
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                _items[r.GetInt32(0)] = new AgvAssignment
+                {
+                    Agv = r.GetInt32(0), Name = r.GetString(1), Group = new AgvGroup(r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6)),
+                    Source = r.GetString(7), UpdatedAt = GatewayDb.Dto(r.GetString(8)), Note = r.GetString(9),
+                };
+        }
+        var json = Path.Combine(dataDir, "agv_groups.json");
+        if (File.Exists(json))
         {
             try
             {
-                foreach (var a in JsonSerializer.Deserialize<List<AgvAssignment>>(File.ReadAllText(_path), Json) ?? new())
-                    _items[a.Agv] = a;
+                var old = JsonSerializer.Deserialize<List<AgvAssignment>>(File.ReadAllText(json), Json) ?? new();
+                lock (_lock) { foreach (var a in old.Where(a => !_items.ContainsKey(a.Agv))) { _items[a.Agv] = a; Write(a); } }
+                File.Move(json, json + ".migrated", true);
             }
             catch (JsonException) { }
         }
+    }
+
+    void Write(AgvAssignment a)
+    {
+        _tree = null;
+        using var c = _db.Open();
+        GatewayDb.Exec(c, """
+            INSERT OR REPLACE INTO agv_groups(agv, name, product_family, floor, line, process, route, source, updated_at, note)
+            VALUES($agv, $name, $pf, $fl, $ln, $pr, $rt, $src, $up, $note)
+            """, ("$agv", a.Agv), ("$name", a.Name), ("$pf", a.Group.ProductFamily), ("$fl", a.Group.Floor), ("$ln", a.Group.Line),
+            ("$pr", a.Group.Process), ("$rt", a.Group.Route), ("$src", a.Source), ("$up", GatewayDb.Ts(a.UpdatedAt)), ("$note", a.Note));
+    }
+
+    void Delete(int agv)
+    {
+        _tree = null;
+        using var c = _db.Open();
+        GatewayDb.Exec(c, "DELETE FROM agv_groups WHERE agv=$agv", ("$agv", agv));
     }
 
     public int Count { get { lock (_lock) return _items.Count; } }
@@ -40,7 +72,7 @@ public sealed class AgvGroupStore
     public AgvAssignment Set(int agv, AgvGroup group, string? name = null, string note = "", string source = "manual")
     {
         var a = new AgvAssignment { Agv = agv, Group = group, Name = name ?? Get(agv)?.Name ?? "", Note = note, Source = source, UpdatedAt = DateTimeOffset.UtcNow };
-        lock (_lock) { _items[agv] = a; Save(); }
+        lock (_lock) { _items[agv] = a; Write(a); }
         Notify();
         return a;
     }
@@ -48,7 +80,7 @@ public sealed class AgvGroupStore
     public bool Remove(int agv)
     {
         bool ok;
-        lock (_lock) { ok = _items.Remove(agv); if (ok) Save(); }
+        lock (_lock) { ok = _items.Remove(agv); if (ok) Delete(agv); }
         if (ok) Notify();
         return ok;
     }
@@ -59,8 +91,7 @@ public sealed class AgvGroupStore
         int n = 0;
         lock (_lock)
         {
-            foreach (var a in items) { a.Source = "import"; _items[a.Agv] = a; n++; }
-            if (n > 0) Save();
+            foreach (var a in items) { a.Source = "import"; _items[a.Agv] = a; Write(a); n++; }
         }
         if (n > 0) Notify();
         return n;
@@ -82,22 +113,15 @@ public sealed class AgvGroupStore
                     if (cur.Group == a.Group && cur.Name == a.Name && cur.Source == "acs") continue;
                 }
                 a.Source = "acs";
-                _items[a.Agv] = a; changed++;
+                _items[a.Agv] = a; Write(a); changed++;
             }
             if (removeMissing)
                 foreach (var k in _items.Where(kv => kv.Value.Source == "acs" && !seen.Contains(kv.Key)).Select(kv => kv.Key).ToList())
-                { _items.Remove(k); removed++; }
-            if (changed + removed > 0) Save();
+                { _items.Remove(k); Delete(k); removed++; }
         }
         if (changed + removed > 0) Notify();
         return (changed, removed);
     }
 
-    void Save()
-    {
-        _tree = null;
-        try { File.WriteAllText(_path, JsonSerializer.Serialize(_items.Values.OrderBy(a => a.Agv).ToList(), Json)); }
-        catch (Exception) { }
-    }
     void Notify() { try { Changed?.Invoke(); } catch { } }
 }
