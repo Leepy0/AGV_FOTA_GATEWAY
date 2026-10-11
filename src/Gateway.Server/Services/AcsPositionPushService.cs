@@ -51,7 +51,7 @@ public sealed class AcsPositionPushService : BackgroundService
     /// <summary>지금 한 번 발행 (화면·API 의 "지금 보내기"). force = 변경 없어도 전체 전송</summary>
     public async Task<string> PushAsync(CancellationToken ct = default, bool force = false)
     {
-        var (changed, version) = _opt.OnlyChanged && !force ? _store.ChangedSince(_sentVersion) : (_store.Snapshot(), _store.Version);
+        var (changed, version) = _opt.OnlyChanged && !force ? _store.ChangedSince(_sentVersion) : _store.All();
         if (changed.Count == 0) return "보낼 변경 없음";
         var now = DateTimeOffset.UtcNow;
         LastTry = DateTime.UtcNow;
