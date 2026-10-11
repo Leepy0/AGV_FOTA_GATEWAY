@@ -27,7 +27,16 @@ public sealed class AcsInventoryFieldMap
     public string AgvIdRegex { get; set; } = @"(?<!\d)(\d{1,2})\s*$";
 }
 
-public sealed record AcsInventoryParseResult(List<AgvAssignment> Items, List<string> Warnings, int TotalRecords);
+/// <param name="RootFound">호기 목록 배열을 찾았는지 (false 면 오류 응답·형식 변경 — 반영하면 안 됨)</param>
+public sealed record AcsInventoryParseResult(List<AgvAssignment> Items, List<string> Warnings, int TotalRecords, bool RootFound = true)
+{
+    /// <summary>반영하면 안 되는 응답이면 그 이유 (목록 못 찾음·빈 목록·전부 해석 실패), 반영해도 되면 null.
+    /// 이런 응답을 그대로 반영하면 RemoveMissing 때문에 acs 출처 소속이 전부 지워진다.</summary>
+    public string? RejectReason =>
+        !RootFound ? "호기 목록을 찾지 못함" + (Warnings.Count > 0 ? $" ({Warnings[0]})" : "")
+        : Items.Count == 0 ? (TotalRecords == 0 ? "호기 목록이 비어 있음" : $"{TotalRecords}건 모두 호기 번호 해석 실패 (Fields 매핑 확인)")
+        : null;
+}
 
 public static class AcsInventoryMapper
 {
@@ -53,7 +62,7 @@ public static class AcsInventoryMapper
         if (root is null || root.Value.ValueKind != JsonValueKind.Array)
         {
             warnings.Add(string.IsNullOrEmpty(map.Root) ? "호기 목록(배열)을 찾지 못함 — AcsInventory.Fields.Root 지정 필요" : $"'{map.Root}' 가 배열이 아님");
-            return new(items, warnings, 0);
+            return new(items, warnings, 0, RootFound: false);
         }
         var rx = new Regex(map.AgvIdRegex);
         int total = 0;

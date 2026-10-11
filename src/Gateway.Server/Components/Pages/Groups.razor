@@ -19,6 +19,12 @@
         <button @onclick="Pull" disabled="@(busy || !Inv.Enabled)">지금 받기</button>
     </span>
 </div>
+@if (Inv.Enabled && Inv.LastWarnings.Count > 0)
+{
+    <div class="banner" style="background:#fef3c7;border-color:#fcd34d;color:#92400e">ACS 소속 경고: @string.Join(" · ", Inv.LastWarnings.Take(3))@(Inv.LastWarnings.Count > 3 ? $" … 외 {Inv.LastWarnings.Count - 3}건" : "")</div>
+}
+@if (Store.StartupError is { } se) { <div class="banner err">소속 저장소: @se</div> }
+@if (Store.DuplicatePaths is { Count: > 0 } dup) { <div class="banner err">같은 경로의 구역이 둘 이상 있습니다 (선택·배포 대상이 틀릴 수 있음): @string.Join(", ", dup)</div> }
 @if (preview is not null) { <pre class="log">@preview</pre> }
 
 <div class="split">
@@ -185,7 +191,7 @@
             var (http, parsed, sample) = await Inv.PreviewAsync();
             preview = !http.Ok || parsed is null
                 ? $"{http}\n{sample}"
-                : $"{http} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석\n" +
+                : $"{http} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석" + (parsed.RejectReason is { } why ? $" · 반영 안 됨: {why}" : "") + "\n" +
                   string.Join("\n", parsed.Items.Take(20).Select(i => $"  {i.Agv:D2} {i.Name,-10} {i.Group.Path}")) +
                   (parsed.Items.Count > 20 ? $"\n  … {parsed.Items.Count - 20}대 더" : "") +
                   (parsed.Warnings.Count > 0 ? "\n경고:\n  " + string.Join("\n  ", parsed.Warnings.Take(10)) : "") +
@@ -197,6 +203,8 @@
     async Task Pull()
     {
         busy = true;
-        try { preview = await Inv.PullAsync(); } finally { busy = false; }
+        try { preview = await Inv.PullAsync(); }
+        catch (Exception e) { preview = "오류: " + e.Message; }   // 회로가 죽지 않게 — 화면 메시지로
+        finally { busy = false; }
     }
 }

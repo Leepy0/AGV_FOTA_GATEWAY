@@ -36,6 +36,7 @@ public sealed class AcsInventoryPullService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        if (_store.StartupError is { } se) _log.LogError("호기 소속 저장소: {Error}", se);
         if (!_opt.Enabled) { _log.LogInformation("ACS 소속 받기 꺼짐 (AcsInventory.Enabled=false) — 화면·CSV 로 관리"); return; }
         _log.LogInformation("ACS 소속 받기: {Target} {Interval}초", Target, _opt.IntervalSec);
         try { await Task.Delay(3000, ct); } catch (OperationCanceledException) { return; }
@@ -50,10 +51,19 @@ public sealed class AcsInventoryPullService : BackgroundService
         }
     }
 
-    /// <summary>받아서 해석만 (저장 안 함) — 스키마 맞추기용. 원문 앞부분도 돌려준다</summary>
+    /// <summary>받아서 해석만 (저장 안 함) — 스키마 맞추기용. 원문 앞부분도 돌려준다. 주소·연결 오류는 예외 대신 실패 결과로</summary>
     public async Task<(PublishResult http, AcsInventoryParseResult? parsed, string sample)> PreviewAsync(CancellationToken ct = default)
     {
-        var r = await _http.GetAsync(Settings, ct);
+        var s = Settings;
+        var url = s.BaseUrl.TrimEnd('/') + "/" + s.Path.TrimStart('/');
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps))
+            return (new PublishResult(false, 0, "", TimeSpan.Zero, $"잘못된 주소 '{url}' — AcsInventory.BaseUrl 은 http:// 또는 https:// 로 시작"), null, "");
+        PublishResult r;
+        try { r = await _http.GetAsync(s, ct); }
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            return (new PublishResult(false, 0, "", TimeSpan.Zero, $"{e.GetType().Name}: {e.Message}"), null, "");
+        }
         if (!r.Ok) return (r, null, "");
         try
         {
@@ -77,12 +87,29 @@ public sealed class AcsInventoryPullService : BackgroundService
             LastResult = r.ToString();
             _trace.Add($"ACS-INV> 실패 {LastResult}");
         }
+        else if (parsed.RejectReason is { } why)
+        {
+            // 오류 응답·형식 변경·빈 목록: 반영하지 않음 (그대로 반영하면 RemoveMissing 으로 acs 출처 소속이 전부 지워짐)
+            FailStreak++;
+            LastWarnings = parsed.Warnings;
+            LastResult = $"실패 HTTP {r.StatusCode} · {why} — 반영 안 함";
+            _trace.Add($"ACS-INV> {LastResult}");
+            _log.LogWarning("ACS 소속 응답을 반영하지 않음: {Why}", why);
+        }
         else
         {
-            var (changed, removed) = _store.MergeFromAcs(parsed.Items, _opt.OverrideManual, _opt.RemoveMissing);
+            var (changed, removed, held) = _store.MergeFromAcs(parsed.Items, _opt.OverrideManual, _opt.RemoveMissing);
             FailStreak = 0; LastOk = DateTime.UtcNow; LastCount = parsed.Items.Count; LastWarnings = parsed.Warnings;
-            LastResult = $"HTTP {r.StatusCode} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석 · 변경 {changed} · 삭제 {removed}{(parsed.Warnings.Count > 0 ? $" · 경고 {parsed.Warnings.Count}" : "")}";
+            LastResult = $"HTTP {r.StatusCode} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석 · 변경 {changed} · 삭제 {removed}"
+                       + (held.Count > 0 ? $" · 삭제 보류 {held.Count}" : "")
+                       + (parsed.Warnings.Count > 0 ? $" · 경고 {parsed.Warnings.Count}" : "");
             _trace.Add($"ACS-INV> {LastResult}");
+            if (held.Count > 0)
+            {
+                var w = $"ACS 목록에서 acs 출처 {held.Count}대가 한 번에 빠져 삭제 보류 ({string.Join(",", held.Select(x => x.ToString("D2")))}) — 의도한 것이면 구역 화면에서 직접 삭제";
+                LastWarnings = [w, .. parsed.Warnings];
+                _log.LogWarning("{W}", w);
+            }
             if (parsed.Warnings.Count > 0) _log.LogWarning("ACS 소속 경고: {W}", string.Join(" | ", parsed.Warnings.Take(5)));
         }
         try { Changed?.Invoke(); } catch { }
