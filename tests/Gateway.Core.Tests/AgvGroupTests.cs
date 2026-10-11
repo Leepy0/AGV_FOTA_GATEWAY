@@ -52,6 +52,34 @@ public class AgvGroupTests
     }
 
     [Fact]
+    public void Csv_unclosed_quote_is_reported_and_following_lines_still_import()
+    {
+        // 3행의 여는 따옴표가 닫히지 않음 — 예전에는 4행 이후가 모두 한 레코드로 삼켜져 조용히 빠졌다
+        var text = GroupCsv.Header + "\n7,A,2F\n8,\"B,2F\n9,C,3F\n10,D,\"멀티\n라인\",E\n";
+        var items = GroupCsv.Parse(text, Now, out var errors);
+        Assert.Equal(new[] { 7, 9, 10 }, items.Select(i => i.Agv));
+        Assert.Equal("멀티\n라인", items[2].Group.Floor);
+        Assert.Equal(new[] { "3행: 따옴표가 닫히지 않음" }, errors);
+
+        // 마지막 줄에서 열리고 끝남 / 첫 줄에서 열려 끝까지 안 닫힘
+        GroupCsv.Parse("7,A\n8,\"B", Now, out var e2);
+        Assert.Equal(new[] { "2행: 따옴표가 닫히지 않음" }, e2);
+        var it3 = GroupCsv.Parse("7,\"A\n8,B\n9,C\n", Now, out var e3);
+        Assert.Equal(new[] { "1행: 따옴표가 닫히지 않음" }, e3);
+        Assert.Equal(new[] { 8, 9 }, it3.Select(i => i.Agv));
+        GroupCsv.Parse("7,A,\"", Now, out var e4);
+        Assert.Equal(new[] { "1행: 따옴표가 닫히지 않음" }, e4);
+        // 닫는 따옴표 뒤에 구분자가 아닌 글자 (뒤의 줄을 삼킨 경우) — 그 행만 오류, 다음 줄은 반영
+        var it6 = GroupCsv.Parse("7,\"A\n8,B\n9,\"C\",D\n", Now, out var e6);
+        Assert.Equal(new[] { "1행: 따옴표가 닫히지 않음" }, e6);
+        Assert.Equal(new[] { 8, 9 }, it6.Select(i => i.Agv));
+        Assert.Equal("C", it6[1].Group.ProductFamily);
+        // 끝이 "" (이스케이프된 따옴표) 로 끝나도 미종결
+        GroupCsv.Parse("7,\"A\"\"", Now, out var e5);
+        Assert.Equal(new[] { "1행: 따옴표가 닫히지 않음" }, e5);
+    }
+
+    [Fact]
     public void Inventory_mapper_parses_sample_with_default_field_map()
     {
         var r = AcsInventoryMapper.Parse(AcsInventoryMapper.SampleJson, new AcsInventoryFieldMap(), Now);

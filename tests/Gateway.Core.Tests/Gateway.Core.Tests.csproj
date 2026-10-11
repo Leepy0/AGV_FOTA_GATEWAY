@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="TestData\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Gateway.Core\Gateway.Core.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Server\Gateway.Server.csproj" />
   </ItemGroup>

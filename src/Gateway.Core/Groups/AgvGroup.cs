@@ -140,8 +140,9 @@ public static class GroupCsv
     {
         errors = new();
         var list = new List<AgvAssignment>();
-        foreach (var (ln, raw) in Records(text))
+        foreach (var (ln, raw, unclosed) in Records(text))
         {
+            if (unclosed) { errors.Add($"{ln}행: 따옴표가 닫히지 않음"); continue; }
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var f = Split(line);
@@ -179,11 +180,13 @@ public static class GroupCsv
     /// <summary>가져오기 값: 내보내기에서 붙인 ' 를 뗌 (' 뒤가 수식 첫 글자일 때만)</summary>
     static string Unguard(string s) => s.Length > 1 && s[0] == '\'' && FormulaStart(s[1]) ? s[1..] : s;
 
-    /// <summary>줄 단위로 나눔 — 단 큰따옴표로 묶인 값 안의 줄바꿈은 값으로 둔다. (시작 행 번호, 내용)</summary>
-    static IEnumerable<(int line, string text)> Records(string text)
+    /// <summary>줄 단위로 나눔 — 단 큰따옴표로 묶인 값 안의 줄바꿈은 값으로 둔다. (시작 행 번호, 내용, 따옴표 오류).
+    /// 여는 따옴표가 끝까지 닫히지 않거나 닫는 따옴표 뒤에 구분자가 아닌 글자가 오면(뒤의 줄을 삼킨 경우) 그 행만 오류로 돌려주고
+    /// 다음 줄부터 다시 나눈다 — 뒤의 행이 한 레코드에 삼켜져 조용히 빠지지 않게</summary>
+    static IEnumerable<(int line, string text, bool unclosed)> Records(string text)
     {
         var sb = new System.Text.StringBuilder();
-        int ln = 1, start = 1;
+        int ln = 1, start = 1, startIdx = 0;
         bool q = false, fieldStart = true;
         for (int i = 0; i < text.Length; i++)
         {
@@ -191,14 +194,28 @@ public static class GroupCsv
             if (c == '\n') ln++;
             if (q)
             {
-                if (c == '"') { if (i + 1 < text.Length && text[i + 1] == '"') { sb.Append(c); i++; } else q = false; }
+                bool bad = false;
+                if (c == '"')
+                {
+                    if (i + 1 < text.Length && text[i + 1] == '"') { sb.Append(c); i++; }
+                    else { q = false; bad = i + 1 < text.Length && text[i + 1] is not (',' or '\t' or '\r' or '\n' or ' '); }
+                }
                 sb.Append(c);   // 원문 그대로 ("" 는 두 글자 다) — 값 해석은 Split 이 한다
+                if (bad || (q && i >= text.Length - 1))
+                {
+                    yield return (start, "", true);
+                    int nl = text.IndexOf('\n', startIdx);
+                    if (nl < 0) yield break;
+                    sb.Clear(); q = false; fieldStart = true;
+                    ln = start + 1; start = ln; startIdx = nl + 1;
+                    i = nl;                 // 다음 반복은 시작 행의 다음 줄부터
+                }
                 continue;
             }
             if (c == '\n')
             {
-                yield return (start, sb.ToString().TrimEnd('\r'));
-                sb.Clear(); start = ln; fieldStart = true;
+                yield return (start, sb.ToString().TrimEnd('\r'), false);
+                sb.Clear(); start = ln; startIdx = i + 1; fieldStart = true;
                 continue;
             }
             if (c == '"' && fieldStart) q = true;
@@ -206,7 +223,8 @@ public static class GroupCsv
             else if (c != ' ') fieldStart = false;
             sb.Append(c);
         }
-        if (sb.Length > 0) yield return (start, sb.ToString().TrimEnd('\r'));
+        if (q) yield return (start, "", true);   // 마지막 글자가 여는 따옴표
+        else if (sb.Length > 0) yield return (start, sb.ToString().TrimEnd('\r'), false);
     }
 
     /// <summary>따옴표 밖에 탭이 있으면 탭 구분 (엑셀에서 복사해 붙인 경우)</summary>

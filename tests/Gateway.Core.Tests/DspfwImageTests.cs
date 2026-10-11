@@ -58,6 +58,55 @@ public class DspfwImageTests
         Assert.Null(DspfwImage.Parse(DspfwImage.Build(new byte[500], "1.2.3")));   // 앱 헤더 없음
     }
 
+    // AGV_Wifi_Bridge tests/host/golden/app_golden.dspfw 그대로 (dsp_pack.py pack app_golden.hex --ver 1.2.3 --build 1700000000).
+    // 브리지 test_bootproto.c test_golden 과 dsp_pack.py info 의 기대값: app_len 400워드, app_crc32 F55BEFB2, 블록 3개, 722바이트
+    static byte[] BridgeGolden() => File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "TestData", "app_golden.dspfw"));
+
+    [Fact]
+    public void Bridge_golden_dspfw_parses_with_bridge_expected_values()
+    {
+        var f = BridgeGolden();
+        Assert.Equal(722, f.Length);
+        var info = DspfwImage.Parse(f)!;
+        Assert.NotNull(info);
+        Assert.Equal(("1.2.3", 722, true), (info.Version, info.Size, info.VersionValid));
+        Assert.Equal(BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(12)), info.Crc32);          // 파일 헤더 CRC = DSP_OTA_START crc32
+        Assert.Equal(DspfwImage.Crc32(f.AsSpan(DspfwImage.HeaderLength)), info.Crc32);
+
+        // Parse 가 노출하지 않는 앱 헤더·블록 값은 같은 규칙으로 직접 읽어 브리지 기대값과 대조
+        ushort W(int byteOff) => BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(byteOff));
+        const int H = DspfwImage.HeaderLength;
+        Assert.Equal(400u, W(H + 8) | ((uint)W(H + 10) << 16));                    // app_len
+        Assert.Equal(0xF55BEFB2u, W(H + 12) | ((uint)W(H + 14) << 16));            // app_crc32
+        Assert.Equal(1700000000u, W(H + 16) | ((uint)W(H + 18) << 16));            // build_time
+        int pos = H + DspfwImage.AppHeaderWords * 2, blocks = 0, words = 0;
+        var flat = Enumerable.Repeat((ushort)0xFFFF, 400).ToArray();
+        while (pos < f.Length)
+        {
+            uint addr = BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(pos));
+            int nw = W(pos + 4);
+            for (int i = 0; i < nw; i++) if (addr + i - DspfwImage.AppCodeAddr < 400) flat[addr + i - DspfwImage.AppCodeAddr] = W(pos + 6 + i * 2);
+            pos += 6 + nw * 2; blocks++; words += nw;
+        }
+        Assert.Equal((f.Length, 3, 272), (pos, blocks, words));                    // "blocks: 3 (272 words transferred)"
+        Assert.Equal(0xF55BEFB2u, DspfwImage.Crc32Words(flat));                    // 서버 CRC32 워드 계산이 브리지와 같음
+    }
+
+    [Fact]
+    public void Bridge_golden_dspfw_rejects_any_single_byte_change()
+    {
+        var f = BridgeGolden();
+        foreach (var at in new[] { 0, 9, 13, 20, DspfwImage.HeaderLength + 1, DspfwImage.HeaderLength + 130, 300, f.Length - 1 })
+        {
+            var t = (byte[])f.Clone();
+            t[at] ^= 0x01;
+            Assert.Null(DspfwImage.Parse(t));
+        }
+        // 파일 CRC 를 다시 맞춰도 본문(앱 헤더 app_crc·블록 데이터) 검사로 거부
+        Assert.Null(DspfwImage.Parse(Rewrap(f, b => b[DspfwImage.AppHeaderWords * 2 + 6 + 10] ^= 1)));
+        Assert.NotNull(DspfwImage.Parse(Rewrap(f, _ => { })));
+    }
+
     // 본문(앱 헤더 + 블록)을 바꾼 뒤 파일 헤더 CRC 를 다시 맞춘다 — 본문 검사만으로 거부되는지 본다
     static byte[] Rewrap(byte[] file, Action<byte[]> edit, int extra = 0)
     {

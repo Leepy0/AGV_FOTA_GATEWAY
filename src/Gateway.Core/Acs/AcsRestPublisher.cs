@@ -28,8 +28,9 @@ public sealed class AcsRestPublisher
     /// <summary>JSON 본문 보내기 (위치 보고). 응답 본문은 300자까지만 보관</summary>
     public async Task<PublishResult> PublishAsync(AcsRestSettings s, string json, int? agv = null, CancellationToken ct = default)
     {
-        var path = s.Path.Replace("{agv}", agv?.ToString() ?? "");
-        var url = s.BaseUrl.TrimEnd('/') + "/" + path.TrimStart('/');
+        var path = (s.Path ?? "").Replace("{agv}", agv?.ToString() ?? "");
+        var url = Url(s.BaseUrl, path);
+        if (BadUrl(url) is { } bad) return bad;
         using var req = new HttpRequestMessage(s.Method.Equals("PUT", StringComparison.OrdinalIgnoreCase) ? HttpMethod.Put : HttpMethod.Post, url)
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
@@ -40,11 +41,20 @@ public sealed class AcsRestPublisher
     /// <summary>GET 으로 받기 (호기 소속 목록). 응답 본문 전체를 돌려준다</summary>
     public async Task<PublishResult> GetAsync(AcsRestSettings s, CancellationToken ct = default)
     {
-        var url = s.BaseUrl.TrimEnd('/') + "/" + s.Path.TrimStart('/');
+        var url = Url(s.BaseUrl, s.Path);
+        if (BadUrl(url) is { } bad) return bad;
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return await SendAsync(s, req, int.MaxValue, ct);
     }
+
+    static string Url(string? baseUrl, string? path) => (baseUrl ?? "").Trim().TrimEnd('/') + "/" + (path ?? "").Trim().TrimStart('/');
+
+    /// <summary>http/https 절대 주소가 아니면 실패 결과 (HttpRequestMessage·SendAsync 가 예외를 내기 전에), 맞으면 null</summary>
+    static PublishResult? BadUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps) && u.Host.Length > 0
+            ? null
+            : new PublishResult(false, 0, "", TimeSpan.Zero, $"잘못된 주소: '{url}' (BaseUrl 은 http:// 또는 https:// 로 시작)");
 
     async Task<PublishResult> SendAsync(AcsRestSettings s, HttpRequestMessage req, int bodyLimit, CancellationToken ct)
     {
