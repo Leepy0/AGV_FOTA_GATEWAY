@@ -77,6 +77,12 @@ public sealed class AcsInventoryPullService : BackgroundService
     }
 
     /// <summary>지금 받아서 반영 (화면·API 의 "지금 받기")</summary>
+    bool TryMerge(AcsInventoryParseResult parsed, out (int changed, int removed, IReadOnlyList<int> held) result, out string error)
+    {
+        try { result = _store.MergeFromAcs(parsed.Items, _opt.OverrideManual, _opt.RemoveMissing); error = ""; return true; }
+        catch (Exception e) { result = default; error = e.Message; return false; }
+    }
+
     public async Task<string> PullAsync(CancellationToken ct = default)
     {
         LastTry = DateTime.UtcNow;
@@ -96,9 +102,17 @@ public sealed class AcsInventoryPullService : BackgroundService
             _trace.Add($"ACS-INV> {LastResult}");
             _log.LogWarning("ACS 소속 응답을 반영하지 않음: {Why}", why);
         }
+        else if (TryMerge(parsed, out var merged, out var mergeError) is false)
+        {
+            // 저장소를 다 읽지 못했거나 DB 쓰기 실패: 반영하지 않고 실패로 남긴다 (화면에 이전 결과가 계속 보이지 않게)
+            FailStreak++;
+            LastResult = $"HTTP {r.StatusCode} · 반영 실패: {mergeError}";
+            _trace.Add($"ACS-INV> {LastResult}");
+            _log.LogWarning("ACS 소속 반영 실패: {Msg}", mergeError);
+        }
         else
         {
-            var (changed, removed, held) = _store.MergeFromAcs(parsed.Items, _opt.OverrideManual, _opt.RemoveMissing);
+            var (changed, removed, held) = merged;
             FailStreak = 0; LastOk = DateTime.UtcNow; LastCount = parsed.Items.Count; LastWarnings = parsed.Warnings;
             LastResult = $"HTTP {r.StatusCode} · {parsed.TotalRecords}건 중 {parsed.Items.Count}대 해석 · 변경 {changed} · 삭제 {removed}"
                        + (held.Count > 0 ? $" · 삭제 보류 {held.Count}" : "")

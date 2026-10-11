@@ -161,7 +161,8 @@ public sealed class DspOtaClient : IDisposable
             }
 
             var now = DateTime.UtcNow;
-            if (now - lastActivity >= idle)
+            // 명령이 닿은 흔적이 없으면 재전송을 다 쓴 뒤에만 포기한다 (시간 초과가 마지막 재전송보다 먼저 오지 않게)
+            if (now - lastActivity >= idle && (received || resends >= _t.MaxResends))
                 throw new DspOtaException($"브리지 보고 없음 ({idle.TotalSeconds:F0}초, '{target}' 대기 중{(resends > 0 ? $", 재전송 {resends}회" : "")})");
             if (!received && resends < _t.MaxResends && now - lastSend >= _t.Resend)
             {
