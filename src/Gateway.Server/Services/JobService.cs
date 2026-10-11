@@ -167,6 +167,11 @@ public sealed class JobService : BackgroundService
     /// <summary>예약 시각이 이보다 오래 지난 채 서버가 켜지면 자동 취소</summary>
     public const int StaleScheduleMinutes = 30;
 
+    /// <summary>true 면 새 작업을 시작하지 않는다 (서버 업데이트 적용 직전 등). 실행 중인 작업에는 영향 없음</summary>
+    public bool HoldNewJobs { get; set; }
+    /// <summary>실행 중인 작업이 있는지</summary>
+    public bool IsBusy { get { lock (_lock) return _running.Count > 0; } }
+
     public IReadOnlyList<Job> List() { lock (_lock) return _jobs.OrderByDescending(j => j.CreatedAt).ToList(); }
     public Job? Get(string id) { lock (_lock) return _jobs.FirstOrDefault(j => j.Id == id); }
 
@@ -226,7 +231,7 @@ public sealed class JobService : BackgroundService
                 due = _jobs.Where(j => j.State == JobState.Scheduled && (j.ScheduledAt is null || j.ScheduledAt <= DateTime.UtcNow))
                            .OrderBy(j => j.ScheduledAt ?? j.CreatedAt).FirstOrDefault();
                 // 한 번에 한 작업만 (호기 순차 실행과 같은 이유: 무선·서버 부하, AGV 정지 확인)
-                if (due is not null && _running.Count == 0)
+                if (due is not null && _running.Count == 0 && !HoldNewJobs)
                 {
                     due.State = JobState.Running; due.StartedAt = DateTime.UtcNow;
                     var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);

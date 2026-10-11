@@ -21,6 +21,13 @@ public sealed class AgvState
     public DateTime LastPersisted { get; set; }
     public string LastPersistedKey { get; set; } = "";
     public bool Online(int offlineAfterSec) => (DateTime.UtcNow - LastSeen).TotalSeconds < offlineAfterSec;
+
+    /// <summary>같은 호기 번호로 다른 주소(장치)에서 패킷이 온 마지막 시각과 그 주소. 기존 endpoint 는 바꾸지 않는다</summary>
+    public DateTime ConflictAt { get; set; }
+    public IPEndPoint? ConflictEndPoint { get; set; }
+    public long ConflictCount;
+    /// <summary>번호 충돌 중인지 (최근 offlineAfterSec×2 안에 다른 주소에서 패킷이 왔음). 충돌 중에는 배포·수동 전송을 거부한다</summary>
+    public bool InConflict(int offlineAfterSec) => ConflictEndPoint is not null && (DateTime.UtcNow - ConflictAt).TotalSeconds < offlineAfterSec * 2;
 }
 
 /// <summary>호기 목록. 변경 알림은 최대 초당 몇 번으로 묶어서 보낸다. 마지막 접속은 SQLite 에 남겨 재시작 뒤에도 "n시간 전" 으로 보인다</summary>
