@@ -27,9 +27,37 @@ public static partial class UpdateFeed
     public static bool IsNewer(Version latest, Version current)
         => new Version(latest.Major, latest.Minor, Math.Max(0, latest.Build)) > new Version(current.Major, current.Minor, Math.Max(0, current.Build));
 
+    /// <summary>업데이트를 받아도 되는 출처: https 의 github.com · api.github.com 만 (서명 검증이 없으므로 출처를 TLS 로 보증)</summary>
+    public static readonly string[] AllowedHosts = ["github.com", "api.github.com"];
+
+    /// <summary>https 이고 호스트가 <see cref="AllowedHosts"/> 중 하나인 절대 주소인지 (file://, http, 다른 호스트·포트는 거부)</summary>
+    public static bool IsAllowedSource(string? url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps && u.IsDefaultPort && string.IsNullOrEmpty(u.UserInfo)
+           && AllowedHosts.Any(h => u.Host.Equals(h, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>릴리스 정보의 받기·해시 주소가 모두 허용 출처인지. 아니면 오류 문구</summary>
+    public static string? SourceError(UpdateInfo info)
+    {
+        if (!IsAllowedSource(info.AssetUrl)) return $"허용되지 않은 받기 주소: {info.AssetUrl} (https://github.com · api.github.com 만)";
+        if (info.Sha256Url is { Length: > 0 } s && !IsAllowedSource(s)) return $"허용되지 않은 해시 주소: {s} (https://github.com · api.github.com 만)";
+        return null;
+    }
+
+    /// <summary>GitHub 토큰을 붙여도 되는 주소 (api.github.com 만 — 글자 포함이 아니라 호스트로 판단)</summary>
+    public static bool IsGitHubApi(string? url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps && u.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
-    /// 릴리스에 함께 올린 매니페스트. baseUrl = 릴리스 페이지 루트(https://github.com/owner/repo 또는 사내 서버).
-    /// { "version", "file", "sha256", "size", "published", "page", "notes", ["url": 절대 주소면 그대로] }
+    /// 받아 둔 폴더 이름(vX.Y.Z) 중 현재보다 새 가장 높은 것 (재시작 뒤 '적용 대기' 복원용). 없으면 null
+    /// </summary>
+    public static string? NewestStagedTag(IEnumerable<string> tags, Version current)
+        => tags.Select(t => (t, v: t.StartsWith('v') ? ParseVersion(t) : null))
+               .Where(x => x.v is not null && x.t == "v" + x.v.ToString(3) && IsNewer(x.v, current))
+               .OrderByDescending(x => x.v).Select(x => x.t).FirstOrDefault();
+
+    /// <summary>
+    /// 릴리스에 함께 올린 매니페스트. baseUrl = 릴리스 페이지 루트(https://github.com/owner/repo).
+    /// { "version", "file", "sha256", "size", "published", "page", "notes", ["url": 절대 주소면 그대로 — 출처는 <see cref="SourceError"/> 로 확인] }
     /// </summary>
     public static UpdateInfo? ParseManifest(string json, string baseUrl)
     {

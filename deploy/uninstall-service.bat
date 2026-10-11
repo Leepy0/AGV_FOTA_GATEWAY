@@ -7,5 +7,6 @@ timeout /t 3 >nul
 sc delete AgvFotaGateway
 netsh advfirewall firewall delete rule name="AGV FOTA Gateway HTTP" >nul 2>&1
 netsh advfirewall firewall delete rule name="AGV FOTA Gateway Bridge UDP" >nul 2>&1
+netsh advfirewall firewall delete rule name="AGV FOTA Gateway ACS TCP" >nul 2>&1
 echo 삭제했습니다.
 pause

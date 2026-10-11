@@ -34,11 +34,58 @@ public class UpdateFeedTests
     [Fact]
     public void Manifest_absolute_url_wins_and_bad_sha_is_null()
     {
-        var js = """{"version":"1.0.0","file":"a.zip","url":"http://srv/fota/a.zip","sha256":"short"}""";
-        var i = UpdateFeed.ParseManifest(js, "http://srv/fota")!;
-        Assert.Equal("http://srv/fota/a.zip", i.AssetUrl);
+        var js = """{"version":"1.0.0","file":"a.zip","url":"https://github.com/x/y/releases/download/v1.0.0/a.zip","sha256":"short"}""";
+        var i = UpdateFeed.ParseManifest(js, "https://github.com/x/y")!;
+        Assert.Equal("https://github.com/x/y/releases/download/v1.0.0/a.zip", i.AssetUrl);
         Assert.Null(i.Sha256);
+        Assert.Null(UpdateFeed.SourceError(i));
         Assert.Null(UpdateFeed.ParseManifest("{}", "x"));
+    }
+
+    [Fact]
+    public void Manifest_pointing_to_other_origin_is_rejected()
+    {
+        var http = UpdateFeed.ParseManifest("""{"version":"1.0.0","url":"http://srv/fota/a.zip"}""", "https://github.com/x/y")!;
+        Assert.NotNull(UpdateFeed.SourceError(http));
+        var other = UpdateFeed.ParseManifest("""{"version":"1.0.0","url":"https://evil.example/github.com/a.zip"}""", "https://github.com/x/y")!;
+        Assert.NotNull(UpdateFeed.SourceError(other));
+        var file = UpdateFeed.ParseManifest("""{"version":"1.0.0"}""", "file://server/share/fota")!;
+        Assert.NotNull(UpdateFeed.SourceError(file));
+    }
+
+    [Theory]
+    [InlineData("https://github.com/Leepy0/AGV_FOTA_GATEWAY", true)]
+    [InlineData("https://GitHub.com/x/y/releases/latest/download/AgvFotaGateway.json", true)]
+    [InlineData("https://api.github.com/repos/x/y/releases/assets/1", true)]
+    [InlineData("http://github.com/x/y", false)]
+    [InlineData("file://server/share/fota", false)]
+    [InlineData("file:///C:/fota/AgvFotaGateway.json", false)]
+    [InlineData("https://github.com.evil.example/x", false)]
+    [InlineData("https://evil.example/api.github.com/x", false)]
+    [InlineData("https://github.com:8443/x/y", false)]
+    [InlineData("https://user@github.com/x/y", false)]
+    [InlineData("https://objects.githubusercontent.com/x", false)]   // 리다이렉트로 가는 것은 HttpClient 가 따라감 — 설정·매니페스트에 직접 쓰는 것은 거부
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Only_https_github_origins_are_allowed(string? url, bool ok) => Assert.Equal(ok, UpdateFeed.IsAllowedSource(url));
+
+    [Fact]
+    public void Token_only_for_api_github_host()
+    {
+        Assert.True(UpdateFeed.IsGitHubApi("https://api.github.com/repos/x/y/releases/assets/1"));
+        Assert.False(UpdateFeed.IsGitHubApi("https://x.example/api.github.com/repos/x/y"));
+        Assert.False(UpdateFeed.IsGitHubApi("https://github.com/x/y/releases/download/v1.0.0/a.zip"));
+        Assert.False(UpdateFeed.IsGitHubApi("http://api.github.com/repos/x/y"));
+    }
+
+    [Fact]
+    public void NewestStagedTag_picks_highest_newer_folder()
+    {
+        var cur = new Version(0, 3, 0);
+        Assert.Equal("v0.3.2", UpdateFeed.NewestStagedTag(["v0.2.9", "v0.3.0", "v0.3.2", "v0.3.1", "vX", "v0.3.10-rc"], cur));
+        Assert.Null(UpdateFeed.NewestStagedTag(["v0.2.9", "v0.3.0"], cur));
+        Assert.Null(UpdateFeed.NewestStagedTag([], cur));
+        Assert.Equal("v0.10.0", UpdateFeed.NewestStagedTag(["v0.9.0", "v0.10.0"], cur));
     }
 
     [Fact]

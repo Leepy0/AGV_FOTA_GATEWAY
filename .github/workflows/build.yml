@@ -17,9 +17,11 @@ on:
         type: boolean
         default: false
 
+# 정식 배포(태그 push · release=true 수동 실행)는 별도 그룹이고 취소하지 않는다
+# (뒤이은 main push 가 진행 중인 릴리스를 취소해 'gh release delete' 뒤에 끊기면 Latest 가 사라짐). 같은 그룹끼리는 차례로 실행
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.ref }}-${{ (inputs.release || startsWith(github.ref, 'refs/tags/')) && 'release' || 'ci' }}
+  cancel-in-progress: ${{ !(inputs.release || startsWith(github.ref, 'refs/tags/')) }}
 
 permissions:
   contents: write
