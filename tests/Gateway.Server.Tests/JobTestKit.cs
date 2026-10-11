@@ -102,7 +102,7 @@ sealed class JobTestKit : IDisposable
 {
     public readonly string Dir = Path.Combine(Path.GetTempPath(), "gw-jobtest-" + Guid.NewGuid().ToString("N")[..8]);
     public readonly GatewayDb Db;
-    public readonly FirmwareStore Store;
+    public FirmwareStore Store;
     public readonly AgvRegistry Reg = new();
     public readonly FakeBridges Link;
     public readonly GatewayOptions Opt;
@@ -125,10 +125,27 @@ sealed class JobTestKit : IDisposable
     /// <summary>서버 재시작 흉내: 같은 DB 로 실행기를 새로 만든다</summary>
     public JobService Restart() => Svc = NewService();
 
+    /// <summary>블록·app_crc 검사를 통과하는 작은 앱 이미지 (dsp_pack.py pack() 과 같은 형식)</summary>
+    public static byte[] DspImage(string ver) => DspfwImage.BuildApp(Enumerable.Range(0, 200).Select(i => (ushort)(i * 7)).ToArray(), ver);
+
     public FirmwareEntry AddDsp(string ver = "2.0.0", string fileName = "app.dspfw")
     {
-        var bytes = DspfwImage.Build(new byte[512], ver);
-        return Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", fileName, new MemoryStream(bytes))]).GetAwaiter().GetResult();
+        if (!DspVersion.IsValid(ver)) return AddLegacyDsp(ver, fileName);
+        return Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", fileName, new MemoryStream(DspImage(ver)))]).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 버전 규칙(8자)이 생기기 전에 올라온 펌웨어 흉내: 지금은 업로드가 거부하므로 정상 버전으로 올린 뒤
+    /// 파일과 DB 의 버전을 긴 값으로 바꾸고 저장소·실행기를 다시 만든다
+    /// </summary>
+    FirmwareEntry AddLegacyDsp(string ver, string fileName)
+    {
+        var e = AddDsp("legacy", fileName);
+        File.WriteAllBytes(Store.PathOf(e, e.Files.First()), DspImage(ver));
+        using (var c = Db.Open()) GatewayDb.Exec(c, "UPDATE firmware SET version=$v WHERE id=$id", ("$v", ver), ("$id", e.Id));
+        Store = new FirmwareStore(Dir, Db);
+        Svc = NewService();
+        return Store.Get(e.Id)!;
     }
 
     /// <summary>스케줄러 한 번 돌리고, 시작한 작업이 끝날(또는 적용 대기에 멈출) 때까지</summary>

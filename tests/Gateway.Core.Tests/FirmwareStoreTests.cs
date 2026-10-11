@@ -103,7 +103,7 @@ public class FirmwareStoreTests : IDisposable
     {
         var (_, st) = New();
         // 9자 버전 (앱 버전 응답은 8자까지라 굽고 나서도 '버전 다름'이 됨) — 업로드 단계에서 거부
-        var img = DspfwImage.Build(new byte[64], "1.2.3-rc1");
+        var img = DspfwImage.BuildApp(new ushort[] { 1, 2, 3 }, "1.2.3-rc1");   // 형식은 정상, 버전만 규칙 위반
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "a.dspfw", new MemoryStream(img))]));
         Assert.Empty(st.List());
