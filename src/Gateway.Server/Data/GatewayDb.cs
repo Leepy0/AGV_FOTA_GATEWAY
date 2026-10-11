@@ -18,7 +18,8 @@ public sealed class GatewayDb
     {
         Directory.CreateDirectory(dataDir);
         Path = System.IO.Path.Combine(dataDir, "gateway.db");
-        _cs = new SqliteConnectionStringBuilder { DataSource = Path, Pooling = true }.ToString();
+        // 잠금 대기는 5초까지 (기본 30초) — 다른 프로그램이 DB 를 쥐고 있어도 화면·서비스가 오래 멈추지 않게. 수신 루프·작업 저장은 따로 더 짧게 쓴다
+        _cs = new SqliteConnectionStringBuilder { DataSource = Path, Pooling = true, DefaultTimeout = 5 }.ToString();
         using var c = Open();
         Exec(c, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
         Migrate(c);

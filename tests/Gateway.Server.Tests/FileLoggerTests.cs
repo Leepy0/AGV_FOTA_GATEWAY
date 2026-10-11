@@ -2,7 +2,7 @@ using Gateway.Server.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace Gateway.Core.Tests;
+namespace Gateway.Server.Tests;
 
 /// <summary>파일 로그: 어떤 경우에도 예외를 던지지 않음(G-03), 수준은 설정을 따름(G-04)</summary>
 public class FileLoggerTests : IDisposable

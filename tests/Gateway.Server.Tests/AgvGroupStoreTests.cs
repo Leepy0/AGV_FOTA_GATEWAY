@@ -2,7 +2,7 @@ using Gateway.Core.Groups;
 using Gateway.Server.Data;
 using Gateway.Server.Services;
 
-namespace Gateway.Core.Tests;
+namespace Gateway.Server.Tests;
 
 /// <summary>호기 소속 저장소 (INT-B1): DB 쓰기가 성공한 뒤에만 메모리를 바꾸고, 기동 때 다 읽지 못하면 ACS 병합을 막는다</summary>
 public class AgvGroupStoreTests : IDisposable

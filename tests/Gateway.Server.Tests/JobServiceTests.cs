@@ -495,11 +495,15 @@ public class JobServiceTests
     public async Task Hostname_public_base_url_adds_url_host_note_to_failures()
     {
         using var k = new JobTestKit("http://gateway.local:8080");
+        k.Link.Add(7);
+        k.Link.StageFailErr = "url_host";                                         // 브리지가 호스트명 URL 을 거부
         var fw = k.AddDsp();
-        var j = k.Svc.Create("", fw.Id, [9], null, true, ApplyMode.Immediate);   // 9호기 없음 → 실패
+        var j = k.Svc.Create("", fw.Id, [7, 9], null, false, ApplyMode.Immediate); // 9호기는 없음 → URL 과 무관한 실패
         await k.TickAndWaitAsync();
         Assert.Equal(TargetState.Failed, j.Results[0].State);
         Assert.Contains("url_host", j.Results[0].Message);
         Assert.Contains("IPv4", j.Results[0].Message);
+        Assert.Equal(TargetState.Failed, j.Results[1].State);
+        Assert.DoesNotContain("IPv4", j.Results[1].Message);                       // 오프라인 실패에는 붙이지 않음
     }
 }

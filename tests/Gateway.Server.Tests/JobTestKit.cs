@@ -20,6 +20,7 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     public readonly List<(int agv, string kind, string json)> Sent = new();
     public bool SilentStage;     // START 에 아무 보고도 안 함 (실행 중 취소 시험)
     public bool HangApply;       // APPLY 에 start 만 보고하고 멈춤 (굽는 중 취소 시험)
+    public string? StageFailErr; // START 에 이 오류로 fail 보고 (예: url_host)
 
     /// <summary>호기를 온라인으로 등록 (dsp: 앱 버전, "?" = 앱 무응답)</summary>
     public AgvState Add(int agv, string dsp = "1.0.0", string dspState = "idle")
@@ -55,6 +56,7 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
         if (SilentStage) return true;
         using var d = JsonDocument.Parse(json);
         long job = d.RootElement.GetProperty("job").GetInt64();
+        if (StageFailErr is not null) { Report(agv, job, "fail", err: StageFailErr); return true; }
         var ver = d.RootElement.GetProperty("ver").GetString()!;
         Report(agv, job, "download", 50);
         var s = _state[agv];

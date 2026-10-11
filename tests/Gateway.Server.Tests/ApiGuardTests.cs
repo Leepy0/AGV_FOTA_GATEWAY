@@ -3,7 +3,7 @@ using Gateway.Server.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
 
-namespace Gateway.Core.Tests;
+namespace Gateway.Server.Tests;
 
 /// <summary>/api 공통 검사: 다른 출처 변경 요청 거부(X-03), 수동 전송 거부 조건(결정 2, S-10)</summary>
 public class ApiGuardTests

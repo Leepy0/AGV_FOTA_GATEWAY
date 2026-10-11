@@ -61,6 +61,8 @@ public class ApiInputTests
     {
         Assert.False(ApiGuard.IsBlockedManualFrame(AgvFrame.Build('W', '1', '1', 7, "C001000"u8.ToArray())));
         Assert.False(ApiGuard.IsBlockedManualFrame(AgvFrame.ParseData("<STX>E1107<ETX>")));
+        Assert.False(ApiGuard.IsBlockedManualFrame("WF107C001000"u8));          // STX 없이 적은 W — PAN 글자가 F 여도 정상
+        Assert.False(ApiGuard.IsBlockedManualFrame("WR107C001000"u8));
         Assert.True(ApiGuard.IsBlockedManualFrame(AgvFrame.Build('F', '1', '1', 7, "U"u8.ToArray())));
     }
 

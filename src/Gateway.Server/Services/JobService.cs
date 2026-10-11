@@ -589,7 +589,7 @@ public sealed class JobService : BackgroundService
             catch (Exception e)
             {
                 // 오류 코드 안내는 OTA 클라이언트가 붙인다 (BridgeErrors). PublicBaseUrl 이 IPv4 가 아니면 url_host 거부 가능성을 덧붙인다
-                var why = e.Message + (_publicUrlProblem is not null && !e.Message.Contains("PublicBaseUrl") ? $" ({_publicUrlProblem})" : "");
+                var why = e.Message + (_publicUrlProblem is not null && e.Message.Contains("url_host") && !e.Message.Contains("PublicBaseUrl") ? $" ({_publicUrlProblem})" : "");
                 r.State = TargetState.Failed; Add(r, "ERROR " + why); r.Message = why;
                 if (job.StopOnFailure) stop = true;
             }

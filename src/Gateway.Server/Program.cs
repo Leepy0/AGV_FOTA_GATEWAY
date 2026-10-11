@@ -12,7 +12,6 @@ using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Diagnostics;
 
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Gateway.Core.Tests")]
 
 // Windows 서비스로 돌 때 작업 디렉터리가 system32 가 되므로 실행 파일 위치를 기준으로 잡는다
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -280,8 +279,8 @@ static class ApiGuard
     /// </summary>
     internal static bool IsBlockedManualFrame(ReadOnlySpan<byte> f)
     {
-        if (AcsRelayPolicy.IsBlockedDown(f)) return true;
-        if (f.Length > 0 && f[0] is (byte)'F' or (byte)'R') return true;
+        // STX 로 시작하면 다음 글자가 종류, STX 없이 적었으면 첫 글자가 종류 (그 뒤 PAN 글자가 F·R 이어도 정상 프레임)
+        if (f.Length > 0 && f[0] == AgvFrame.Stx ? AcsRelayPolicy.IsBlockedDown(f) : f.Length > 0 && f[0] is (byte)'F' or (byte)'R') return true;
         for (int i = 0; i + 1 < f.Length; i++)
             if (f[i] == AgvFrame.Stx && f[i + 1] is (byte)'F' or (byte)'R') return true;
         return false;
