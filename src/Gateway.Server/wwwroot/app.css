@@ -1,4 +1,5 @@
-:root { --bg: #f3f4f6; --card: #fff; --line: #e5e7eb; --text: #111827; --muted: #6b7280; --pri: #2563eb; --ok: #16a34a; --bad: #dc2626; --warn: #d97706; }
+/* 글자색 대비 WCAG AA(4.5:1) 이상: --ok #15803d·--warn #b45309 는 흰 배경 5.0:1, --warn 은 #fef3c7 배경 4.5:1. 옅은 파랑·빨강 배경 위 글자는 #1d4ed8·#b91c1c */
+:root { --bg: #f3f4f6; --card: #fff; --line: #e5e7eb; --text: #111827; --muted: #6b7280; --pri: #2563eb; --ok: #15803d; --bad: #dc2626; --warn: #b45309; }
 * { box-sizing: border-box; }
 html, body { margin: 0; font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif; font-size: 14px; background: var(--bg); color: var(--text); }
 h1 { font-size: 20px; margin: 0 0 8px; }
@@ -35,9 +36,9 @@ button:disabled { opacity: .5; cursor: default; }
 .job-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 12px; cursor: pointer; background: #f9fafb; }
 .job-head .actions { margin-left: auto; }
 .state { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #e5e7eb; }
-.job.running .state { background: #dbeafe; color: var(--pri); }
+.job.running .state { background: #dbeafe; color: #1d4ed8; }
 .job.done .state { background: #dcfce7; color: var(--ok); }
-.job.failed .state { background: #fee2e2; color: var(--bad); }
+.job.failed .state { background: #fee2e2; color: #b91c1c; }
 .job.cancelled .state { background: #fef3c7; color: var(--warn); }
 .bar { display: inline-block; width: 100px; height: 8px; background: #e5e7eb; border-radius: 4px; vertical-align: middle; margin-right: 6px; }
 .bar div { height: 100%; background: var(--pri); border-radius: 4px; }
@@ -48,9 +49,9 @@ tr.t-done td { color: var(--ok); } tr.t-failed td { color: var(--bad); } tr.t-ru
 #blazor-error-ui .dismiss { float: right; cursor: pointer; }
 .row-buttons { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
 .state-line { padding: 8px 10px; border-radius: 6px; background: #f3f4f6; margin: 8px 0; }
-.state-line.available, .state-line.ready { background: #dbeafe; color: var(--pri); }
+.state-line.available, .state-line.ready { background: #dbeafe; color: #1d4ed8; }
 .state-line.uptodate { background: #dcfce7; color: var(--ok); }
-.state-line.error { background: #fee2e2; color: var(--bad); }
+.state-line.error { background: #fee2e2; color: #b91c1c; }
 .state-line.applying, .state-line.downloading, .state-line.checking { background: #fef3c7; color: var(--warn); }
 h1:focus { outline: none; }
 /* ── 점검 2차: 대시보드·표·배너 ── */
@@ -103,7 +104,7 @@ h1:focus { outline: none; }
 .tree li { margin: 2px 0; }
 .tree a { cursor: pointer; text-decoration: none; color: var(--text); padding: 3px 8px; border-radius: 6px; display: inline-block; }
 .tree a:hover { background: #f3f4f6; }
-.tree a.on { background: #dbeafe; color: var(--pri); }
+.tree a.on { background: #dbeafe; color: #1d4ed8; }
 .tree a .cnt { font-size: 11px; color: var(--muted); margin-left: 4px; background: #e5e7eb; padding: 0 6px; border-radius: 8px; }
 .tree a.lv0 { font-weight: 700; } .tree a.lv1 { font-weight: 600; }
 .tree .tw { display: inline-block; width: 14px; color: var(--muted); cursor: pointer; user-select: none; }
@@ -116,3 +117,11 @@ a.button:hover { background: #f3f4f6; }
 .cascade select { padding: 5px 6px; border: 1px solid #d1d5db; border-radius: 6px; min-width: 0 !important; width: auto !important; margin: 0 !important; }
 @media (max-width: 900px) { .split { grid-template-columns: 1fr; } .tree-card { position: static; } }
 .stats .grp { padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 16px; max-width: 260px; }
+/* ── 접근성: 키보드 초점·배지 ── */
+.grid.clickable tbody tr:not(.detail):focus-visible { outline: 2px solid var(--pri); outline-offset: -2px; }
+.grid.clickable tbody tr:not(.detail):focus-visible td { background: #eff6ff; }
+.badge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 9px; font-size: 11px; font-weight: 600; vertical-align: middle; background: #e5e7eb; color: #374151; }
+.badge.bad { background: #fee2e2; color: #991b1b; }
+.banner .badge { margin: 2px 6px 2px 0; }
+.error-box { padding: 14px 16px; border: 1px solid #fca5a5; background: #fee2e2; color: #991b1b; border-radius: 8px; }
+.error-box button { margin-left: 8px; }

@@ -14,6 +14,7 @@
 @inject IOptions<AcsInventoryOptions> InvOpt
 @inject AgvGroupStore Groups
 @inject Gateway.Server.Data.GatewayDb Db
+@implements IDisposable
 
 <PageTitle>설정 · AGV FOTA</PageTitle>
 <h1>설정</h1>
@@ -24,8 +25,8 @@
     <dl class="kv">
         <dt>버전</dt><dd>v@(Upd.CurrentText) · @Upd.ChannelName @(Upd.Commit is null ? "" : $"({Upd.Commit})")</dd>
         <dt>실행 파일</dt><dd class="mono">@AppContext.BaseDirectory</dd>
-        <dt>데이터</dt><dd class="mono">@Gw.Value.DataDir <span class="muted">(펌웨어 firmware\, 작업 jobs.json, 업데이트 update\)</span></dd>
-        <dt>로그</dt><dd class="mono">@Logs.Directory <span class="muted">(gateway-날짜.log, 14일 보관)</span></dd>
+        <dt>데이터</dt><dd class="mono">@Gw.Value.DataDir <span class="muted">(펌웨어 firmware\, DB gateway.db, 업데이트 update\, 로그 logs\)</span></dd>
+        <dt>로그</dt><dd class="mono">@Logs.Directory <span class="muted">(gateway-날짜.log, @(FileLoggerProvider.KeepDays)일 보관 · 수준은 Logging:LogLevel, 파일만 따로 Logging:File:LogLevel)</span></dd>
         <dt>데이터베이스</dt><dd><span class="mono">@Db.Path</span> <span class="muted">(SQLite, @((Db.FileSize / 1024.0).ToString("N0")) KB · 펌웨어 @Db.Count("firmware") · 작업 @Db.Count("jobs") · 소속 @Db.Count("agv_groups") · 위치 @Db.Count("agv_positions") · 접속 기록 @Db.Count("agv_last_seen"))</span> <a href="api/db/backup">백업 내려받기</a></dd>
         <dt>HTTP</dt><dd>포트 @Jobs.HttpPort · 이 PC 주소: @foreach (var ip in LocalIps()) { <code>http://@ip:@Jobs.HttpPort</code> }</dd>
         <dt>브리지 UDP</dt><dd>:@Gw.Value.UdpPort (RFID :@(Gw.Value.RfidPort > 0 ? Gw.Value.RfidPort : "사용 안 함")) @(Link.BindError is null ? "" : $"⚠ {Link.BindError}")</dd>
@@ -71,18 +72,23 @@
     <h2>서버 업데이트</h2>
     <dl class="kv">
         <dt>확인 주소</dt><dd class="mono">@Upd.ManifestUrl</dd>
-        <dt>주기</dt><dd>@(Up.Value.Enabled ? $"시작 {Up.Value.FirstCheckDelaySec}초 후, 이후 {(Up.Value.CheckIntervalMin > 0 ? $"{Up.Value.CheckIntervalMin}분마다" : "자동 확인 없음")}" : "사용 안 함") · @(Up.Value.AutoApply ? "자동 적용 (배포 작업 없을 때)" : "수동 적용")</dd>
+        <dt>주기</dt><dd>@(Up.Value.Enabled ? $"시작 {Up.Value.FirstCheckDelaySec}초 후, 이후 {(Up.Value.CheckIntervalMin > 0 ? $"{Up.Value.CheckIntervalMin}분마다" : "자동 확인 없음")}" : "사용 안 함") · @(Up.Value.AutoApply ? "자동 적용 (배포 작업 없을 때, ACS 중계 연결 중이면 화면에서 적용)" : "수동 적용")</dd>
         <dt>자체 교체</dt><dd>@(Upd.CanSelfUpdate ? "가능" : Upd.Channel == "local" ? "로컬 빌드는 교체 안 함" : "Windows 에서만")</dd>
-        <dt>GitHub 토큰</dt><dd>@(string.IsNullOrEmpty(Up.Value.GitHubToken) ? "없음 (저장소가 비공개면 매니페스트 확인이 404 — 공개 전환 또는 사내 BaseUrl 필요)" : "설정됨")</dd>
+        <dt>GitHub 토큰</dt><dd>@(string.IsNullOrEmpty(Up.Value.GitHubToken) ? "없음 (저장소가 비공개면 매니페스트 확인이 404 — 저장소 공개 전환 필요)" : "설정됨")</dd>
     </dl>
 </section>
 
 <section class="card">
     <h2>REST API</h2>
-    <p class="muted small">화면과 같은 서비스를 쓰는 스크립트용 API 입니다. <code>GET /api/agvs</code> 호기 · <code>GET /api/firmware</code> · <code>POST /api/firmware</code>(multipart kind/version/notes/file) · <code>GET|POST /api/jobs</code> · <code>POST /api/jobs/{id}/cancel</code> · <code>POST /api/agvs/{n}/send|info|cfg</code> · <code>GET /api/positions</code> · <code>GET /api/update</code> · <code>GET /api/health</code>. 자세한 것은 <code>docs/INTERFACES.md</code>.</p>
+    <p class="muted small">화면과 같은 서비스를 쓰는 스크립트용 API 입니다. <code>GET /api/agvs</code> 호기 · <code>GET /api/firmware</code> · <code>POST /api/firmware</code>(multipart kind/version/notes/file) · <code>GET|POST /api/jobs</code> · <code>POST /api/jobs/{id}/cancel</code> · <code>POST /api/agvs/{n}/send|info|cfg</code> · <code>GET /api/positions</code> · <code>GET /api/update</code> · <code>GET /api/health</code>. 변경 요청(POST·PUT·DELETE)은 다른 출처의 웹페이지에서 브라우저로 보내면 거부합니다(403). 잘못된 입력은 400 과 짧은 사유를 돌려줍니다. 자세한 것은 <code>docs/INTERFACES.md</code>.</p>
 </section>
 
 @code {
+    System.Threading.Timer? timer;
+    // ACS 중계·위치 보고·소속 받기 상태가 연 시점 값에 멈추지 않게 3초마다 다시 그린다
+    protected override void OnInitialized() => timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 3000, 3000);
+    public void Dispose() => timer?.Dispose();
+
     static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     static IEnumerable<string> LocalIps()
     {
