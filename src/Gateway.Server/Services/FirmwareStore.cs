@@ -197,49 +197,28 @@ public sealed class FirmwareStore
         return stem[..Math.Min(stem.Length, MaxFileName - ext.Length)].TrimEnd('.', '_') + ext;
     }
 
-    /// <summary>삭제 결과: 없음 / 사용 중(작업 이름) / 삭제됨</summary>
-    public enum DeleteResult { NotFound, InUse, Deleted }
-
-    public bool Delete(string id) => Delete(id, null, out _) == DeleteResult.Deleted;
-
     /// <summary>펌웨어를 아직 쓰는 작업인지 — 끝나지 않은 작업 전부 (예약·실행·적용 대기 등)</summary>
     public static bool InUseBy(Job j) => j.State is not (JobState.Done or JobState.Failed or JobState.Cancelled);
 
-    /// <summary>Delete 의 usedBy 로 넘길 함수 — 이 펌웨어를 쓰는 끝나지 않은 작업 이름</summary>
-    public static Func<string, IReadOnlyList<string>> ActiveJobsOf(JobService jobs) =>
-        id => jobs.List().Where(j => j.FirmwareId == id && InUseBy(j)).Select(j => j.Name).ToList();
-
     /// <summary>
-    /// 사용 여부 확인과 삭제를 저장소 lock 안에서 한 번에 한다 (확인 뒤 다른 사람이 그 펌웨어로 작업을 만들어도 지우지 않게).
-    /// usedBy(id) 는 이 펌웨어를 쓰는 예약·실행 중 작업 이름 목록 — lock 순서는 펌웨어 → 작업 (JobService 는 작업 lock 안에서 펌웨어 저장소를 부르지 않는다).
-    /// DB 삭제가 실패하면 예외를 그대로 던지고 메모리 목록은 그대로 둔다.
+    /// 펌웨어를 지운다 (DB 를 먼저 지우고 성공했을 때만 메모리에서 뺀다 — DB 가 실패하면 예외를 던지고 목록은 그대로).
+    /// lock 순서는 작업 → 펌웨어: JobService 가 작업 lock 안에서 Get·Delete 를 부를 수 있으므로 여기서는 저장소 lock 안에서 다른 서비스를 부르지 않는다.
+    /// '사용 중' 확인은 부르는 쪽 몫이다.
     /// </summary>
-    public DeleteResult Delete(string id, Func<string, IReadOnlyList<string>>? usedBy, out IReadOnlyList<string> users)
+    public bool Delete(string id)
     {
-        users = [];
         FirmwareEntry? e;
         lock (_lock)
         {
             e = _entries.FirstOrDefault(x => x.Id == id);
-            if (e is null) return DeleteResult.NotFound;
-            if (usedBy is not null && (users = usedBy(id)).Count > 0) return DeleteResult.InUse;
+            if (e is null) return false;
             using (var c = _db.Open()) GatewayDb.Exec(c, "DELETE FROM firmware WHERE id=$id", ("$id", id));
             _entries.Remove(e);
-            TryDeleteDir(Path.Combine(_root, id));
         }
+        TryDeleteDir(Path.Combine(_root, id));
         _log.LogInformation("펌웨어 삭제: {Kind} {Ver} ({Id})", e.Kind, e.Version, id);
         RaiseChanged();
-        return DeleteResult.Deleted;
-    }
-
-    /// <summary>등록된 펌웨어로 작업을 만들 때 쓴다 — 펌웨어가 있으면 저장소 lock 안에서 f 를 실행 (그동안 삭제되지 않음)</summary>
-    public T? UseIfExists<T>(string id, Func<FirmwareEntry, T> f) where T : class
-    {
-        lock (_lock)
-        {
-            var e = _entries.FirstOrDefault(x => x.Id == id);
-            return e is null ? null : f(e);
-        }
+        return true;
     }
 
     void TryDeleteDir(string dir)

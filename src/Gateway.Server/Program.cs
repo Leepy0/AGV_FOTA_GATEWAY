@@ -116,13 +116,13 @@ api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
     finally { foreach (var (_, _, s) in files) s.Dispose(); }
 }).DisableAntiforgery();
 api.MapDelete("/firmware/{id}", (string id, FirmwareStore fw, JobService jobs) =>
-    // 끝나지 않은 작업이 참조하는 펌웨어는 지우지 않는다 (작업을 먼저 취소). 확인과 삭제는 저장소 안에서 한 번에
-    fw.Delete(id, FirmwareStore.ActiveJobsOf(jobs), out var users) switch
-    {
-        FirmwareStore.DeleteResult.InUse => Results.Conflict($"작업 {string.Join(", ", users)} 이(가) 이 펌웨어를 사용 중입니다 — 작업을 먼저 취소하세요"),
-        FirmwareStore.DeleteResult.NotFound => Results.NotFound("펌웨어 없음"),
-        _ => Results.Ok(),
-    });
+{
+    // 끝나지 않은 작업이 참조하는 펌웨어는 지우지 않는다 (작업을 먼저 취소).
+    // 확인(작업 lock)과 삭제(펌웨어 lock)는 겹쳐 잡지 않는다 — 펌웨어 lock 안에서 작업 lock 을 잡으면 lock 순서(작업 → 펌웨어)가 엇갈려 교착된다
+    var inUse = jobs.List().Where(j => j.FirmwareId == id && FirmwareStore.InUseBy(j)).ToList();
+    if (inUse.Count > 0) return Results.Conflict($"작업 {string.Join(", ", inUse.Select(j => j.Name))} 이(가) 이 펌웨어를 사용 중입니다 — 작업을 먼저 취소하세요");
+    return fw.Delete(id) ? Results.Ok() : Results.NotFound("펌웨어 없음");
+});
 api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
 api.MapPost("/jobs", (JobCreateRequest r, JobService jobs) =>

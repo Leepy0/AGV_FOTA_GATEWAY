@@ -86,6 +86,9 @@
     void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
     public void Dispose() { Store.Changed -= OnChanged; JobSvc.Changed -= OnChanged; }
 
+    // 이 펌웨어를 쓰는 끝나지 않은 작업 이름
+    List<string> ActiveJobNames(string id) => JobSvc.List().Where(j => j.FirmwareId == id && FirmwareStore.InUseBy(j)).Select(j => j.Name).ToList();
+
     // 종류를 바꾸면 이전 InputFile 이 사라지므로 고른 파일도 비운다 (사라진 요소의 파일은 읽을 수 없음)
     void KindChanged() { file = null; msg = null; warn = null; err = false; }
 
@@ -114,16 +117,14 @@
         msg = null; err = false;
         try
         {
-            var users = FirmwareStore.ActiveJobsOf(JobSvc)(e.Id);
+            var users = ActiveJobNames(e.Id);
             if (users.Count > 0) { msg = $"작업 {string.Join(", ", users)} 이(가) 쓰는 펌웨어입니다 — 작업을 먼저 취소하세요"; err = true; return; }
             if (!await JS.InvokeAsync<bool>("confirm", $"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
-            // 확인창이 떠 있는 동안 작업이 생겼을 수 있으므로 삭제와 함께 다시 확인
-            switch (Store.Delete(e.Id, FirmwareStore.ActiveJobsOf(JobSvc), out users))
-            {
-                case FirmwareStore.DeleteResult.InUse: msg = $"그사이 작업 {string.Join(", ", users)} 이(가) 이 펌웨어를 쓰게 되어 지우지 않았습니다"; err = true; break;
-                case FirmwareStore.DeleteResult.NotFound: msg = "이미 삭제된 펌웨어입니다"; break;
-                default: msg = $"삭제: {e.Version}"; break;
-            }
+            // 확인창이 떠 있는 동안 작업이 생겼을 수 있으므로 지우기 직전에 다시 확인
+            // (작업 lock 과 펌웨어 lock 을 겹쳐 잡지 않는다 — lock 순서 작업 → 펌웨어)
+            users = ActiveJobNames(e.Id);
+            if (users.Count > 0) { msg = $"그사이 작업 {string.Join(", ", users)} 이(가) 이 펌웨어를 쓰게 되어 지우지 않았습니다"; err = true; }
+            else msg = Store.Delete(e.Id) ? $"삭제: {e.Version}" : "이미 삭제된 펌웨어입니다";
         }
         catch (JSDisconnectedException) { }
         catch (Exception ex) { msg = "삭제 실패: " + ex.Message; err = true; }

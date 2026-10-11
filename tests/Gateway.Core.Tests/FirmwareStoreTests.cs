@@ -5,7 +5,7 @@ using Gateway.Server.Services;
 
 namespace Gateway.Core.Tests;
 
-/// <summary>펌웨어 저장소: DB 실패 시 메모리·폴더 정합(S-06), 사용 중 확인과 삭제(S-08), 버전·파일명 규칙(C-02·C-09), 옛 index.json 이전(S-05), 변경 알림(U-10)</summary>
+/// <summary>펌웨어 저장소: DB 실패 시 메모리·폴더 정합(S-06), 삭제와 lock 순서(S-08), 버전·파일명 규칙(C-02·C-09), 옛 index.json 이전(S-05), 변경 알림(U-10)</summary>
 public class FirmwareStoreTests : IDisposable
 {
     readonly string _dir = Path.Combine(Path.GetTempPath(), "gw-fw-" + Guid.NewGuid().ToString("N"));
@@ -61,30 +61,31 @@ public class FirmwareStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Delete_checks_usage_inside_the_store()
+    public async Task Delete_removes_row_memory_and_folder_then_notifies()
     {
-        var (_, st) = New();
+        var (db, st) = New();
         var e = await AddEsp(st);
         int changed = 0;
         st.Changed += () => changed++;
-        Assert.Equal(FirmwareStore.DeleteResult.InUse, st.Delete(e.Id, _ => ["야간 작업"], out var users));
-        Assert.Equal(["야간 작업"], users);
-        Assert.NotNull(st.Get(e.Id));
-        Assert.Equal(0, changed);
-        Assert.Equal(FirmwareStore.DeleteResult.Deleted, st.Delete(e.Id, _ => [], out _));
+        Assert.True(st.Delete(e.Id));
         Assert.Null(st.Get(e.Id));
         Assert.Equal(1, changed);
         Assert.Equal("", FwDirs());
-        Assert.Equal(FirmwareStore.DeleteResult.NotFound, st.Delete(e.Id, _ => [], out _));
+        Assert.Empty(new FirmwareStore(_dir, db).List());   // DB 에서도 지워짐
+        Assert.False(st.Delete(e.Id));                       // 없으면 false, 알림 없음
+        Assert.Equal(1, changed);
     }
 
     [Fact]
-    public async Task UseIfExists_runs_only_for_existing_firmware()
+    public async Task Changed_is_raised_outside_the_store_lock()
     {
+        // JobService 가 작업 lock 안에서 Delete 를 부르고, 화면이 그 알림에서 다른 스레드로 목록을 다시 읽어도 막히지 않아야 한다
         var (_, st) = New();
+        var listed = new List<bool>();
+        st.Changed += () => listed.Add(Task.Run(() => st.List()).Wait(TimeSpan.FromSeconds(5)));
         var e = await AddEsp(st);
-        Assert.Equal("0.5.2", st.UseIfExists(e.Id, f => f.Version));
-        Assert.Null(st.UseIfExists("nope", f => f.Version));
+        Assert.True(st.Delete(e.Id));
+        Assert.Equal([true, true], listed);
     }
 
     [Fact]
