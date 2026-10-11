@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Security.Cryptography;
 using Gateway.Core.Update;
 using Gateway.Server.Options;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Options;
 
 namespace Gateway.Server.Services;
@@ -17,7 +20,9 @@ public enum UpdateStage { Idle, Checking, UpToDate, Available, Downloading, Read
 ///  - 확인: {BaseUrl}/releases/latest/download/AgvFotaGateway.json → releases/latest 리다이렉트 → api.github.com 순서
 ///    (사내망은 api.github.com 이 막히고 github.com 만 열림)
 ///  - 받기: 프로그램이 직접 받고(.partial) SHA-256 이 맞을 때만 채택
+///  - 출처: https 의 github.com · api.github.com 만 (서명 검증 없음 — 출처를 TLS 로 보증)
 ///  - 교체: 실행 중인 exe 는 덮어쓸 수 없으므로 서비스를 멈춘 뒤 현재 exe → .old, 새 파일 복사, 다시 시작 (apply-update.bat)
+///    다시 띄운 뒤 60초 안에 /api/health 가 새 버전을 돌려주지 않으면 배치가 이전 exe 로 자동 되돌림
 ///  - 되돌리기: .old 가 있으면 한 세대 되돌림
 ///  - 채널: release(정식) · dev(main 테스트, 정식만 받음) · local(로컬 빌드, 교체 안 함)
 /// appsettings.json 과 data/ 는 덮어쓰지 않는다.
@@ -26,11 +31,14 @@ public sealed class UpdateService : BackgroundService
 {
     readonly UpdateOptions _opt;
     readonly JobService _jobs;
+    readonly AcsRelayService _acs;
+    readonly IServer _server;
     readonly IHostApplicationLifetime _life;
     readonly ILogger<UpdateService> _log;
     readonly string _dir;
     readonly HttpClient _http;
     readonly List<string> _logLines = new();
+    readonly object _gate = new();
 
     public Version Current { get; }
     public string CurrentText { get; }
@@ -42,6 +50,8 @@ public sealed class UpdateService : BackgroundService
     public UpdateStage Stage { get; private set; }
     public UpdateInfo? Latest { get; private set; }
     public string? StagedDir { get; private set; }
+    /// <summary>받아 둔(적용 대기) 버전 태그 vX.Y.Z</summary>
+    public string? StagedTag { get; private set; }
     public string Message { get; private set; } = "";
     public DateTime? LastCheck { get; private set; }
     public IReadOnlyList<string> Log { get { lock (_logLines) return _logLines.ToArray(); } }
@@ -51,14 +61,19 @@ public sealed class UpdateService : BackgroundService
     /// <summary>브라우저로 직접 받는 고정 주소 (항상 최신)</summary>
     public string DownloadUrl => $"{BaseUrl}/releases/latest/download/{UpdateFeed.AssetName}";
     public string ReleasesPage => $"{BaseUrl}/releases";
+    /// <summary>받기 단추를 켤지: 확인된 새 버전이 있고 받는 중·적용 중이 아님 (받기 실패 뒤에도 다시 받을 수 있게)</summary>
+    public bool CanDownload => Latest is { } l && UpdateFeed.IsNewer(l.Version, Current) && Stage is UpdateStage.Available or UpdateStage.Error or UpdateStage.Ready && StagedTag != l.Tag;
     public event Action? Changed;
 
     static string ExePath => Path.Combine(AppContext.BaseDirectory, "AgvFotaGateway.exe");
     static string OldPath => ExePath + ".old";
+    /// <summary>자동 되돌림된 버전 (자동 적용에서 제외, 화면에서는 적용 가능)</summary>
+    string SkipAutoPath => Path.Combine(_dir, "skip-auto.txt");
 
-    public UpdateService(IOptions<UpdateOptions> opt, IOptions<GatewayOptions> gw, JobService jobs, IHostApplicationLifetime life, ILogger<UpdateService> log)
+    public UpdateService(IOptions<UpdateOptions> opt, IOptions<GatewayOptions> gw, JobService jobs, AcsRelayService acs, IServer server,
+                         IHostApplicationLifetime life, ILogger<UpdateService> log)
     {
-        _opt = opt.Value; _jobs = jobs; _life = life; _log = log;
+        _opt = opt.Value; _jobs = jobs; _acs = acs; _server = server; _life = life; _log = log;
         _dir = Path.Combine(gw.Value.DataDir, "update");
         var asm = Assembly.GetEntryAssembly()!;
         var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
@@ -67,7 +82,8 @@ public sealed class UpdateService : BackgroundService
         CurrentText = Current.ToString(3);
         Commit = parts.Length > 1 && parts[1].Length >= 7 ? parts[1][..7] : null;
         Channel = asm.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "BuildChannel")?.Value ?? "local";
-        // 시스템 프록시 + 사내 프록시가 Windows 로그인 인증을 요구해도 통과
+        // 시스템 프록시 사용. 콘솔 실행이면 로그인 사용자의 프록시·자격, 서비스(LocalSystem)면 SYSTEM 계정의 프록시 설정과
+        // 컴퓨터 계정(DOMAIN\PC$) 자격이 쓰인다 (사용자 프록시·사용자 인증은 서비스에 적용되지 않음)
         _http = new HttpClient(new HttpClientHandler { UseProxy = true, DefaultProxyCredentials = CredentialCache.DefaultCredentials, AutomaticDecompression = DecompressionMethods.All })
         { Timeout = TimeSpan.FromMinutes(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("AgvFotaGateway/" + CurrentText);
@@ -76,6 +92,7 @@ public sealed class UpdateService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         CleanupLeftovers();
+        RestoreStaged();
         if (!_opt.Enabled) return;
         try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _opt.FirstCheckDelaySec)), ct); } catch (OperationCanceledException) { return; }
         while (!ct.IsCancellationRequested)
@@ -85,8 +102,17 @@ public sealed class UpdateService : BackgroundService
                 var info = await CheckAsync(ct);
                 if (info is not null && _opt.AutoApply && CanSelfUpdate)
                 {
-                    if (Stage == UpdateStage.Available) await DownloadAsync(ct);
-                    if (Stage == UpdateStage.Ready) await ApplyAsync();
+                    if (ReadSkipAuto() == info.Tag) Add($"{info.Tag} 은(는) 이전에 되돌린 버전(기동 확인 실패 또는 수동 되돌리기) — 자동 적용하지 않음 (화면에서 적용 가능)");
+                    else
+                    {
+                        if (Stage == UpdateStage.Available) await DownloadAsync(ct);
+                        if (Stage == UpdateStage.Ready)
+                        {
+                            // 적용 중에는 ACS 중계가 약 10초 끊기므로 연결돼 있으면 자동 적용하지 않고 화면에서 적용하게 한다
+                            if (_acs.Connected) Set(UpdateStage.Ready, $"{StagedTag} 받아 둠 — ACS 중계 연결 중이라 자동 적용을 미룸 (화면에서 적용)");
+                            else await ApplyAsync();
+                        }
+                    }
                 }
             }
             catch (Exception e) when (e is not OperationCanceledException) { Add("자동 확인 실패: " + e.Message); }
@@ -95,42 +121,66 @@ public sealed class UpdateService : BackgroundService
         }
     }
 
+    /// <summary>from 단계 중 하나일 때만 to 로 바꾼다 (동시에 누른 확인·받기가 겹치지 않게)</summary>
+    bool Enter(UpdateStage to, string msg, Func<UpdateStage, bool> from)
+    {
+        lock (_gate)
+        {
+            if (!from(Stage)) return false;
+            Stage = to; Message = msg;
+        }
+        Add(msg);
+        return true;
+    }
+
+    bool HasStaged => StagedDir is not null && StagedTag is not null && Directory.Exists(StagedDir);
+
     // ───── 확인: 매니페스트 → 리다이렉트 → API ─────
     public async Task<UpdateInfo?> CheckAsync(CancellationToken ct = default)
     {
-        Set(UpdateStage.Checking, "확인 중…");
+        // 받는 중·적용 중에는 확인하지 않는다 (받기 상태가 Available 로 돌아가 두 번째 받기가 겹치는 것 방지)
+        if (!Enter(UpdateStage.Checking, "확인 중…", s => s is not (UpdateStage.Checking or UpdateStage.Downloading or UpdateStage.Applying))) return null;
         UpdateInfo? info = null;
         Exception? first = null;
-        foreach (var source in new Func<CancellationToken, Task<UpdateInfo?>>[] { FromManifestAsync, FromRedirectAsync, FromApiAsync })
-        {
-            try { info = await source(ct); if (info is not null) break; }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception e) { first ??= e; }
-        }
+        if (!UpdateFeed.IsAllowedSource(BaseUrl) || !UpdateFeed.IsAllowedSource(ManifestUrl))
+            first = new InvalidOperationException($"허용되지 않은 업데이트 주소 ({ManifestUrl}) — https://github.com 저장소 주소만 됩니다 (Update.BaseUrl · ManifestUrl)");
+        else
+            foreach (var source in new Func<CancellationToken, Task<UpdateInfo?>>[] { FromManifestAsync, FromRedirectAsync, FromApiAsync })
+            {
+                try { info = await source(ct); if (info is not null) break; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { Set(HasStaged ? UpdateStage.Ready : UpdateStage.Idle, "확인 취소"); throw; }
+                catch (Exception e) { first ??= e; }
+            }
         LastCheck = DateTime.UtcNow;
         if (info is null)
         {
-            Set(UpdateStage.Error, first is null
-                ? $"정식 릴리스가 없거나 접근할 수 없음 ({ManifestUrl}). 비공개 저장소면 공개로 바꾸거나 사내 BaseUrl 또는 GitHubToken 을 설정"
-                : "확인 실패: " + first.Message);
+            var why = first is null
+                ? $"정식 릴리스가 없거나 접근할 수 없음 ({ManifestUrl}). 비공개 저장소면 공개로 바꾸거나 GitHubToken 을 설정"
+                : "확인 실패: " + first.Message;
+            // 받아 둔 업데이트는 확인이 실패해도 그대로 적용할 수 있다
+            if (HasStaged) Set(UpdateStage.Ready, $"{why} — 받아 둔 {StagedTag} 은(는) 적용 가능");
+            else Set(UpdateStage.Error, why);
             return null;
         }
         Latest = info;
         if (!UpdateFeed.IsNewer(info.Version, Current)) { Set(UpdateStage.UpToDate, $"최신 버전입니다 ({CurrentText}, {ChannelName})"); return null; }
-        if (StagedDir is not null && Directory.Exists(StagedDir) && StagedDir.Contains(info.Tag)) { Set(UpdateStage.Ready, $"{info.Tag} 받아 둠 — 적용 대기"); return info; }
-        Set(UpdateStage.Available, $"새 버전 {info.Tag} ({info.AssetName}, {info.Size / 1024 / 1024}MB){(info.Sha256 is null ? " · SHA-256 정보 없음" : "")}");
+        if (HasStaged && StagedTag == info.Tag) { Set(UpdateStage.Ready, $"{info.Tag} 받아 둠 — 적용 대기"); return info; }
+        Set(UpdateStage.Available, $"새 버전 {info.Tag} ({info.AssetName}, {info.Size / 1024 / 1024}MB){(info.Sha256 is null ? " · SHA-256 정보 없음" : "")}"
+                                   + (HasStaged ? $" · 받아 둔 {StagedTag} 도 적용 가능" : ""));
         return info;
     }
 
     async Task<UpdateInfo?> FromManifestAsync(CancellationToken ct)
     {
         var text = await ReadTextAsync(ManifestUrl, ct);
-        return text is null ? null : UpdateFeed.ParseManifest(text, BaseUrl);
+        if (text is null) return null;
+        var info = UpdateFeed.ParseManifest(text, BaseUrl);
+        if (info is not null && UpdateFeed.SourceError(info) is { } err) throw new InvalidOperationException("매니페스트: " + err);
+        return info;
     }
 
     async Task<UpdateInfo?> FromRedirectAsync(CancellationToken ct)
     {
-        if (!BaseUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return null;
         using var res = await _http.GetAsync($"{ReleasesPage}/latest", HttpCompletionOption.ResponseHeadersRead, ct);
         if (res.StatusCode == HttpStatusCode.NotFound) return null;
         res.EnsureSuccessStatusCode();
@@ -146,24 +196,34 @@ public sealed class UpdateService : BackgroundService
     {
         if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var u) || !u.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)) return null;
         var repo = u.AbsolutePath.Trim('/');
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repo}/releases/latest");
-        req.Headers.Accept.ParseAdd("application/vnd.github+json");
-        if (!string.IsNullOrEmpty(_opt.GitHubToken)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opt.GitHubToken);
+        using var req = NewRequest($"https://api.github.com/repos/{repo}/releases/latest", "application/vnd.github+json");
         using var res = await _http.SendAsync(req, ct);
         if (res.StatusCode == HttpStatusCode.NotFound) return null;
         if (res.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests) throw new InvalidOperationException("GitHub API 횟수 제한 — 1시간 뒤 다시");
         res.EnsureSuccessStatusCode();
-        return UpdateFeed.ParseGitHubRelease(await res.Content.ReadAsStringAsync(ct));
+        var info = UpdateFeed.ParseGitHubRelease(await res.Content.ReadAsStringAsync(ct));
+        if (info is not null && UpdateFeed.SourceError(info) is { } err) throw new InvalidOperationException("GitHub API: " + err);
+        return info;
+    }
+
+    /// <summary>GitHub 토큰은 호스트가 api.github.com 일 때만 붙인다 (리다이렉트 때 HttpClient 가 Authorization 을 떼어 냄)</summary>
+    HttpRequestMessage NewRequest(string url, string accept)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.Accept.ParseAdd(accept);
+        if (!string.IsNullOrEmpty(_opt.GitHubToken) && UpdateFeed.IsGitHubApi(url)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opt.GitHubToken);
+        return req;
     }
 
     // ───── 받기: .partial + SHA-256 ─────
     public async Task DownloadAsync(CancellationToken ct = default)
     {
         var info = Latest;
-        if (info is null || Stage is not (UpdateStage.Available or UpdateStage.Error)) return;
-        Set(UpdateStage.Downloading, $"{info.AssetName} 받는 중…");
+        if (info is null || !CanDownload) return;
+        if (!Enter(UpdateStage.Downloading, $"{info.AssetName} 받는 중…", s => s is UpdateStage.Available or UpdateStage.Error or UpdateStage.Ready)) return;
         try
         {
+            if (UpdateFeed.SourceError(info) is { } err) throw new InvalidOperationException(err);
             Directory.CreateDirectory(_dir);
             var expected = info.Sha256 ?? (await ReadTextAsync(info.Sha256Url, ct) is { } s ? UpdateFeed.ParseShaFile(s) : null)
                            ?? throw new InvalidOperationException("릴리스에 검증용 SHA-256 정보가 없음 (매니페스트 또는 .sha256 파일)");
@@ -171,28 +231,19 @@ public sealed class UpdateService : BackgroundService
             var part = zip + ".partial";
             try
             {
-                if (info.AssetUrl.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+                using var req = NewRequest(info.AssetUrl, "application/octet-stream");
+                using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                res.EnsureSuccessStatusCode();
+                long total = res.Content.Headers.ContentLength ?? info.Size, done = 0; int lastPct = -1;
+                await using var src = await res.Content.ReadAsStreamAsync(ct);
+                await using var dst = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+                var buf = new byte[81920]; int n;
+                while ((n = await src.ReadAsync(buf, ct)) > 0)
                 {
-                    File.Copy(new Uri(info.AssetUrl).LocalPath, part, true);
-                }
-                else
-                {
-                    using var req = new HttpRequestMessage(HttpMethod.Get, info.AssetUrl);
-                    req.Headers.Accept.ParseAdd("application/octet-stream");
-                    if (!string.IsNullOrEmpty(_opt.GitHubToken) && info.AssetUrl.Contains("api.github.com")) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opt.GitHubToken);
-                    using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-                    res.EnsureSuccessStatusCode();
-                    long total = res.Content.Headers.ContentLength ?? info.Size, done = 0; int lastPct = -1;
-                    await using var src = await res.Content.ReadAsStreamAsync(ct);
-                    await using var dst = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-                    var buf = new byte[81920]; int n;
-                    while ((n = await src.ReadAsync(buf, ct)) > 0)
-                    {
-                        await dst.WriteAsync(buf.AsMemory(0, n), ct);
-                        done += n;
-                        int pct = total > 0 ? (int)(done * 100 / total) : 0;
-                        if (pct / 10 != lastPct / 10) { lastPct = pct; Message = $"{info.AssetName} 받는 중… {pct}%"; Changed?.Invoke(); }
-                    }
+                    await dst.WriteAsync(buf.AsMemory(0, n), ct);
+                    done += n;
+                    int pct = total > 0 ? (int)(done * 100 / total) : 0;
+                    if (pct / 10 != lastPct / 10) { lastPct = pct; Message = $"{info.AssetName} 받는 중… {pct}%"; Changed?.Invoke(); }
                 }
             }
             catch { TryDelete(part); throw; }
@@ -207,19 +258,32 @@ public sealed class UpdateService : BackgroundService
             var exe = Directory.GetFiles(stage, "AgvFotaGateway.exe", SearchOption.AllDirectories).FirstOrDefault()
                       ?? throw new InvalidOperationException("zip 에 AgvFotaGateway.exe 가 없음");
             StagedDir = Path.GetDirectoryName(exe)!;
+            StagedTag = info.Tag;
             TryDelete(zip);
             Set(UpdateStage.Ready, $"{info.Tag} 받음 (SHA-256 확인) — 적용하면 서비스가 재시작됩니다");
         }
-        catch (Exception e) when (e is not OperationCanceledException) { Set(UpdateStage.Error, "받기 실패: " + e.Message); }
+        catch (OperationCanceledException) { Set(HasStaged ? UpdateStage.Ready : UpdateStage.Available, "받기 취소"); throw; }
+        catch (Exception e)
+        {
+            // 받아 둔 이전 업데이트가 있으면 그대로 적용할 수 있게 둔다
+            if (HasStaged) Set(UpdateStage.Ready, $"받기 실패: {e.Message} — 받아 둔 {StagedTag} 은(는) 적용 가능");
+            else Set(UpdateStage.Error, "받기 실패: " + e.Message);
+        }
     }
 
     // ───── 교체 · 되돌리기 (Windows, 배치) ─────
     public Task ApplyAsync()
     {
-        if (Stage != UpdateStage.Ready || StagedDir is null) return Task.CompletedTask;
-        if (!CanSelfUpdate) { Set(UpdateStage.Ready, Channel == "local" ? "로컬 빌드는 자동 교체하지 않음 (bin 폴더)" : "자동 교체는 Windows 에서만"); return Task.CompletedTask; }
-        if (_jobs.List().Any(j => j.State == JobState.Running)) { Set(UpdateStage.Ready, "배포 작업이 실행 중 — 끝난 뒤 적용하세요"); return Task.CompletedTask; }
-        return RunBatchAsync("apply", StagedDir, Latest?.Tag ?? "", $"{Latest?.Tag} 적용 중 — 서비스가 재시작됩니다 (약 10초)");
+        lock (_gate)
+        {
+            if (Stage != UpdateStage.Ready || !HasStaged) return Task.CompletedTask;
+            if (!CanSelfUpdate) { Set(UpdateStage.Ready, Channel == "local" ? "로컬 빌드는 자동 교체하지 않음 (bin 폴더)" : "자동 교체는 Windows 에서만"); return Task.CompletedTask; }
+            if (!HoldJobs()) { Set(UpdateStage.Ready, "배포 작업이 실행 중 — 끝난 뒤 적용하세요"); return Task.CompletedTask; }
+            var tag = StagedTag!;
+            if (!RunBatch("apply", StagedDir!, tag, UpdateFeed.ParseVersion(tag)?.ToString(3), $"{tag} 적용 중 — 서비스가 재시작됩니다 (약 10초)"))
+                _jobs.HoldNewJobs = false;
+        }
+        return Task.CompletedTask;
     }
 
     /// <summary>.old 버전 문자열 (되돌릴 수 있으면), 없으면 null</summary>
@@ -235,69 +299,136 @@ public sealed class UpdateService : BackgroundService
 
     public Task RollbackAsync()
     {
-        if (OldVersionText is null) return Task.CompletedTask;
-        if (!CanSelfUpdate) { Add("되돌리기는 Windows 정식/테스트 빌드에서만"); return Task.CompletedTask; }
-        if (_jobs.List().Any(j => j.State == JobState.Running)) { Add("배포 작업이 실행 중 — 끝난 뒤 되돌리세요"); return Task.CompletedTask; }
-        return RunBatchAsync("rollback", "", OldVersionText, $"{OldVersionText} 로 되돌리는 중 — 서비스가 재시작됩니다");
+        lock (_gate)
+        {
+            if (Stage == UpdateStage.Applying || OldVersionText is not { } old) return Task.CompletedTask;
+            if (!CanSelfUpdate) { Add("되돌리기는 Windows 정식/테스트 빌드에서만"); return Task.CompletedTask; }
+            if (!HoldJobs()) { Add("배포 작업이 실행 중 — 끝난 뒤 되돌리세요"); return Task.CompletedTask; }
+            if (!RunBatch("rollback", "", old, UpdateFeed.ParseVersion(old)?.ToString(3), $"{old} 로 되돌리는 중 — 서비스가 재시작됩니다"))
+                _jobs.HoldNewJobs = false;
+            else
+                try { File.WriteAllText(SkipAutoPath, "v" + CurrentText); } catch { }   // 되돌린 버전을 AutoApply 가 곧바로 다시 적용하지 않게
+        }
+        return Task.CompletedTask;
     }
 
-    Task RunBatchAsync(string mode, string stageDir, string tag, string msg)
+    /// <summary>
+    /// 새 작업 시작을 먼저 막고 그 상태에서 실행 중 작업을 다시 본다 (적용 직전에 예약·즉시 작업이 시작돼 재시작에 끊기는 것 방지).
+    /// 실행 중이면 막은 것을 풀고 false
+    /// </summary>
+    bool HoldJobs()
+    {
+        _jobs.HoldNewJobs = true;
+        if (!_jobs.IsBusy) return true;
+        _jobs.HoldNewJobs = false;
+        return false;
+    }
+
+    bool RunBatch(string mode, string stageDir, string tag, string? expectedVersion, string msg)
     {
         try
         {
             Directory.CreateDirectory(_dir);
-            var bat = Path.Combine(_dir, "apply-update.bat");
-            File.WriteAllText(bat, ApplyScript, System.Text.Encoding.ASCII);   // cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 스크립트는 ASCII 만
+            var bat = Path.Combine(_dir, SelfUpdateScript.FileName);
+            File.WriteAllText(bat, SelfUpdateScript.Text.ReplaceLineEndings("\r\n"), System.Text.Encoding.ASCII);   // cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 스크립트는 ASCII 만
             File.WriteAllText(Path.Combine(_dir, "exclude.txt"), "appsettings.json\r\n");
             File.WriteAllText(Path.Combine(_dir, "pending.txt"), $"{mode} {tag}");
-            var app = AppContext.BaseDirectory.TrimEnd('\\', '/');
-            var psi = new ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{bat}\" {mode} {Environment.ProcessId} \"{app}\" \"{stageDir}\" {_opt.ServiceName}")
+            var health = SelfUpdateScript.HealthUrl(_server.Features.Get<IServerAddressesFeature>()?.Addresses ?? []);
+            var args = SelfUpdateScript.Arguments(mode, Environment.ProcessId, AppContext.BaseDirectory, stageDir, _opt.ServiceName,
+                                                  WindowsServiceHelpers.IsWindowsService(), health, expectedVersion);
+            var psi = new ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{bat}\" {args}")
             { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = _dir };
             Process.Start(psi);
             Set(UpdateStage.Applying, msg);
-            _log.LogWarning("update {Mode}: {Tag}", mode, tag);
+            _log.LogWarning("update {Mode}: {Tag} ({Args})", mode, tag, args);
             _ = Task.Delay(1500).ContinueWith(_ => _life.StopApplication());
+            return true;
         }
-        catch (Exception e) { Set(UpdateStage.Error, "적용 실패: " + e.Message); }
-        return Task.CompletedTask;
+        catch (Exception e)
+        {
+            if (HasStaged) Set(UpdateStage.Ready, "적용 실패: " + e.Message);
+            else Add("적용 실패: " + e.Message);
+            return false;
+        }
     }
 
     void CleanupLeftovers()
     {
         try
         {
-            TryDelete(ExePath + ".rollback");
             if (Directory.Exists(_dir)) foreach (var f in Directory.GetFiles(_dir, "*.partial")) TryDelete(f);
             var pending = Path.Combine(_dir, "pending.txt");
-            if (!File.Exists(pending)) return;
+            // 되돌리기 직후 기동에서는 .rollback 을 남긴다 — 이 프로세스가 기동 확인에 실패하면 배치가 그것으로 복구한다
+            if (!File.Exists(pending)) { TryDelete(ExePath + ".rollback"); return; }
             var p = File.ReadAllText(pending).Trim().Split(' ', 2);
             File.Delete(pending);
-            var tag = p.Length > 1 ? p[1] : "";
-            var ok = UpdateFeed.ParseVersion(tag) is { } v && v.ToString(3) == CurrentText;
-            Add(p[0] == "rollback"
-                ? (ok ? $"{tag} 로 되돌림" : $"되돌리기 후에도 버전이 {CurrentText} — apply.log 확인")
-                : (ok ? $"업데이트 {tag} 적용됨 (현재 {CurrentText}, 이전 {OldVersionText ?? "-"} 는 되돌리기 가능)" : $"업데이트 {tag} 적용 후에도 버전이 {CurrentText} — apply.log 확인"));
-            var stage = Path.Combine(_dir, tag);
-            if (ok && Directory.Exists(stage)) Directory.Delete(stage, true);
+            var tag = p.Length > 1 ? p[1].Trim() : "";
+            var ver = UpdateFeed.ParseVersion(tag);
+            var ok = ver is not null && ver.ToString(3) == CurrentText;
+            Add(p[0] switch
+            {
+                "rollback" => ok ? $"{tag} 로 되돌림" : $"되돌리기 후에도 버전이 {CurrentText} — apply.log 확인",
+                "apply" => ok ? $"업데이트 {tag} 적용됨 (현재 {CurrentText}, 이전 {OldVersionText ?? "-"} 는 되돌리기 가능)" : $"업데이트 {tag} 적용 후에도 버전이 {CurrentText} — apply.log 확인",
+                "apply-reverted" => $"업데이트 {tag} 이(가) {SelfUpdateScript.HealthTimeoutSec}초 안에 응답하지 않아 이전 버전 {CurrentText} 로 자동 되돌림 (실패한 exe 는 AgvFotaGateway.exe.bad) — apply.log 확인",
+                "rollback-reverted" => $"되돌리기 대상 {tag} 이(가) {SelfUpdateScript.HealthTimeoutSec}초 안에 응답하지 않아 원래 버전 {CurrentText} 로 복구 — apply.log 확인",
+                "apply-unhealthy" or "rollback-unhealthy" => $"{tag} 이(가) 응답하지 않았지만 되돌릴 이전 exe 가 없음 (현재 {CurrentText}) — apply.log 확인",
+                "apply-failed" => $"업데이트 {tag} 파일 교체 실패 — {CurrentText} 유지, apply.log 확인",
+                "rollback-failed" => $"되돌리기 실패 — {CurrentText} 유지, apply.log 확인",
+                _ => $"알 수 없는 업데이트 결과 '{p[0]}' — apply.log 확인",
+            });
+            if (ver is null) return;
+            var stage = Path.Combine(_dir, "v" + ver.ToString(3));
+            if (p[0] == "apply-reverted")
+            {
+                // 기동하지 못한 버전은 자동 적용에서 빼고 받아 둔 파일도 지운다 (AutoApply 가 같은 버전을 반복 적용하지 않게)
+                File.WriteAllText(SkipAutoPath, "v" + ver.ToString(3));
+                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+            }
+            else if (p[0] == "apply" && ok)
+            {
+                TryDelete(SkipAutoPath);
+                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+            }
         }
         catch (Exception e) { _log.LogDebug("cleanup: {Msg}", e.Message); }
     }
 
+    /// <summary>재시작 전에 받아 둔 새 버전(data/update/vX.Y.Z)이 있으면 '적용 대기'로 복원하고, 현재보다 오래된 폴더는 지운다</summary>
+    void RestoreStaged()
+    {
+        try
+        {
+            if (!Directory.Exists(_dir)) return;
+            var dirs = Directory.GetDirectories(_dir, "v*").Where(d => File.Exists(Path.Combine(d, "AgvFotaGateway", "AgvFotaGateway.exe"))
+                                                                     || File.Exists(Path.Combine(d, "AgvFotaGateway.exe"))).ToList();
+            var best = UpdateFeed.NewestStagedTag(dirs.Select(d => Path.GetFileName(d)), Current);
+            foreach (var d in Directory.GetDirectories(_dir, "v*"))
+                if (Path.GetFileName(d) != best) try { Directory.Delete(d, true); } catch { }
+            if (best is null) return;
+            var exe = Directory.GetFiles(Path.Combine(_dir, best), "AgvFotaGateway.exe", SearchOption.AllDirectories).FirstOrDefault();
+            if (exe is null) return;
+            StagedDir = Path.GetDirectoryName(exe)!;
+            StagedTag = best;
+            Set(UpdateStage.Ready, $"{best} 받아 둠 (재시작 전에 받은 파일) — 적용 대기");
+        }
+        catch (Exception e) { _log.LogDebug("restore staged: {Msg}", e.Message); }
+    }
+
+    string? ReadSkipAuto() { try { return File.Exists(SkipAutoPath) ? File.ReadAllText(SkipAutoPath).Trim() : null; } catch { return null; } }
+
     async Task<string?> ReadTextAsync(string? url, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(url)) return null;
-        if (url.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
-        {
-            var path = new Uri(url).LocalPath;
-            return File.Exists(path) ? await File.ReadAllTextAsync(path, ct) : null;
-        }
-        using var res = await _http.GetAsync(url, ct);
+        if (!UpdateFeed.IsAllowedSource(url)) throw new InvalidOperationException($"허용되지 않은 주소: {url} (https://github.com · api.github.com 만)");
+        // api.github.com 자산은 octet-stream 을 요청해야 내용(메타데이터 JSON 이 아니라)을 준다
+        using var req = NewRequest(url, UpdateFeed.IsGitHubApi(url) ? "application/octet-stream" : "*/*");
+        using var res = await _http.SendAsync(req, ct);
         if (res.StatusCode == HttpStatusCode.NotFound) return null;
         res.EnsureSuccessStatusCode();
         return await res.Content.ReadAsStringAsync(ct);
     }
 
-    void Set(UpdateStage s, string msg) { Stage = s; Message = msg; Add(msg); }
+    void Set(UpdateStage s, string msg) { lock (_gate) { Stage = s; Message = msg; } Add(msg); }
     void Add(string line)
     {
         lock (_logLines) { _logLines.Add($"{DateTime.Now:MM-dd HH:mm:ss} {line}"); if (_logLines.Count > 100) _logLines.RemoveAt(0); }
@@ -305,48 +436,4 @@ public sealed class UpdateService : BackgroundService
         try { Changed?.Invoke(); } catch { }
     }
     static void TryDelete(string p) { try { if (File.Exists(p)) File.Delete(p); } catch { } }
-
-    // %1 = apply|rollback, %2 = 현재 PID, %3 = 앱 폴더, %4 = 새 파일 폴더(apply), %5 = 서비스 이름
-    const string ApplyScript = """
-        @echo off
-        setlocal
-        set MODE=%1
-        set PID=%2
-        set APP=%~3
-        set STAGE=%~4
-        set SVC=%5
-        set LOG=%~dp0apply.log
-        set EXE=%APP%\AgvFotaGateway.exe
-        cd /d "%~dp0"
-        echo [%date% %time%] %MODE% %STAGE% -^> %APP% >> "%LOG%"
-        set WASSVC=0
-        sc query %SVC% 2>nul | findstr /C:"RUNNING" >nul && (set WASSVC=1 & sc stop %SVC% >> "%LOG%" 2>&1)
-        set /a N=0
-        :wait
-        tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /B /I /C:"AgvFotaGateway" >nul || goto swap
-        set /a N+=1
-        if %N% GEQ 60 (echo [%date% %time%] process %PID% still running, killing >> "%LOG%" & taskkill /PID %PID% /F >> "%LOG%" 2>&1 & goto swap)
-        timeout /t 1 /nobreak >nul
-        goto wait
-        :swap
-        timeout /t 1 /nobreak >nul
-        if "%MODE%"=="rollback" (
-            if exist "%EXE%.rollback" del /f /q "%EXE%.rollback"
-            ren "%EXE%" AgvFotaGateway.exe.rollback >> "%LOG%" 2>&1
-            ren "%EXE%.old" AgvFotaGateway.exe >> "%LOG%" 2>&1 || (ren "%EXE%.rollback" AgvFotaGateway.exe & echo [%date% %time%] rollback failed >> "%LOG%")
-        ) else (
-            if exist "%EXE%.old" del /f /q "%EXE%.old"
-            ren "%EXE%" AgvFotaGateway.exe.old >> "%LOG%" 2>&1
-            rem xcopy /EXCLUDE: 는 따옴표 경로를 받지 못하므로 (경로에 공백이 있으면 실패) 스크립트 폴더로 이동해 상대 경로를 쓴다
-            xcopy "%STAGE%\*" "%APP%\" /E /Y /I /EXCLUDE:exclude.txt >> "%LOG%" 2>&1
-            if not exist "%EXE%" (echo [%date% %time%] copy failed, restoring .old >> "%LOG%" & ren "%EXE%.old" AgvFotaGateway.exe)
-        )
-        if "%WASSVC%"=="1" (
-            sc start %SVC% >> "%LOG%" 2>&1
-        ) else (
-            start "" /D "%APP%" "%EXE%"
-        )
-        echo [%date% %time%] done >> "%LOG%"
-        endlocal
-        """;
 }
