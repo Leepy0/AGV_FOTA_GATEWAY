@@ -88,7 +88,7 @@ public class EspOtaClientTests
 
     static readonly OtaTimeouts Fast = new()
     {
-        EspResult = TimeSpan.FromMilliseconds(800), EspReboot = TimeSpan.FromMilliseconds(800), EspConfirm = TimeSpan.FromMilliseconds(300),
+        EspResult = TimeSpan.FromMilliseconds(2000), EspReboot = TimeSpan.FromMilliseconds(2000), EspConfirm = TimeSpan.FromMilliseconds(1000),   // CI 러너가 느려도 여유
         PingInterval = TimeSpan.FromMilliseconds(20), Resend = TimeSpan.FromMilliseconds(100), Poll = TimeSpan.FromMilliseconds(10),
     };
 

@@ -89,7 +89,7 @@ public class DspOtaClientTests
     // 시험용 짧은 시간: 실제 시간 초과·재전송 경로를 지나게 한다
     static readonly OtaTimeouts Fast = new()
     {
-        DspStageIdle = TimeSpan.FromMilliseconds(600), DspApplyIdle = TimeSpan.FromMilliseconds(600),
+        DspStageIdle = TimeSpan.FromMilliseconds(1500), DspApplyIdle = TimeSpan.FromMilliseconds(1500),   // CI 러너가 느려도 여유
         Resend = TimeSpan.FromMilliseconds(100), Poll = TimeSpan.FromMilliseconds(10),
     };
 

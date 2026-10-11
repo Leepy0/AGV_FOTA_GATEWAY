@@ -39,7 +39,8 @@ public sealed class EspOtaClient
         var reader = sub.OtaResults.Reader;
         while (st is null)
         {
-            if (DateTime.UtcNow - t0 >= _t.EspResult)
+            // 명령이 닿은 흔적이 없으면 재전송을 다 쓴 뒤에만 포기한다 (시간 초과가 마지막 재전송보다 먼저 오지 않게)
+            if (DateTime.UtcNow - t0 >= _t.EspResult && (received || resends >= _t.MaxResends))
                 throw new EspOtaException($"OTA_RESULT 없음 ({Sec(_t.EspResult)}{(resends > 0 ? $", 재전송 {resends}회" : "")})");
             using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
