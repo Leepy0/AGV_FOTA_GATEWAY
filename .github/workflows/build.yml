@@ -74,6 +74,12 @@ jobs:
           dotnet build -c Release
           dotnet test -c Release --no-build --logger "console;verbosity=minimal"
 
+      # 종단 시험: 빌드한 서버 + 가짜 브리지(0.5.2 흉내)로 배포 흐름 11개 시나리오 (약 2분 30초)
+      - name: End-to-end (fake bridges)
+        run: |
+          python3 tests/e2e/test_fake_esp.py
+          python3 tests/e2e/run_e2e.py
+
       # .NET 런타임 포함 단일 exe (설치 없이 복사만). 채널·커밋을 어셈블리에 기록
       - name: Publish win-x64
         run: |

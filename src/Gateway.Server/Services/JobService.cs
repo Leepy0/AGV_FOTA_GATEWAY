@@ -109,6 +109,8 @@ public sealed class JobService : BackgroundService
 
     /// <summary>대상 시작 때 오프라인이면 heartbeat 를 이만큼 기다린 뒤 판정 (Wi-Fi 순간 끊김·재시작 직후)</summary>
     internal TimeSpan OnlineWait { get; set; } = TimeSpan.FromSeconds(20);
+    /// <summary>적용 직전 앱 버전이 '?' 면 이만큼 heartbeat 를 더 본다 (브리지 재부팅 직후 3초 동안은 '?' — 그때 바로 복구 적용으로 보지 않게)</summary>
+    internal TimeSpan DspVersionWait { get; set; } = TimeSpan.FromSeconds(5);
     /// <summary>이 시각 전에는 새 작업을 시작하지 않는다 (기동 직후 heartbeat 수집·HTTP 포트 확정 대기)</summary>
     internal DateTime NotBefore { get; set; } = DateTime.MaxValue;
     /// <summary>마지막으로 시작한 작업의 실행 태스크 (시험용)</summary>
@@ -716,9 +718,17 @@ public sealed class JobService : BackgroundService
         var st = CheckDspBridge(agv);
         var (_, img) = await LoadDspImageAsync(fw, ct);
         if (r.StageJob == 0) throw new InvalidOperationException("스테이징 작업 번호 없음 — 다시 배포하세요");
-        // 앱이 버전에 응답하지 않는 호기(dsp=?: 구 앱·앱 멈춤)는 복구 적용 — 브리지 0.5.2 는 recover 가 있을 때만 앱 무응답 시 부트로더로 바로 들어간다
+        // 앱 버전을 모르는 호기(dsp=?: 구 앱·앱 멈춤·브리지 재부팅 직후)는 잠깐 더 본 뒤에도 모르면 복구 적용.
+        // recover 가 있어도 브리지는 먼저 앱에 U 를 보내므로 앱이 살아 있으면 평소처럼 앱의 정지 확인을 거친다.
+        // 앱이 응답하지 않을 때만 부트로더로 바로 들어가고, 부트로더도 안 잡히면 최대 60초 동안 전원 재투입을 기다린다 (wait_power)
+        if (!st.HasDsp)
+        {
+            var until = DateTime.UtcNow + DspVersionWait;
+            while (DateTime.UtcNow < until && _reg.StatusOf(r.Agv) is { HasDsp: false }) await Task.Delay(250, ct);
+            st = _reg.StatusOf(r.Agv) ?? st;
+        }
         bool recover = !st.HasDsp;
-        if (recover) Add(r, "메인보드 앱이 버전에 응답하지 않음 (dsp=?) — 복구 적용: 앱이 응답하지 않으면 브리지가 부트로더로 바로 들어감. 안 되면 메인보드 전원을 껐다 켜세요");
+        if (recover) Add(r, "메인보드 앱 버전 모름 (dsp=?) — 복구 적용으로 진행: 앱이 응답하면 평소대로, 응답하지 않으면 브리지가 부트로더로 바로 들어감 (안내가 나오면 메인보드 전원을 껐다 켜세요)");
         Add(r, $"적용{(recover ? " (복구)" : "")} — 메인보드 앱 정지, 약 20~30초");
         using var c = new DspOtaClient(_link, _reg.StatusOf, r.Agv);
         r.Committed = true;

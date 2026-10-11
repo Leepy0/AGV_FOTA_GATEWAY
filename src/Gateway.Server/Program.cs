@@ -91,6 +91,7 @@ api.MapGet("/agvs", (AgvRegistry reg, IOptions<GatewayOptions> o) =>
         Fw = a.Status?.Fw, Part = a.Status?.Part, Ota = a.Status?.Ota, Rssi = a.Status?.Rssi, Cfg = a.Status?.Cfg,
         Dsp = a.Status?.Dsp, DspBoot = a.Status?.DspBoot, DspState = a.Status?.DspState, a.Status?.StagedJob, a.Status?.StagedVer,
         a.MainUp, a.MainDown, a.SeqLoss, a.LastFrame, a.StatusRaw,
+        Conflict = a.InConflict(o.Value.OfflineAfterSec), ConflictEndPoint = a.ConflictEndPoint?.ToString(), a.ConflictAt, a.ConflictCount,
     }));
 api.MapGet("/firmware", (FirmwareStore fw) => fw.List());
 api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>

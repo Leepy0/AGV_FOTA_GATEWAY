@@ -121,7 +121,7 @@ sealed class JobTestKit : IDisposable
 
     public JobService NewService() => new(Microsoft.Extensions.Options.Options.Create(Opt), Store, Reg, Link, Db, NullLogger<JobService>.Instance)
     {
-        NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1),
+        NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1), DspVersionWait = TimeSpan.FromMilliseconds(300),
     };
 
     /// <summary>서버 재시작 흉내: 같은 DB 로 실행기를 새로 만든다</summary>
