@@ -1,18 +1,20 @@
 flowchart TD
-  subgraph R1["① 받기"]
+  subgraph R1["① 받기 · 스테이징"]
     direction LR
-    D["download → staged<br/>브리지가 .dspfw 받아 보관"] -.- e1["http_* : 서버 8080 에 못 붙음<br/>image_crc · crc_mismatch : 파일 손상<br/>flash_* : 브리지 플래시 오류"]
+    D["download → staged<br/>브리지가 .dspfw 받아 보관<br/>메인보드 앱은 그대로"] -.- e1["url_host : URL 호스트가 브리지 server IP 아님<br/>url_too_long : URL 199자 초과<br/>http_* : 서버 HTTP 포트에 못 붙음<br/>ver_invalid : 버전 1~8자 규칙 위반<br/>image_crc · image_bad : 파일 · 블록 손상<br/>crc_mismatch : 서버가 알린 CRC 와 다름<br/>flash_* : 브리지 플래시 오류<br/>esp_ota_busy · busy : 다른 작업 중"]
   end
-  subgraph R2["② 진입 · 메인보드 앱 멈춤"]
+  subgraph R2["② 진입 · 굽기 전 거부"]
     direction LR
-    N["start → enter<br/>앱에 업데이트 진입 요청"] -.- e2["app_ng_01 주행 · 02 충전 · 03 전압<br/>04 에러 · 09 기타 : 앱이 거부<br/>no_bootloader · boot_proto · uart_busy<br/>stage_invalid · not_staged · job_mismatch : 굽기 전 거부"]
+    N["start → enter<br/>지우기 전 이미지 재검사<br/>앱에 업데이트 진입 요청"] -.- e2["app_ng_01 주행 · 02 충전 · 03 전압<br/>04 에러 · 09 기타 : 앱이 거부<br/>app_no_reply : 앱 무응답 (중계 유지)<br/>uart_busy : 메인보드 송신 대기열 가득<br/>no_bootloader · boot_proto : 부트로더 문제<br/>not_staged · job_mismatch · stage_invalid<br/>진행 wait_power : 메인보드 전원 재투입 대기"]
   end
-  subgraph R3["③ 굽기"]
+  subgraph R3["③ 굽기 · 앱 지워짐"]
     direction LR
-    W["erase → progress → verify<br/>부트로더가 지우고 쓰고 검증"] -.- e3["erase · write* · program · verify*<br/>stage_read · stage_block<br/>지운 뒤 실패하면 앱 없음 · 버전 ?<br/>같은 펌웨어로 새 작업 실행"]
+    W["erase → progress → verify<br/>부트로더가 지우고 쓰고 검증"] -.- e3["erase · write* · program · verify*<br/>stage_read · stage_block<br/>진행 retry 1 · 2 : HELLO 부터 자동 재시도<br/>그래도 실패면 앱 없음 · 버전 ?<br/>→ 새 작업 (복구 적용)"]
   end
   subgraph R4["④ 확인"]
     direction LR
-    K["done<br/>새 앱 기동 · 버전 비교"] -.- e4["app_no_reply : 앱이 응답 없음<br/>ver_mismatch : 버전이 다름"]
+    K["done<br/>새 앱 기동 · 버전 비교"] -.- e4["app_no_reply : 새 앱이 응답 없음<br/>ver_mismatch : 버전이 다름"]
   end
   R1 --> R2 --> R3 --> R4
+  classDef err fill:#fee2e2,stroke:#dc2626,color:#0f172a
+  class e1,e2,e3,e4 err

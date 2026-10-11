@@ -1,41 +1,56 @@
+%%{init: {"sequence": {"mirrorActors": true, "width": 190, "actorMargin": 60}}}%%
 sequenceDiagram
   autonumber
+  participant OP as 운용자
   participant GW as 게이트웨이
   participant ESP as 브리지 ESP32
   participant APP as 메인보드 앱
   participant BL as 메인보드 부트로더
   rect rgb(239, 246, 255)
-  Note over GW,ESP: ① 스테이징 — 브리지는 주행 중에도 받을 수 있음<br/>단, 지금 게이트웨이 작업은 스테이징 직후 바로 ②로 넘어가므로 시작 전에 AGV 를 세울 것
-  GW->>ESP: DSP_OTA_START 0x32 {url, ver, crc32, size, job, apply:0}
-  ESP->>GW: HTTP GET .dspfw (4KB 씩 지우며 dspfw 파티션에 기록)
-  ESP-->>GW: DSP_OTA_RESULT 0x33 download 20…100%
-  ESP->>ESP: 파일 CRC · 앱 헤더 검사
-  ESP-->>GW: staged · ver
+  Note over GW,ESP: ① 스테이징 — 전 호기 차례로<br/>주행 중에도 됨
+  loop 대상 호기마다
+    GW->>ESP: DSP_OTA_START 0x32 {url, ver, crc32, size, job, apply:0}
+    Note over GW,ESP: 5초 안에 보고 · heartbeat 흔적이<br/>없으면 재전송 (최대 3회)
+    ESP->>GW: HTTP GET .dspfw
+    Note over ESP,APP: 머리 160B 먼저 검사 · 형식 · 버전<br/>통과해야 기존 스테이징을 지움
+    ESP-->>GW: DSP_OTA_RESULT 0x33 download 20% 단위
+    Note over ESP,APP: 받은 뒤 파일 CRC · 블록 구조<br/>복원 CRC 검사
+    ESP-->>GW: staged · ver (3회, 300ms 간격)
+    Note over GW,ESP: staged 가 유실돼도 heartbeat<br/>staged.job = job 이면 성공
+  end
   end
   rect rgb(254, 243, 199)
-  Note over GW,BL: ② 적용 — AGV 정지 상태에서만 · 약 20~30초
-  GW->>ESP: DSP_OTA_APPLY 0x34 {job}
-  ESP-->>GW: start
+  Note over OP,GW: ② 적용 대기<br/>승인 전에는 굽지 않음
+  OP->>GW: AGV 정지 확인 → '적용 시작'
+  end
+  rect rgb(254, 226, 226)
+  Note over GW,BL: ③ 적용 — 한 대씩 · 호기마다 약 20~30초
+  GW->>ESP: DSP_OTA_APPLY 0x34 {job} · 앱 버전 ? 이면 recover:1
+  ESP-->>GW: start · ver
+  Note over ESP,APP: 지우기 전에 이미지 다시 검사
   ESP-->>GW: enter
   ESP->>APP: F 프레임 U000 (업데이트 진입 요청)
-  APP-->>ESP: R 프레임 UOK00 · 정지 조건 아니면 UNG + 사유 → fail app_ng_NN
+  APP-->>ESP: R 프레임 UOK00 · 정지 아니면 UNG → app_ng_NN
+  Note over ESP,APP: 무응답이면 app_no_reply 로 중단<br/>recover · 앱 버전 ? 일 때만<br/>부트로더로 바로 감
   APP->>BL: 부트플래그 기록 → 워치독 리셋
-  ESP->>BL: HELLO (1.5초 × 3회)
-  BL-->>ESP: 프로토콜·부트로더 버전
-  ESP->>BL: ERASE 섹터 B·C·D
+  ESP->>BL: UART 115200 으로 전환 · HELLO (1.5초 × 3회)
+  Note over ESP,BL: recover 인데 무응답이면 wait_power<br/>60초 동안 HELLO 50ms 간격 · 전원 재투입 대기
+  BL-->>ESP: 프로토콜 · 부트로더 버전
+  ESP->>BL: ERASE 섹터 B · C · D
   ESP-->>GW: erase
   loop 블록 128워드씩
     ESP->>BL: WRITE addr, data
     BL-->>ESP: OK (쓰고 읽어 비교)
   end
-  ESP-->>GW: progress 0…100%
-  ESP->>BL: WRITE 앱 헤더 (맨 마지막)
-  ESP->>BL: VERIFY → app CRC
+  ESP-->>GW: progress 10% 단위
+  ESP->>BL: WRITE 앱 헤더 (맨 마지막) · VERIFY
   ESP-->>GW: verify
-  ESP->>BL: RESET 0
-  BL->>APP: 헤더·CRC 유효 → 앱으로 점프
-  ESP->>APP: F 프레임 V000 (버전 조회, 1초 간격 8회)
+  Note over ESP,BL: 지운 뒤 실패하면 HELLO 부터<br/>최대 2회 다시 (retry 1 · 2 보고)
+  ESP->>BL: RESET 0 · UART 원래 속도로
+  BL->>APP: 헤더 · CRC 유효 → 앱으로 점프
+  ESP->>APP: F 프레임 V000 (1초 간격 최대 8회)
   APP-->>ESP: R 프레임 V 앱버전 · 부트로더버전 · 빌드일
-  ESP-->>GW: done · ver
+  ESP-->>GW: done · ver (3회, 300ms 간격)
+  Note over GW,ESP: done 이 유실돼도 heartbeat 가<br/>dsp 앞 8자 = 새 버전 · idle<br/>staged 없음 이면 완료
   end
-  GW->>GW: heartbeat 의 dsp 버전이 새 버전인지 확인 (30초)
+  Note over GW,ESP: heartbeat 의 dsp 버전 확인 (30초)<br/>→ 다음 호기

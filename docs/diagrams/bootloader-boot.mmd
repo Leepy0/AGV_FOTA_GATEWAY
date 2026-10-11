@@ -1,12 +1,26 @@
 flowchart TD
   RST(["리셋 · 전원 투입 또는 워치독"]) --> INIT["클럭 100MHz · 플래시 API 준비"]
-  INIT --> FLAG{"부트플래그 0x7FC<br/>진입 요청이 있나?"}
-  FLAG -- "예 · 앱이 UOK 응답 뒤 기록" --> UPD
-  FLAG -- 아니오 --> CHK{"앱 헤더 magic · 헤더 CRC<br/>앱 CRC32 모두 유효?"}
-  CHK -- "아니오 · 앱 없음 또는 쓰다 끊김" --> UPD
-  CHK -- 예 --> CNT{"부트 카운터 +1<br/>3회를 넘었나?"}
-  CNT -- "예 · fwup_boot_ok 없이 연속 리셋<br/>= 기동 불능 앱" --> UPD
-  CNT -- 아니오 --> JMP(["0x3E8040 앱으로 점프<br/>앱이 메인 루프에서 fwup_boot_ok → 카운터 0"])
-  UPD["업데이트 모드 · SCI-A 115200<br/>HELLO · ERASE · WRITE · VERIFY 처리<br/>잘린 패킷은 100ms 뒤 재동기"]
-  UPD -- "RESET 0 명령" --> RST
-  UPD -- "유효 패킷 없이 10분 + 앱 유효" --> RST
+  INIT --> FLAG{{"부트플래그 0x7FC<br/>진입 요청이 있나?"}}
+  FLAG -- "예<br/>앱이 UOK 응답 뒤 기록" --> U1
+  FLAG -- 아니오 --> CHK{{"앱 헤더 magic · 헤더 CRC<br/>앱 CRC32 모두 유효?"}}
+  CHK -- "아니오<br/>앱 없음 · 쓰다 끊김" --> U2
+  CHK -- 예 --> CNT{{"부트 카운터 +1<br/>3회를 넘었나?"}}
+  CNT -- "예 · 기동 불능 앱<br/>fwup_boot_ok 없이<br/>연속 리셋" --> U3
+  CNT -- 아니오 --> HW{{"HELLO 수신 창 · 고정 200ms<br/>SCI-A 115200 · HELLO 만 받음"}}
+  HW -- "HELLO 받음<br/>브리지 복구 적용 중<br/>전원 재투입" --> U3
+  HW -- "없음<br/>부팅이 약 0.2초 늦어짐" --> JMP(["0x3E8040 앱으로 점프<br/>앱이 메인 루프에서 fwup_boot_ok → 카운터 0"])
+  subgraph UPD["업데이트 모드"]
+    direction TB
+    U1["부트플래그 진입<br/>첫 유효 패킷까지 60초<br/>그 뒤 600초 유휴 기준"]
+    U2["앱 무효 진입<br/>앱이 생길 때까지 무기한 대기"]
+    U3["카운터 · HELLO 진입<br/>600초 유휴 기준"]
+    P["SCI-A 115200<br/>HELLO · ERASE · WRITE · VERIFY<br/>잘린 패킷은 100ms 뒤 재동기<br/>브레이크 · 프레이밍 오류는 SCI 리셋 뒤 재동기"]
+    U1 --> P
+    U2 --> P
+    U3 --> P
+  end
+  P -- "RESET 0 명령<br/>또는 시한 지나고 앱 유효" --> RST
+  classDef upd fill:#fef3c7,stroke:#d97706,color:#0f172a
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#0f172a
+  class U1,U2,U3,P upd
+  class JMP ok

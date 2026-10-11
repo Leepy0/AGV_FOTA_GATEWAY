@@ -1,16 +1,40 @@
 stateDiagram-v2
   direction TB
-  [*] --> Scheduled: 작업 만들기 (지금 · 예약)
-  Scheduled --> Running: 예약 시각 도달 + 실행 중 작업 없음
-  Scheduled --> Cancelled: 취소 / 서버가 꺼져 있다 30분 넘게 지나 켜짐
-  Running --> Done: 모든 호기 성공
-  Running --> Failed: 한 대라도 실패 / 서버 재시작
-  Running --> Cancelled: 실행 중 취소
-  note right of Running
-    호기는 한 대씩 순서대로 진행
-    "한 대라도 실패하면 중단" 이면
-    실패 뒤 호기는 건너뜀(Skipped)
+  state "Scheduled · 대기" as SC
+  state "Running · 실행 중<br/>호기마다 끝까지<br/>(바로 적용 · 브리지)" as RF
+  state "Running · 실행 중<br/>전 호기 스테이징<br/>(메인보드 승인 후 적용)" as RS
+  state "AwaitingApproval<br/>적용 대기 → 적용 승인됨" as AW
+  state "Running · 실행 중<br/>스테이징된 호기만 한 대씩 적용" as RA
+  state "Done · 완료" as DN
+  state "Failed · 실패" as FL
+  state "Cancelled · 취소" as CN
+  [*] --> SC: 작업 만들기 (지금 · 예약)
+  SC --> RF: 시작 시각 도달<br/>실행 중 · 적용 대기 작업 없음
+  SC --> RS: 시작 시각 도달<br/>실행 중 · 적용 대기 작업 없음
+  SC --> CN: 취소<br/>30분 넘게 시작 못 함 (자동)<br/>앞 작업과 함께 취소
+  RS --> AW: 스테이징 끝 · 1대 이상 받음
+  AW --> RA: 운용자 승인<br/>AGV 정지 확인 → 적용 시작
+  AW --> CN: 취소 (굽지 않음)
+  AW --> FL: 마감 시각 지남 (자동)
+  RF --> DN: 모든 호기 성공
+  RA --> DN: 모든 호기 성공
+  RF --> FL: 한 대라도 실패<br/>서버 재시작
+  RS --> FL: 실패로 중단 · 1대도 못 받음<br/>서버 재시작
+  RA --> FL: 한 대라도 실패<br/>서버 재시작
+  RF --> CN: 취소
+  RS --> CN: 취소
+  RA --> CN: 취소
+  note right of AW
+    서버가 재시작해도 적용 대기는 유지
+    (승인만 풀림 → 다시 승인)
+    이 작업이 끝날 때까지
+    다른 작업은 시작하지 않음
   end note
-  Done --> [*]
-  Failed --> [*]
-  Cancelled --> [*]
+  note left of RF
+    마감 시각이 지나면 남은 호기는 건너뜀
+    "한 대라도 실패하면 중단" 이면
+    실패 뒤 호기는 건너뜀 (Skipped)
+  end note
+  DN --> [*]
+  FL --> [*]
+  CN --> [*]

@@ -1,11 +1,19 @@
 flowchart TD
   A(["install-service.bat<br/>우클릭 → 관리자 권한으로 실행"]) --> C1
-  C1["① 확인: 관리자 권한 · 같은 폴더의 AgvFotaGateway.exe<br/>하나라도 없으면 안내 후 종료"] --> C2
+  C1["① 확인: 관리자 권한<br/>같은 폴더의 AgvFotaGateway.exe<br/>하나라도 없으면 안내 후 종료"] --> C2
   C2["② 경로에 Program Files 가 있으면 [경고]<br/>아무 키나 누르면 계속"] --> C3
-  C3["③ 기존 AgvFotaGateway 서비스가 있으면<br/>중지 · 삭제"] --> C4
-  C4["④ 서비스 등록 · 자동 시작<br/>표시 이름 AGV FOTA Gateway"] --> C5
+  C3["③ appsettings.json 에서 포트 읽기<br/>Urls · UdpPort · RfidPort<br/>ACS Server 모드면 Acs.Port<br/>못 읽으면 8080 · 50000 · 50001"] --> Q{{"서비스가<br/>이미 있나?"}}
+  Q -- "예 · 다시 실행" --> C4a["④ 서비스 중지 (최대 30초 대기)<br/>sc config 로 경로 · 자동 시작 · 이름 갱신<br/>지우지 않음"]
+  Q -- "아니오 · 처음" --> C4b["④ sc create 로 등록 · 자동 시작<br/>표시 이름 AGV FOTA Gateway"]
+  C4a --> C5
+  C4b --> C5
   C5["⑤ 죽으면 재시작: 5초 → 10초 → 30초<br/>실패 횟수는 하루 지나면 초기화"] --> C6
-  C6["⑥ 방화벽 인바운드 허용<br/>TCP 8080 · UDP 50000, 50001"] --> C7
-  C7["⑦ 서비스 시작 → 3초 뒤 상태 확인"] --> K{"RUNNING?"}
+  C6["⑥ 설치 폴더 권한 (icacls)<br/>Administrators · SYSTEM 모든 권한<br/>Users 읽기/실행<br/>드라이브 루트면 바꾸지 않고 경고"] --> C7
+  C7["⑦ 방화벽 인바운드 규칙 다시 만들기<br/>HTTP · Bridge UDP<br/>ACS TCP (Server 모드일 때)"] --> C8
+  C8["⑧ 서비스 시작 → 최대 15초 상태 확인"] --> K{{"RUNNING?"}}
   K -- 예 --> OK["서비스 실행 중<br/>브라우저 자동 열림"]
   K -- 아니오 --> NG["서비스 시작 실패<br/>이벤트 뷰어 · data\logs 확인"]
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#0f172a
+  classDef bad fill:#fee2e2,stroke:#dc2626,color:#0f172a
+  class OK ok
+  class NG bad
