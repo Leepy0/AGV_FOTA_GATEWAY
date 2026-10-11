@@ -1,0 +1,8 @@
+/* 배포 작업 화면 전용 (app.css 의 공통 스타일에 덧붙임) */
+.field { display: block; margin: 8px 0; }
+.field-label { display: block; margin-bottom: 4px; }
+.banner.warn { background: #fef3c7; border-color: #fcd34d; color: #92400e; margin: 10px 0; }
+.job.awaitingapproval .state { background: #fef3c7; color: var(--warn); font-weight: 600; }
+tr.t-staged td { color: var(--warn); }
+.field label.inline { display: inline; margin: 0; }
+.field input.dt { margin-left: 8px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; }
