@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Gateway.Core.Groups;
 using Gateway.Server.Data;
+using Microsoft.Data.Sqlite;
 
 namespace Gateway.Server.Services;
 
@@ -17,11 +18,15 @@ public sealed class AgvGroupStore
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     public event Action? Changed;
 
+    /// <summary>기동 때 DB 읽기·예전 JSON 이전에서 난 오류 (없으면 null). 서비스는 그대로 뜨고, AcsInventoryPullService 가 로그에 남기며 구역 화면에 보인다</summary>
+    public string? StartupError { get; private set; }
+
     public AgvGroupStore(string dataDir, GatewayDb db)
     {
         _db = db;
-        using (var c = _db.Open())
+        try
         {
+            using var c = _db.Open();
             using var cmd = GatewayDb.Cmd(c, "SELECT agv, name, product_family, floor, line, process, route, source, updated_at, note FROM agv_groups");
             using var r = cmd.ExecuteReader();
             while (r.Read())
@@ -31,28 +36,57 @@ public sealed class AgvGroupStore
                     Source = r.GetString(7), UpdatedAt = GatewayDb.Dto(r.GetString(8)), Note = r.GetString(9),
                 };
         }
+        catch (Exception e) { StartupError = "소속 DB 읽기 실패: " + e.Message; return; }
         var json = Path.Combine(dataDir, "agv_groups.json");
-        if (File.Exists(json))
+        if (File.Exists(json)) MigrateJson(json);
+    }
+
+    /// <summary>예전 agv_groups.json → DB. 한 트랜잭션으로 넣고 커밋된 뒤에만 .migrated 로 이름을 바꾼다.
+    /// 어떤 실패든 예외를 밖으로 내지 않고 원본을 그대로 둔다 (다음 기동 때 다시 시도 — DB 에 이미 있는 호기는 건너뜀)</summary>
+    void MigrateJson(string json)
+    {
+        List<AgvAssignment> add;
+        try
         {
-            try
-            {
-                var old = JsonSerializer.Deserialize<List<AgvAssignment>>(File.ReadAllText(json), Json) ?? new();
-                lock (_lock) { foreach (var a in old.Where(a => !_items.ContainsKey(a.Agv))) { _items[a.Agv] = a; Write(a); } }
-                File.Move(json, json + ".migrated", true);
-            }
-            catch (JsonException) { }
+            var old = JsonSerializer.Deserialize<List<AgvAssignment>>(File.ReadAllText(json), Json) ?? new();
+            add = old.Where(a => a is not null && a.Agv is >= 1 and <= 99 && !_items.ContainsKey(a.Agv))
+                     .GroupBy(a => a.Agv).Select(g => g.Last())
+                     .Select(a => new AgvAssignment
+                     {
+                         Agv = a.Agv, Name = a.Name ?? "", Source = string.IsNullOrEmpty(a.Source) ? "manual" : a.Source, UpdatedAt = a.UpdatedAt, Note = a.Note ?? "",
+                         Group = AgvGroup.Trimmed(a.Group?.ProductFamily, a.Group?.Floor, a.Group?.Line, a.Group?.Process, a.Group?.Route),
+                     }).ToList();
         }
+        catch (Exception e) { StartupError = $"예전 소속 파일 읽기 실패 — 원본 그대로 둠 ({json}): {e.Message}"; return; }
+        try
+        {
+            using var c = _db.Open();
+            using var tx = c.BeginTransaction();
+            foreach (var a in add) Insert(c, tx, a);
+            tx.Commit();
+        }
+        catch (Exception e) { StartupError = $"예전 소속 {add.Count}대 DB 반영 실패 — 원본 그대로 두고 다음 기동 때 다시 시도 ({json}): {e.Message}"; return; }
+        lock (_lock) { foreach (var a in add) _items[a.Agv] = a; _tree = null; }
+        try { File.Move(json, json + ".migrated", true); }
+        catch (Exception e) { StartupError = $"예전 소속 {add.Count}대 반영함 · 파일 이름 바꾸기 실패 (다음 기동 때 다시 시도, 이미 있는 호기는 건너뜀) ({json}): {e.Message}"; }
+    }
+
+    static void Insert(SqliteConnection c, SqliteTransaction? tx, AgvAssignment a)
+    {
+        using var cmd = GatewayDb.Cmd(c, """
+            INSERT OR REPLACE INTO agv_groups(agv, name, product_family, floor, line, process, route, source, updated_at, note)
+            VALUES($agv, $name, $pf, $fl, $ln, $pr, $rt, $src, $up, $note)
+            """, ("$agv", a.Agv), ("$name", a.Name), ("$pf", a.Group.ProductFamily), ("$fl", a.Group.Floor), ("$ln", a.Group.Line),
+            ("$pr", a.Group.Process), ("$rt", a.Group.Route), ("$src", a.Source), ("$up", GatewayDb.Ts(a.UpdatedAt)), ("$note", a.Note));
+        cmd.Transaction = tx;
+        cmd.ExecuteNonQuery();
     }
 
     void Write(AgvAssignment a)
     {
         _tree = null;
         using var c = _db.Open();
-        GatewayDb.Exec(c, """
-            INSERT OR REPLACE INTO agv_groups(agv, name, product_family, floor, line, process, route, source, updated_at, note)
-            VALUES($agv, $name, $pf, $fl, $ln, $pr, $rt, $src, $up, $note)
-            """, ("$agv", a.Agv), ("$name", a.Name), ("$pf", a.Group.ProductFamily), ("$fl", a.Group.Floor), ("$ln", a.Group.Line),
-            ("$pr", a.Group.Process), ("$rt", a.Group.Route), ("$src", a.Source), ("$up", GatewayDb.Ts(a.UpdatedAt)), ("$note", a.Note));
+        Insert(c, null, a);
     }
 
     void Delete(int agv)
@@ -71,7 +105,7 @@ public sealed class AgvGroupStore
     /// <summary>화면·API 에서 한 대 설정 (출처 manual)</summary>
     public AgvAssignment Set(int agv, AgvGroup group, string? name = null, string note = "", string source = "manual")
     {
-        var a = new AgvAssignment { Agv = agv, Group = group, Name = name ?? Get(agv)?.Name ?? "", Note = note, Source = source, UpdatedAt = DateTimeOffset.UtcNow };
+        var a = new AgvAssignment { Agv = agv, Group = group.Cleaned(), Name = name ?? Get(agv)?.Name ?? "", Note = note, Source = source, UpdatedAt = DateTimeOffset.UtcNow };
         lock (_lock) { _items[agv] = a; Write(a); }
         Notify();
         return a;
@@ -91,37 +125,29 @@ public sealed class AgvGroupStore
         int n = 0;
         lock (_lock)
         {
-            foreach (var a in items) { a.Source = "import"; _items[a.Agv] = a; Write(a); n++; }
+            foreach (var a in items) { a.Source = "import"; a.Group = a.Group.Cleaned(); _items[a.Agv] = a; Write(a); n++; }
         }
         if (n > 0) Notify();
         return n;
     }
 
-    /// <summary>ACS 응답 반영. 반환 = (추가·변경, 삭제)</summary>
-    public (int changed, int removed) MergeFromAcs(IReadOnlyList<AgvAssignment> fromAcs, bool overrideManual, bool removeMissing)
+    /// <summary>ACS 응답 반영 (규칙은 <see cref="AcsMerge.Plan"/>). 반환 = (추가·변경, 삭제, 삭제 보류 호기)</summary>
+    public (int changed, int removed, IReadOnlyList<int> held) MergeFromAcs(IReadOnlyList<AgvAssignment> fromAcs, bool overrideManual, bool removeMissing)
     {
-        int changed = 0, removed = 0;
+        AcsMergePlan plan;
         lock (_lock)
         {
-            var seen = new HashSet<int>();
-            foreach (var a in fromAcs)
-            {
-                seen.Add(a.Agv);
-                if (_items.TryGetValue(a.Agv, out var cur))
-                {
-                    if (cur.Source != "acs" && !overrideManual) continue;          // 직접 넣은 값은 유지
-                    if (cur.Group == a.Group && cur.Name == a.Name && cur.Source == "acs") continue;
-                }
-                a.Source = "acs";
-                _items[a.Agv] = a; Write(a); changed++;
-            }
-            if (removeMissing)
-                foreach (var k in _items.Where(kv => kv.Value.Source == "acs" && !seen.Contains(kv.Key)).Select(kv => kv.Key).ToList())
-                { _items.Remove(k); Delete(k); removed++; }
+            foreach (var a in fromAcs) a.Group = a.Group.Cleaned();
+            plan = AcsMerge.Plan(_items, fromAcs, overrideManual, removeMissing);
+            foreach (var a in plan.Upserts) { _items[a.Agv] = a; Write(a); }
+            foreach (var k in plan.Removes) { _items.Remove(k); Delete(k); }
         }
-        if (changed + removed > 0) Notify();
-        return (changed, removed);
+        if (plan.Upserts.Count + plan.Removes.Count > 0) Notify();
+        return (plan.Upserts.Count, plan.Removes.Count, plan.Held);
     }
+
+    /// <summary>트리에서 같은 경로가 둘 이상인 노드 (정상이면 빈 목록 — 구역 화면에 경고로 보임)</summary>
+    public IReadOnlyList<string> DuplicatePaths => GroupTree.DuplicatePaths(Tree);
 
     void Notify() { try { Changed?.Invoke(); } catch { } }
 }
