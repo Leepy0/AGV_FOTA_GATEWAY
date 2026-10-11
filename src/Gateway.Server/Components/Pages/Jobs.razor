@@ -10,6 +10,12 @@
 <PageTitle>배포 작업 · AGV FOTA</PageTitle>
 <h1>배포 작업</h1>
 
+@{ var awaiting = JobSvc.AwaitingJob(); }
+@if (awaiting is not null)
+{
+    <div class="banner warn">적용 대기 작업 <b>'@awaiting.Name'</b> (스테이징 @awaiting.StagedCount 대)@(awaiting.ApprovedAt is null ? " 이 승인을 기다립니다" : " 이 곧 적용을 시작합니다"). 이 작업이 끝나거나 취소될 때까지 다른 작업은 시작하지 않고 기다립니다.</div>
+}
+
 <section class="card">
     <h2>새 작업</h2>
     @if (Store.List().Count == 0)
@@ -18,6 +24,8 @@
     }
     else
     {
+        var all = ParseTargets(extraTargets, out var parseErr);
+        all.UnionWith(targets);
         <div class="form">
             <label>펌웨어
                 <select @bind="fwId">
@@ -26,7 +34,9 @@
                 </select>
             </label>
             <label>작업 이름 <input @bind="name" placeholder="비우면 펌웨어 이름" /></label>
-            <label>대상 호기
+            @* 대상 블록은 label 로 감싸지 않는다 — 빈 곳을 누르면 안쪽 첫 버튼('온라인 전체 선택')이 눌리기 때문 *@
+            <div class="field">
+                <span class="field-label">대상 호기</span>
                 @if (Groups.Count > 0)
                 {
                     <div class="cascade">
@@ -46,7 +56,7 @@
                 }
                 <div class="row-buttons small">
                     <button type="button" @onclick="SelectOnline">온라인 전체 선택</button>
-                    <button type="button" @onclick="SelectNeedUpdate" disabled="@(Fw is null)" title="선택한 펌웨어와 버전이 다른 온라인 호기만">업데이트 필요한 호기 선택</button>
+                    <button type="button" @onclick="SelectNeedUpdate" disabled="@(Fw is null)" title="선택한 펌웨어와 버전이 다른 온라인 호기만 (미지원·번호 충돌 제외)">업데이트 필요한 호기 선택</button>
                     <button type="button" @onclick="() => targets.Clear()">선택 해제</button>
                     <span class="muted">@targets.Count 대 선택@(Fw is null ? "" : $" · 칩의 작은 글씨 = 현재 {(Fw.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} 버전")</span>
                 </div>
@@ -54,50 +64,69 @@
                     @foreach (var id in AllAgvIds())
                     {
                         var a = Reg.Get(id);
-                        var on = a?.Online(Opt.Value.OfflineAfterSec) == true;
+                        var info = Classify(id);
                         var cur = a is null ? "" : CurrentVersion(a);
-                        var same = Fw is not null && cur.Length > 0 && cur == Fw.Version;
-                        var unsupported = Fw?.Kind == FirmwareKind.Dsp && on && (string.IsNullOrEmpty(a?.Status?.DspState) || a?.Status?.DspState == "nopart");
                         var grp = Groups.Get(id)?.Group.Path;
-                        <label class="chip @(targets.Contains(id) ? "on" : "") @(on ? "" : "off") @(same ? "same" : "") @(unsupported ? "bad" : "")"
-                               title="@((grp is null ? "" : grp + " · ") + (unsupported ? (a?.Status?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 (USB 전체 굽기 필요)" : "브리지 fw 가 메인보드 OTA 를 지원하지 않음 (0.5.0 이상 필요)") : same ? "이미 이 버전" : a is null ? "아직 heartbeat 없음 (ACS·구역 등록만 됨)" : on ? "" : "오프라인 — 실행 시각에 heartbeat 가 없으면 실패"))">
+                        <label class="chip @(targets.Contains(id) ? "on" : "") @(info.On ? "" : "off") @(info.Same ? "same" : "") @(info.Unsupported || info.Conflict ? "bad" : "")"
+                               title="@((grp is null ? "" : grp + " · ") + ChipTitle(a, info))">
                             <input type="checkbox" checked="@targets.Contains(id)" @onchange="e => Toggle(id, (bool)e.Value!)" /> @id.ToString("D2")
-                            <small>@(cur.Length > 0 ? cur : a is null ? "미접속" : on ? "?" : "off")</small>
+                            <small>@(info.Conflict ? "충돌" : cur.Length > 0 ? cur : a is null ? "미접속" : info.Recover ? "? 복구" : info.On ? "?" : "off")</small>
                         </label>
                     }
                 </div>
-                <input @bind="extraTargets" placeholder="직접 입력: 7, 12-15 (아직 안 보이는 호기)" />
-            </label>
+                <label>직접 입력 <input @bind="extraTargets" @bind:event="oninput" placeholder="7, 12-15 (아직 안 보이는 호기)" /></label>
+                @if (parseErr is not null) { <div class="msg err">@parseErr</div> }
+            </div>
+            @if (Fw?.Kind == FirmwareKind.Dsp)
+            {
+                <label>적용 방식
+                    <select @bind="applyMode">
+                        <option value="@ApplyMode.Approve">스테이징 후 확인하고 적용 (권장)</option>
+                        <option value="@ApplyMode.Immediate">바로 적용 — 호기마다 받자마자 굽기 (야간 예약용)</option>
+                    </select>
+                </label>
+                <p class="muted small">@(applyMode == ApplyMode.Approve
+                    ? "전 호기에 이미지를 먼저 받아 둡니다(주행 중에도 됨). 끝나면 '적용 대기'가 되고, AGV 정지를 확인한 뒤 '적용 시작'을 누르면 한 대씩 굽습니다."
+                    : "호기마다 받자마자 바로 굽습니다. 시작 시각에 대상 AGV 가 모두 정지해 있어야 합니다.")</p>
+            }
             <label>실행 시각
                 <select @bind="when">
                     <option value="now">지금 바로</option>
                     <option value="at">예약</option>
                 </select>
-                @if (when == "at") { <input type="datetime-local" @bind="at" @bind:format="yyyy-MM-ddTHH:mm" /> <span class="muted small">서버가 꺼져 있다가 @(JobService.StaleScheduleMinutes)분 넘게 지나서 켜지면 자동 취소됩니다</span> }
+                @if (when == "at") { <input type="datetime-local" @bind="at" @bind:format="yyyy-MM-ddTHH:mm" /> }
             </label>
+            <p class="muted small">앞 작업이 있으면 끝난 뒤 시작합니다. 예약 시각(지금 바로는 만든 시각)에서 @(JobService.StaleScheduleMinutes)분 넘게 시작하지 못하면(서버 중단·앞 작업 지연) 자동 취소됩니다.</p>
+            <div class="field">
+                <label class="inline"><input type="checkbox" @bind="useNotAfter" /> 마감 시각</label>
+                @if (useNotAfter) { <input type="datetime-local" class="dt" @bind="notAfter" @bind:format="yyyy-MM-ddTHH:mm" /> <span class="muted small">이 시각이 지나면 남은 호기는 시작하지 않고 건너뜁니다 (적용 단계 포함)</span> }
+            </div>
             <label><input type="checkbox" @bind="stopOnFailure" /> 한 대라도 실패하면 나머지 중단</label>
-            <p class="muted">호기는 한 대씩 순차로 진행됩니다. <b>AGV 정지 상태</b>에서만 실행하세요 (메인보드는 굽는 20~30초 동안 ACS 응답이 끊기고, 브리지는 재부팅으로 수 초간 끊깁니다).</p>
-            <button class="primary" @onclick="Create" disabled="@(busy || string.IsNullOrEmpty(fwId))">@(when == "at" ? "예약" : "지금 시작")@(targets.Count > 0 ? $" ({targets.Count}대)" : "")</button>
-            @if (msg is not null) { <div class="msg @(err ? "err" : "")">@msg</div> }
+            <div class="banner warn">호기는 한 대씩 순차로 진행됩니다. <b>AGV 정지 상태</b>에서만 적용하세요 — 메인보드는 굽는 20~30초 동안 ACS 응답이 끊기고, 브리지는 재부팅으로 수 초간 끊깁니다. 시작 전에 대상 수·상태를 확인창에서 다시 묻습니다.</div>
+            <button class="primary" @onclick="Create" disabled="@(busy || string.IsNullOrEmpty(fwId) || all.Count == 0 || parseErr is not null)">@(when == "at" ? "예약" : "지금 시작")@(all.Count > 0 ? $" ({all.Count}대)" : "")</button>
+            @if (msg is not null) { <div class="msg @(err ? "err" : warn ? "warn" : "")">@msg</div> }
         </div>
     }
 </section>
 
 <section class="card">
-    <h2>작업 목록 <span class="muted small">@JobSvc.List().Count 건</span></h2>
-    @if (JobSvc.List().Count == 0) { <div class="empty">아직 작업이 없습니다.</div> }
-    @foreach (var j in JobSvc.List().Take(shown))
+    @{ var list = JobSvc.List(); }
+    <h2>작업 목록 <span class="muted small">@list.Count 건</span></h2>
+    @if (listMsg is not null) { <div class="msg err">@listMsg</div> }
+    @if (list.Count == 0) { <div class="empty">아직 작업이 없습니다.</div> }
+    @foreach (var j in list.Take(shown))
     {
-        var isOpen = OpenId == j.Id;
+        var isOpen = OpenId(list) == j.Id;
         <div class="job @j.State.ToString().ToLower()">
             <div class="job-head" @onclick="() => ToggleOpen(isOpen, j.Id)">
                 <span class="state">@State(j)</span>
                 <b>@j.Name</b>
-                <span class="muted">@(j.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지") @j.FirmwareVersion · 대상 @j.Targets.Count 대 · 완료 @j.DoneCount / 실패 @j.FailCount</span>
-                <span class="muted">@When(j)</span>
-                @if (j.State == JobState.Running) { <span class="bar wide"><span style="width:@(Progress(j))%"></span></span> }
+                <span class="muted">@(j.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지") @j.FirmwareVersion@(j.Kind == FirmwareKind.Dsp ? (j.ApplyMode == ApplyMode.Approve ? " (승인 후 적용)" : " (바로 적용)") : "") · 대상 @j.Targets.Count 대 · 완료 @j.DoneCount / 실패 @j.FailCount@(j.StagedCount > 0 ? $" / 스테이징 {j.StagedCount}" : "")</span>
+                <span class="muted @(IsLate(j) ? "warn-text" : "")">@When(j, list)</span>
+                @if (j.State is JobState.Running or JobState.AwaitingApproval) { <span class="bar wide"><span style="width:@(Progress(j))%"></span></span> }
                 <span class="actions">
-                    @if (j.State is JobState.Scheduled or JobState.Running) { <button @onclick:stopPropagation @onclick="() => Cancel(j)">취소</button> }
+                    @if (j.State == JobState.AwaitingApproval && j.ApprovedAt is null) { <button class="primary" @onclick:stopPropagation @onclick="() => Approve(j)">적용 시작</button> }
+                    @if (j.IsActive) { <button @onclick:stopPropagation @onclick="() => Cancel(j)">취소</button> }
                     else { <button @onclick:stopPropagation @onclick="() => Delete(j)">삭제</button> }
                 </span>
             </div>
@@ -130,7 +159,7 @@
             }
         </div>
     }
-    @if (JobSvc.List().Count > shown) { <button @onclick="() => shown += 20">더 보기 (@(JobSvc.List().Count - shown)건 더)</button> }
+    @if (list.Count > shown) { <button @onclick="() => shown += 20">더 보기 (@(list.Count - shown)건 더)</button> }
 </section>
 
 @code {
@@ -139,15 +168,16 @@
     readonly string[] casc = new string[AgvGroup.Levels];
 
     string fwId = "", name = "", extraTargets = "", when = "now";
-    DateTime at = DateTime.Now.AddMinutes(10);
-    bool stopOnFailure = true, err, busy;
-    string? msg, open;   // open: null = 실행 중인 작업 자동, "" = 모두 접음
+    DateTime at = DateTime.Now.AddMinutes(10), notAfter = DateTime.Now.AddHours(2);
+    ApplyMode applyMode = ApplyMode.Approve;
+    bool stopOnFailure = true, useNotAfter, err, warn, busy;
+    string? msg, listMsg, open;   // open: null = 실행 중·적용 대기 작업 자동, "" = 모두 접음
     int shown = 20;
     readonly HashSet<int> targets = new();
     readonly HashSet<string> logOpen = new();
 
     FirmwareEntry? Fw => string.IsNullOrEmpty(fwId) ? null : Store.Get(fwId);
-    string? OpenId => open ?? JobSvc.List().FirstOrDefault(j => j.State == JobState.Running)?.Id;
+    string? OpenId(IReadOnlyList<Job> list) => open ?? list.FirstOrDefault(j => j.State is JobState.Running or JobState.AwaitingApproval)?.Id;
 
     protected override void OnInitialized()
     {
@@ -163,6 +193,7 @@
             if (Group.Length > 0 && targets.Count > 0) name = $"{Group} 전체";
         }
         at = DateTime.Now.AddMinutes(10);
+        notAfter = DateTime.Now.AddHours(2);
     }
 
     IEnumerable<int> AllAgvIds() => Reg.Snapshot().Select(a => a.Id).Union(Groups.Snapshot().Select(g => g.Agv)).OrderBy(x => x);
@@ -186,61 +217,180 @@
     {
         if (Fw is null) return;
         targets.Clear();
-        foreach (var a in Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec) && CurrentVersion(a) != Fw.Version))
-            if (Fw.Kind == FirmwareKind.Esp || (!string.IsNullOrEmpty(a.Status?.DspState) && a.Status?.DspState != "nopart")) targets.Add(a.Id);
+        foreach (var a in Reg.Snapshot())
+        {
+            var c = Classify(a.Id);
+            if (c.On && !c.Same && !c.Unsupported && !c.Conflict) targets.Add(a.Id);
+        }
     }
     string CurrentVersion(AgvState a) => Fw?.Kind == FirmwareKind.Dsp ? (a.Status is { } s && s.HasDsp ? s.Dsp : "") : a.Status?.Fw ?? "";
 
+    /// <summary>호기 하나의 배포 관점 상태 (칩·확인창 요약 공통)</summary>
+    record struct AgvInfo(bool On, bool Unsupported, bool Same, bool Conflict, bool Recover);
+    AgvInfo Classify(int id)
+    {
+        var a = Reg.Get(id);
+        var off = Opt.Value.OfflineAfterSec;
+        var on = a?.Online(off) == true;
+        var dsp = Fw?.Kind == FirmwareKind.Dsp;
+        var unsupported = dsp && on && (string.IsNullOrEmpty(a?.Status?.DspState) || a?.Status?.DspState == "nopart");
+        var cur = a is null ? "" : CurrentVersion(a);
+        var same = Fw is not null && cur.Length > 0 && (dsp ? DspVersion.Matches(cur, Fw.Version) : cur == Fw.Version);
+        var conflict = a?.InConflict(off) == true;
+        var recover = dsp && on && !unsupported && a?.Status is { HasDsp: false };
+        return new AgvInfo(on, unsupported, same, conflict, recover);
+    }
+    string ChipTitle(AgvState? a, AgvInfo i) =>
+        i.Conflict ? "호기 번호 충돌 — 같은 번호의 장치가 둘 (배포 거부)"
+        : i.Unsupported ? (a?.Status?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 (USB 전체 굽기 필요)" : "브리지 fw 가 메인보드 OTA 를 지원하지 않음 (0.5.0 이상 필요)")
+        : i.Same ? "이미 이 버전"
+        : i.Recover ? "메인보드 앱이 버전에 응답하지 않음 — 복구 적용으로 진행 (브리지 0.5.2 이상)"
+        : a is null ? "아직 heartbeat 없음 (ACS·구역 등록만 됨)"
+        : i.On ? "" : "오프라인 — 시작 때 20초 안에 heartbeat 가 없으면 실패";
+
+    /// <summary>직접 입력 "7, 12-15" → 호기 번호. 형식이 틀리면 error</summary>
+    static HashSet<int> ParseTargets(string text, out string? error)
+    {
+        var all = new HashSet<int>();
+        error = null;
+        foreach (var tok in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var r = tok.Split('-');
+            if (r.Length == 2 && int.TryParse(r[0], out var a) && int.TryParse(r[1], out var b) && a <= b && b - a < 100) for (int i = a; i <= b; i++) all.Add(i);
+            else if (int.TryParse(tok, out var v)) all.Add(v);
+            else { error = $"호기 표기 오류: {tok}"; continue; }
+        }
+        if (error is null && all.Any(x => x < 1 || x > 99)) error = "호기 번호는 1~99";
+        return all;
+    }
+
     static string State(Job j) => j.State switch
     {
-        JobState.Scheduled => "대기", JobState.Running => "실행 중", JobState.Done => "완료", JobState.Failed => "실패", JobState.Cancelled => "취소", _ => "?"
+        JobState.Scheduled => "대기", JobState.Running => "실행 중", JobState.AwaitingApproval => j.ApprovedAt is null ? "적용 대기" : "적용 승인됨",
+        JobState.Done => "완료", JobState.Failed => "실패", JobState.Cancelled => "취소", _ => "?"
     };
     static string TState(TargetState s) => s switch
     {
-        TargetState.Waiting => "대기", TargetState.Running => "진행 중", TargetState.Done => "완료", TargetState.Failed => "실패", TargetState.Skipped => "건너뜀", _ => "?"
+        TargetState.Waiting => "대기", TargetState.Running => "진행 중", TargetState.Staged => "스테이징됨", TargetState.Done => "완료",
+        TargetState.Failed => "실패", TargetState.Skipped => "건너뜀", _ => "?"
     };
-    static int Progress(Job j) => j.Targets.Count == 0 ? 0 : (int)j.Results.Sum(r => r.State == TargetState.Done ? 100 : r.State == TargetState.Running ? r.Percent : 0) / j.Targets.Count;
+    static int Progress(Job j) => j.Targets.Count == 0 ? 0 : (int)j.Results.Sum(r => r.State == TargetState.Done ? 100 : r.State is TargetState.Running or TargetState.Staged ? r.Percent : 0) / j.Targets.Count;
     static string Dur(TargetResult r) => r.StartedAt is { } s && r.FinishedAt is { } f ? $" ({(int)(f - s).TotalSeconds}초)" : "";
-    static string When(Job j)
+    static bool IsLate(Job j) => j.State == JobState.Scheduled && j.ScheduledAt is { } sa && sa < DateTime.UtcNow.AddMinutes(-1);
+    static string Local(DateTime utc) => utc.ToLocalTime().ToString("MM-dd HH:mm");
+    static string Deadline(Job j) => j.NotAfter is { } na ? $" · 마감 {Local(na)}" : "";
+
+    string When(Job j, IReadOnlyList<Job> list)
     {
+        var ahead = list.FirstOrDefault(x => x.Id != j.Id && x.State is JobState.Running or JobState.AwaitingApproval);
+        var waitText = ahead is null ? "곧 시작" : $"앞 작업 '{ahead.Name}' 끝나면 시작";
         if (j.State == JobState.Scheduled && j.ScheduledAt is { } sa)
         {
             var left = sa - DateTime.UtcNow;
-            return $"예약 {sa.ToLocalTime():MM-dd HH:mm} ({(left.TotalMinutes < 1 ? "곧" : left.TotalHours < 1 ? $"{(int)left.TotalMinutes}분 후" : $"{(int)left.TotalHours}시간 {left.Minutes}분 후")})";
+            if (left < TimeSpan.Zero)
+                return $"예약 {Local(sa)} ({((int)-left.TotalMinutes > 0 ? $"{(int)-left.TotalMinutes}분 지남 — " : "")}{waitText}){Deadline(j)}";
+            return $"예약 {Local(sa)} ({(left.TotalMinutes < 1 ? "곧" : left.TotalHours < 1 ? $"{(int)left.TotalMinutes}분 후" : $"{(int)left.TotalHours}시간 {left.Minutes}분 후")}){Deadline(j)}";
         }
+        if (j.State == JobState.Scheduled) return $"즉시 · {waitText} (생성 {Local(j.CreatedAt)}){Deadline(j)}";
+        if (j.State == JobState.AwaitingApproval)
+            return (j.ApprovedAt is { } ap ? $"승인 {Local(ap)} — 곧 적용 시작" : "스테이징 끝 — AGV 정지 확인 후 '적용 시작'") + Deadline(j);
         var t = j.FinishedAt ?? j.StartedAt ?? j.CreatedAt;
-        return $"{(j.ScheduledAt is null ? "즉시" : "예약 " + j.ScheduledAt.Value.ToLocalTime().ToString("MM-dd HH:mm"))} · {(j.FinishedAt is not null ? "종료" : j.StartedAt is not null ? "시작" : "생성")} {t.ToLocalTime():MM-dd HH:mm}";
+        return $"{(j.ScheduledAt is null ? "즉시" : "예약 " + Local(j.ScheduledAt.Value))} · {(j.FinishedAt is not null ? "종료" : j.StartedAt is not null ? "시작" : "생성")} {Local(t)}{Deadline(j)}";
+    }
+
+    async Task Approve(Job j)
+    {
+        listMsg = null;
+        if (j.NotAfter is { } na && na <= DateTime.UtcNow.AddMinutes(1))
+        {
+            await JS.InvokeVoidAsync("alert", $"'{j.Name}' 의 마감 시각({Local(na)})이 지났거나 1분 안에 지납니다 — 적용할 수 없습니다. 작업을 취소하고 다시 만드세요.");
+            return;
+        }
+        var staged = j.Results.Where(r => r.State == TargetState.Staged).ToList();
+        var recover = staged.Count(r => Reg.Get(r.Agv)?.Status is { HasDsp: false });
+        var conflict = staged.Count(r => Reg.Get(r.Agv)?.InConflict(Opt.Value.OfflineAfterSec) == true);
+        var offline = staged.Count(r => Reg.Get(r.Agv)?.Online(Opt.Value.OfflineAfterSec) != true);
+        var q = $"'{j.Name}' 적용 시작\n\n스테이징된 {staged.Count}대({string.Join(", ", staged.Take(12).Select(r => r.Agv.ToString("D2")))}{(staged.Count > 12 ? " …" : "")})에 메인보드 {j.FirmwareVersion} 을 한 대씩 굽습니다."
+              + $"\n호기마다 약 20~30초 메인보드가 멈추고 ACS 응답이 끊깁니다."
+              + (offline > 0 ? $"\n오프라인 {offline}대 (시작 때 20초 안에 heartbeat 가 없으면 실패)" : "")
+              + (conflict > 0 ? $"\n번호 충돌 {conflict}대 (거부됨)" : "")
+              + (recover > 0 ? $"\n복구 적용 {recover}대 (앱이 버전에 응답하지 않음 — 안 되면 메인보드 전원 재투입 필요)" : "")
+              + (j.NotAfter is { } na2 ? $"\n마감 {Local(na2)} ({(int)(na2 - DateTime.UtcNow).TotalMinutes}분 남음) — 지나면 남은 호기는 건너뜀" : "")
+              + "\n\n대상 AGV 가 모두 정지 상태인지 확인했습니까?";
+        if (!await JS.InvokeAsync<bool>("confirm", q)) return;
+        try { JobSvc.Approve(j.Id); open = j.Id; }
+        catch (InvalidOperationException ex) { listMsg = ex.Message; }
     }
 
     async Task Cancel(Job j)
     {
-        var q = j.State == JobState.Running ? $"'{j.Name}' 실행을 중단할까요? 진행 중인 호기는 실패로 기록됩니다." : $"'{j.Name}' 예약을 취소할까요?";
-        if (await JS.InvokeAsync<bool>("confirm", q)) JobSvc.Cancel(j.Id);
+        listMsg = null;
+        var dsp = j.Kind == FirmwareKind.Dsp;
+        string q;
+        if (j.State == JobState.Running)
+        {
+            var r = j.Results.FirstOrDefault(x => x.State == TargetState.Running);
+            q = r is null ? $"'{j.Name}' 실행을 멈출까요? 남은 호기는 건너뜁니다."
+              : r.Committed
+                ? $"{r.Agv:D2} 호기는 이미 {(dsp ? "메인보드를 굽는 중" : "브리지가 새 펌웨어를 받는 중")}이라 멈출 수 없습니다 — {(dsp ? "약 30초 더 진행되고 메인보드가 다시 켜집니다" : "받기를 마치면 브리지가 재부팅합니다")}.\n남은 호기만 건너뜁니다. 취소할까요?"
+                : $"'{j.Name}' 실행을 멈출까요?\n진행 중인 {r.Agv:D2} 호기는 아직 {(dsp ? "이미지를 받아 두는(스테이징) 단계" : "OTA 시작 전")}이라 바로 멈추고, 남은 호기는 건너뜁니다.";
+        }
+        else if (j.State == JobState.AwaitingApproval)
+            q = $"'{j.Name}' 을(를) 취소할까요?\n스테이징된 {j.StagedCount}대에는 적용하지 않습니다 (브리지에 받아 둔 이미지는 다음 스테이징 때 덮어씀).";
+        else q = $"'{j.Name}' 예약을 취소할까요?";
+        if (!await JS.InvokeAsync<bool>("confirm", q)) return;
+        bool alsoQueued = false;
+        if (j.State is JobState.Running or JobState.AwaitingApproval)
+        {
+            // 이 작업이 끝나면 밀려 있던 대기 작업이 1~2초 안에 바로 시작된다 — 함께 취소할지 묻는다
+            var queued = JobSvc.QueuedDue(j.Id);
+            if (queued.Count > 0)
+                alsoQueued = await JS.InvokeAsync<bool>("confirm",
+                    $"대기 작업 {queued.Count}건('{queued[0].Name}'{(queued.Count > 1 ? " 등" : "")})이 이 작업이 끝나면 바로 시작됩니다.\n\n대기 작업도 함께 취소할까요?\n[확인] 함께 취소   [취소] 이 작업만 취소 (대기 작업은 바로 시작)");
+        }
+        if (!JobSvc.Cancel(j.Id, alsoQueued)) listMsg = "이미 끝난 작업입니다";
     }
     async Task Delete(Job j)
     {
         if (await JS.InvokeAsync<bool>("confirm", $"'{j.Name}' 기록을 삭제할까요?")) JobSvc.Delete(j.Id);
     }
 
-    void Create()
+    async Task Create()
     {
-        msg = null; err = false; busy = true;
+        if (busy) return;   // 빠른 두 번 클릭
+        msg = null; err = warn = false; busy = true;
         try
         {
-            var all = new HashSet<int>(targets);
-            foreach (var tok in extraTargets.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var r = tok.Split('-');
-                if (r.Length == 2 && int.TryParse(r[0], out var a) && int.TryParse(r[1], out var b) && a <= b && b - a < 100) for (int i = a; i <= b; i++) all.Add(i);
-                else if (int.TryParse(tok, out var v)) all.Add(v);
-                else throw new InvalidOperationException($"호기 표기 오류: {tok}");
-            }
+            var fw = Fw ?? throw new InvalidOperationException("펌웨어를 선택하세요");
+            var all = ParseTargets(extraTargets, out var parseErr);
+            if (parseErr is not null) throw new InvalidOperationException(parseErr);
+            all.UnionWith(targets);
             if (all.Count == 0) throw new InvalidOperationException("대상 호기를 선택하세요");
-            if (all.Any(x => x < 1 || x > 99)) throw new InvalidOperationException("호기 번호는 1~99");
             if (when == "at" && at <= DateTime.Now) throw new InvalidOperationException("예약 시각이 이미 지났습니다");
-            var j = JobSvc.Create(name, fwId, all, when == "at" ? at.ToUniversalTime() : null, stopOnFailure);
-            msg = when == "at" ? $"예약: {j.Name} ({j.Targets.Count}대, {at:MM-dd HH:mm})" : $"시작: {j.Name} ({j.Targets.Count}대)";
-            targets.Clear(); extraTargets = ""; name = ""; open = null;
+            if (useNotAfter && notAfter <= (when == "at" ? at : DateTime.Now)) throw new InvalidOperationException("마감 시각은 시작 시각보다 뒤여야 합니다");
+
+            var dsp = fw.Kind == FirmwareKind.Dsp;
+            var mode = dsp ? applyMode : ApplyMode.Immediate;
+            var info = all.Select(Classify).ToList();
+            var list = JobSvc.List();
+            var ahead = list.FirstOrDefault(x => x.State is JobState.Running or JobState.AwaitingApproval) ?? JobSvc.QueuedDue().FirstOrDefault();
+            var q = $"[{(dsp ? "메인보드 DSP" : "브리지 ESP")}] {fw.Version} 배포\n\n"
+                  + $"대상 {all.Count}대 (온라인 {info.Count(i => i.On)}, 오프라인 {info.Count(i => !i.On)}, 미지원 {info.Count(i => i.Unsupported)}, 같은 버전 {info.Count(i => i.Same)}, 번호 충돌 {info.Count(i => i.Conflict)}"
+                  + (dsp && info.Any(i => i.Recover) ? $", 복구 적용 {info.Count(i => i.Recover)}" : "") + ")\n"
+                  + $"호기: {string.Join(", ", all.OrderBy(x => x).Take(20).Select(x => x.ToString("D2")))}{(all.Count > 20 ? " …" : "")}\n"
+                  + $"시작: {(when == "at" ? at.ToString("MM-dd HH:mm") : "지금")}{(ahead is not null && when != "at" ? $" (앞 작업 '{ahead.Name}' 끝난 뒤)" : "")}{(useNotAfter ? $" · 마감 {notAfter:MM-dd HH:mm}" : "")}\n"
+                  + $"방식: {(!dsp ? "브리지 OTA (받은 뒤 재부팅)" : mode == ApplyMode.Approve ? "전 호기 스테이징 → '적용 시작' 승인 때 한 대씩 굽기" : "바로 적용 (호기마다 받자마자 굽기)")}\n\n"
+                  + (dsp && mode == ApplyMode.Approve
+                      ? "스테이징(받아 두기)은 주행 중에도 됩니다. 굽기는 나중에 '적용 시작'에서 정지 확인을 다시 받습니다. 진행할까요?"
+                      : "AGV 정지 확인했습니까? (시작 시각에 대상 AGV 가 모두 정지해 있어야 합니다)");
+            if (!await JS.InvokeAsync<bool>("confirm", q)) return;
+
+            var j = JobSvc.Create(name, fw.Id, all, when == "at" ? at.ToUniversalTime() : null, stopOnFailure, mode, useNotAfter ? notAfter.ToUniversalTime() : null);
+            if (when == "at") msg = $"예약: {j.Name} ({j.Targets.Count}대, {at:MM-dd HH:mm})";
+            else if (ahead is not null) { msg = $"대기: 앞 작업 '{ahead.Name}' 이 끝난 뒤 시작 ({j.Name}, {j.Targets.Count}대 · {JobService.StaleScheduleMinutes}분 넘게 밀리면 자동 취소)"; warn = true; }
+            else msg = $"시작: {j.Name} ({j.Targets.Count}대){(j.NeedsApproval ? " — 스테이징이 끝나면 '적용 시작'을 누르세요" : "")}";
+            // 같은 작업을 또 만들지 않도록 선택을 비운다
+            targets.Clear(); extraTargets = ""; name = ""; fwId = ""; useNotAfter = false; open = null;
         }
         catch (Exception ex) { msg = ex.Message; err = true; }
         finally { busy = false; }

@@ -10,7 +10,7 @@ namespace Gateway.Server.Data;
 /// </summary>
 public sealed class GatewayDb
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
     public string Path { get; }
     readonly string _cs;
 
@@ -108,6 +108,26 @@ public sealed class GatewayDb
                 """);
             Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '1')");
         }
+        if (ver < 2)
+        {
+            // v2: 메인보드 작업의 적용 방식(승인 후 적용/바로 적용)·마감 시각·승인 시각, 대상별 스테이징 작업 번호.
+            // 기존 작업 기록은 예전 동작(스테이징 직후 바로 적용)이었으므로 apply_mode 기본값은 'Immediate'
+            using var tx = c.BeginTransaction();
+            AddColumn(c, "jobs", "apply_mode", "TEXT NOT NULL DEFAULT 'Immediate'");
+            AddColumn(c, "jobs", "not_after", "TEXT");
+            AddColumn(c, "jobs", "approved_at", "TEXT");
+            AddColumn(c, "job_targets", "stage_job", "INTEGER");
+            Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '2')");
+            tx.Commit();
+        }
+    }
+
+    /// <summary>열이 없을 때만 추가 (중간에 끊긴 마이그레이션을 다시 돌려도 안전)</summary>
+    static void AddColumn(SqliteConnection c, string table, string column, string definition)
+    {
+        using (var cmd = Cmd(c, $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=$n", ("$n", column)))
+            if ((long)(cmd.ExecuteScalar() ?? 0L) > 0) return;
+        Exec(c, $"ALTER TABLE {table} ADD COLUMN {column} {definition}");
     }
 
     // ── 날짜·값 변환 (DB 는 ISO 8601 UTC 문자열) ──

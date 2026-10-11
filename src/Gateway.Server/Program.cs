@@ -111,10 +111,23 @@ api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
 api.MapPost("/jobs", (JobCreateRequest r, JobService jobs) =>
 {
-    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true)); }
+    // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용)
+    try
+    {
+        var mode = string.IsNullOrWhiteSpace(r.ApplyMode) ? ApplyMode.Approve
+                 : Enum.TryParse<ApplyMode>(r.ApplyMode, true, out var m) && Enum.IsDefined(m) ? m : throw new InvalidOperationException("applyMode 는 Approve 또는 Immediate");
+        return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId ?? "", r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime()));
+    }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
-api.MapPost("/jobs/{id}/cancel", (string id, JobService jobs) => jobs.Cancel(id) ? Results.Ok() : Results.NotFound());
+// queued=true: 이 작업이 끝나면 곧바로 이어서 시작될 대기 작업도 함께 취소
+api.MapPost("/jobs/{id}/cancel", (string id, bool? queued, JobService jobs) => jobs.Cancel(id, queued ?? false) ? Results.Ok() : Results.NotFound());
+// 적용 대기(AwaitingApproval) 작업의 적용 승인 — 호출 전에 대상 AGV 정지를 확인할 것
+api.MapPost("/jobs/{id}/approve", (string id, JobService jobs) =>
+{
+    try { return jobs.Approve(id) ? Results.Ok() : Results.NotFound(); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
+});
 api.MapDelete("/jobs/{id}", (string id, JobService jobs) => jobs.Delete(id) ? Results.Ok() : Results.Conflict());
 api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService link) =>
     link.SendMainDown(agv, AgvFrame.ParseData(r.Data)) ? Results.Ok() : Results.NotFound("호기 endpoint 없음"));
@@ -195,7 +208,7 @@ app.Lifetime.ApplicationStarted.Register(() =>
 
 app.Run();
 
-record JobCreateRequest(string? Name, string FirmwareId, List<int> Targets, DateTime? ScheduledAt, bool? StopOnFailure);
+record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, DateTime? ScheduledAt, bool? StopOnFailure, string? ApplyMode, DateTime? NotAfter);
 record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, string? Process, string? Route, string? Name, string? Note);
 record SendRequest(string Data);
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
