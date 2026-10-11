@@ -51,8 +51,13 @@ public sealed class AgvGroupStore
             }
         }
         catch (Exception e) { Fail("소속 DB 읽기 실패: " + e.Message); return; }
-        if (bad.Count > 0) Fail($"소속 {bad.Count}행 읽기 실패: {string.Join(", ", bad.Take(5))}");
         var json = Path.Combine(dataDir, "agv_groups.json");
+        if (bad.Count > 0)
+        {
+            // 예전 JSON 이전도 미룬다 — 메모리에 없는 (읽지 못한) 행을 INSERT OR REPLACE 가 예전 값으로 덮어쓸 수 있어서
+            Fail($"소속 {bad.Count}행 읽기 실패: {string.Join(", ", bad.Take(5))}" + (File.Exists(json) ? " · 예전 소속 파일 이전도 미룸" : ""));
+            return;
+        }
         if (File.Exists(json)) MigrateJson(json);
     }
 

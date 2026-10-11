@@ -92,6 +92,45 @@ public class AgvGroupStoreTests : IDisposable
     }
 
     [Fact]
+    public void Partial_load_defers_json_migration_so_unread_row_is_not_overwritten()
+    {
+        var db = new GatewayDb(_dir);
+        var st = new AgvGroupStore(_dir, db);
+        st.Set(7, new AgvGroup("새 수동값"));
+        Exec(db, "UPDATE agv_groups SET updated_at='깨진 값' WHERE agv=7");   // 7호기 행을 읽지 못하게
+        // 예전 이름 바꾸기가 실패해 남아 있던 agv_groups.json (7호기 옛 값 + 8호기)
+        var json = Path.Combine(_dir, "agv_groups.json");
+        File.WriteAllText(json, System.Text.Json.JsonSerializer.Serialize(new List<AgvAssignment>
+        {
+            new() { Agv = 7, Group = new AgvGroup("옛 값"), Source = "manual", UpdatedAt = DateTimeOffset.UtcNow.AddDays(-30) },
+            new() { Agv = 8, Group = new AgvGroup("옛 8"), Source = "manual", UpdatedAt = DateTimeOffset.UtcNow.AddDays(-30) },
+        }));
+
+        var re = new AgvGroupStore(_dir, db);
+        Assert.True(re.LoadIncomplete);
+        Assert.Contains("이전도 미룸", re.StartupError);
+        Assert.True(File.Exists(json));                                   // 원본 그대로 (다음 기동 때 다시)
+        Assert.False(File.Exists(json + ".migrated"));
+        using (var c = db.Open())
+        using (var cmd = GatewayDb.Cmd(c, "SELECT product_family, updated_at FROM agv_groups WHERE agv=7"))
+        using (var r = cmd.ExecuteReader())
+        {
+            Assert.True(r.Read());
+            Assert.Equal(("새 수동값", "깨진 값"), (r.GetString(0), r.GetString(1)));   // 읽지 못한 행을 옛 JSON 값으로 덮어쓰지 않음
+        }
+        Assert.Equal(1, db.Count("agv_groups"));                          // 8호기도 아직 안 넣음
+        Assert.Null(re.Get(8));
+
+        // 깨진 행을 고치고 다시 시작하면 이전이 이어진다 (DB 에 있는 7호기는 건너뜀)
+        Exec(db, "UPDATE agv_groups SET updated_at='2026-10-01T00:00:00.0000000+00:00' WHERE agv=7");
+        var fixedStore = new AgvGroupStore(_dir, db);
+        Assert.False(fixedStore.LoadIncomplete);
+        Assert.Equal("새 수동값", fixedStore.Get(7)!.Group.ProductFamily);
+        Assert.Equal("옛 8", fixedStore.Get(8)!.Group.ProductFamily);
+        Assert.True(File.Exists(json + ".migrated"));
+    }
+
+    [Fact]
     public void Failed_json_migration_blocks_acs_merge()
     {
         Directory.CreateDirectory(_dir);
