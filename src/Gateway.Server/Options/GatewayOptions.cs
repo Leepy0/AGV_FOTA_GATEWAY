@@ -27,4 +27,6 @@ public sealed class AcsOptions
     public string Host { get; set; } = "127.0.0.1";
     public int Port { get; set; } = 6000;
     public int ReconnectSec { get; set; } = 3;
+    /// <summary>Server 모드에서 접속을 받을 ACS IP 목록. 비우면 모두 허용. 목록에 없으면 접속 즉시 닫는다 (Client 모드는 해당 없음)</summary>
+    public string[] AllowedRemotes { get; set; } = [];
 }
