@@ -658,6 +658,8 @@ public sealed class JobService : BackgroundService
     {
         var expected = job.FirmwareVersion;
         bool dsp = job.Kind == FirmwareKind.Dsp;
+        // 그 사이 작업 기록을 지웠으면 다시 저장하지 않는다 (INSERT OR REPLACE 로 지운 기록이 되살아남)
+        bool Alive() { lock (_lock) return _jobs.Contains(job); }
         _ = Task.Run(async () =>
         {
             try
@@ -671,13 +673,13 @@ public sealed class JobService : BackgroundService
                     {
                         r.VersionAfter = cur!;
                         Add(r, $"취소 — 브리지가 끝까지 진행해 {cur} 로 올라감 (heartbeat 확인)");
-                        Persist(job);
+                        if (Alive()) Persist(job);
                         return;
                     }
                     await Task.Delay(1000, _stopping);
                 }
                 Add(r, $"취소 — 3분 안에 새 버전 확인 안 됨 (현재 {(dsp ? _reg.StatusOf(r.Agv)?.Dsp : _reg.StatusOf(r.Agv)?.Fw) ?? "?"}) — 호기 현황에서 확인하세요");
-                Persist(job);
+                if (Alive()) Persist(job);
             }
             catch (OperationCanceledException) { }
             catch (Exception e) { _log.LogWarning("job {Id} 취소 뒤 확인 오류: {Msg}", job.Id, e.Message); }

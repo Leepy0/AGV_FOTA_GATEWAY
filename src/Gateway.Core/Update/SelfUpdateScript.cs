@@ -169,10 +169,10 @@ public static partial class SelfUpdateScript
         :probe_get
         if exist "%BODY%" del /f /q "%BODY%"
         where curl.exe >nul 2>&1 || goto probe_ps
-        curl.exe -fsS -m 3 -o "%BODY%" "%HEALTH%" >nul 2>&1
+        curl.exe -fsS -m 3 --noproxy "*" -o "%BODY%" "%HEALTH%" >nul 2>&1
         goto probe_check
         :probe_ps
-        powershell -NoProfile -NonInteractive -Command "try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri '%HEALTH%').Content | Set-Content -Encoding ASCII -LiteralPath '%BODY%' } catch { exit 1 }" >nul 2>&1
+        powershell -NoProfile -NonInteractive -Command "try { [System.Net.WebRequest]::DefaultWebProxy = $null; (Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri '%HEALTH%').Content | Set-Content -Encoding ASCII -LiteralPath '%BODY%' } catch { exit 1 }" >nul 2>&1
         :probe_check
         if not exist "%BODY%" exit /b 1
         if "%WANT%"=="-" (findstr /L /C:"\"ok\":true" "%BODY%" >nul) else (findstr /L /C:"\"version\":\"%WANT%\"" "%BODY%" >nul)

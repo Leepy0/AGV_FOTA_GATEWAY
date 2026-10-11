@@ -166,7 +166,7 @@ public sealed class UpdateService : BackgroundService
         if (!UpdateFeed.IsNewer(info.Version, Current)) { Set(UpdateStage.UpToDate, $"최신 버전입니다 ({CurrentText}, {ChannelName})"); return null; }
         if (HasStaged && StagedTag == info.Tag) { Set(UpdateStage.Ready, $"{info.Tag} 받아 둠 — 적용 대기"); return info; }
         Set(UpdateStage.Available, $"새 버전 {info.Tag} ({info.AssetName}, {info.Size / 1024 / 1024}MB){(info.Sha256 is null ? " · SHA-256 정보 없음" : "")}"
-                                   + (HasStaged ? $" · 받아 둔 {StagedTag} 도 적용 가능" : ""));
+                                   + (HasStaged ? $" · 받아 둔 {StagedTag} 대신 새 버전을 받으세요" : ""));
         return info;
     }
 

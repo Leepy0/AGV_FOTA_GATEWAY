@@ -52,9 +52,11 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var persist = Task.Run(() => PersistLoop(ct), ct);
+        // 수신 루프가 예상치 못하게 끝나도 기록 루프를 멈추고 마지막 기록까지 기다린다 (서비스가 조용히 멈춘 채 남지 않게)
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var persist = Task.Run(() => PersistLoop(stop.Token), CancellationToken.None);
         try { await ReceiveAsync(ct); }
-        finally { try { await persist; } catch (OperationCanceledException) { } }
+        finally { stop.Cancel(); try { await persist; } catch (OperationCanceledException) { } }
     }
 
     public override async Task StopAsync(CancellationToken ct)
@@ -177,6 +179,7 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
         else if (fresh is not null && a.Status is { } prev && fresh.UpSeconds < prev.UpSeconds)
             AgvRegistry.ResetSeq(a);   // 가동 시간이 줄었다 = 브리지 재부팅, seq 가 0 부터 다시 시작
         a.EndPoint = ep;
+        if (ep.Equals(a.ConflictEndPoint)) a.ConflictEndPoint = null;   // 충돌로 보던 주소로 정상 이전 — 충돌 표시를 남기지 않음
         a.LastSeen = now;
         int loss = BridgeSeq.Tracked(h.Type) ? AgvRegistry.CheckSeq(a, h.Type, h.Seq) : 0;
         if (loss > 0) Interlocked.Add(ref a.SeqLoss, loss);
