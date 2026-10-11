@@ -29,9 +29,11 @@
         <dt>로그</dt><dd class="mono">@Logs.Directory <span class="muted">(gateway-날짜.log, @(FileLoggerProvider.KeepDays)일 보관 · 수준은 Logging:LogLevel, 파일만 따로 Logging:File:LogLevel)</span></dd>
         <dt>데이터베이스</dt><dd><span class="mono">@Db.Path</span> <span class="muted">(SQLite, @((Db.FileSize / 1024.0).ToString("N0")) KB · 펌웨어 @Db.Count("firmware") · 작업 @Db.Count("jobs") · 소속 @Db.Count("agv_groups") · 위치 @Db.Count("agv_positions") · 접속 기록 @Db.Count("agv_last_seen"))</span> <a href="api/db/backup">백업 내려받기</a></dd>
         <dt>HTTP</dt><dd>포트 @Jobs.HttpPort · 이 PC 주소: @foreach (var ip in LocalIps()) { <code>http://@ip:@Jobs.HttpPort</code> }</dd>
-        <dt>브리지 UDP</dt><dd>:@Gw.Value.UdpPort (RFID :@(Gw.Value.RfidPort > 0 ? Gw.Value.RfidPort : "사용 안 함")) @(Link.BindError is null ? "" : $"⚠ {Link.BindError}")</dd>
+        <dt>브리지 UDP</dt><dd>:@Gw.Value.UdpPort (RFID :@(Gw.Value.RfidPort > 0 ? Gw.Value.RfidPort : "사용 안 함")) @(Link.BindError is null ? "" : $"⚠ {Link.BindError}")
+            · ACS 로 안 보낸 상향 프레임 <span class="@(Link.AcsDroppedFrames > 0 ? "warn-text" : "")" title="ETX 없음·BCC 오류로 ACS 에 넘기지 않은 MAIN_UP 프레임 수 (UART 잡음·배선 확인)">@Link.AcsDroppedFrames</span></dd>
         <dt>오프라인 판정</dt><dd>heartbeat @(Gw.Value.OfflineAfterSec)초 없음</dd>
-        <dt>OTA 파일 주소</dt><dd>@(string.IsNullOrEmpty(Gw.Value.PublicBaseUrl) ? "자동 (호기 쪽 NIC 의 IP + HTTP 포트)" : Gw.Value.PublicBaseUrl) <span class="muted">— 브리지가 펌웨어를 받아 가는 주소. NIC 이 여러 개라 잘못 잡히면 PublicBaseUrl 로 고정</span></dd>
+        <dt>OTA 파일 주소</dt><dd>@(string.IsNullOrEmpty(Gw.Value.PublicBaseUrl) ? "자동 (호기 쪽 NIC 의 IP + HTTP 포트)" : Gw.Value.PublicBaseUrl) <span class="muted">— 브리지가 펌웨어를 받아 가는 주소. NIC 이 여러 개라 잘못 잡히면 PublicBaseUrl 로 고정 (브리지에 설정된 server IP 와 같은 IPv4 로: http://IPv4:포트)</span>
+            @if (Gw.Value.PublicBaseUrlProblem() is { } urlProblem) { <div class="msg warn" role="alert">⚠ @urlProblem</div> }</dd>
         <dt>실행 환경</dt><dd>@Environment.OSVersion · .NET @Environment.Version · @(Environment.UserInteractive ? "콘솔" : "서비스") · 시작 @System.Diagnostics.Process.GetCurrentProcess().StartTime.ToString("MM-dd HH:mm")</dd>
     </dl>
 </section>
@@ -41,7 +43,20 @@
     <dl class="kv">
         <dt>상태</dt><dd>@(Acs.Enabled ? (Acs.Connected ? $"연결 ({Acs.ConnectedAt?.ToLocalTime():MM-dd HH:mm} 부터) · ACS로 {Acs.ToAcs} / ACS에서 {Acs.FromAcs}" : "끊김 — 재접속 중") : "사용 안 함 (Gateway.Acs.Enabled=false)")</dd>
         <dt>설정</dt><dd>@Gw.Value.Acs.Mode @Gw.Value.Acs.Host:@Gw.Value.Acs.Port · 재접속 @(Gw.Value.Acs.ReconnectSec)초 · 상향은 E/A 프레임만 전달</dd>
+        @if (Acs.Enabled)
+        {
+            <dt>원격 주소</dt><dd class="mono">@(Acs.RemoteEndPoint ?? "-")</dd>
+            @if (IsAcsServer)
+            {
+                <dt>허용 IP</dt><dd>@(AllowedText) <span class="muted">(Gateway.Acs.AllowedRemotes)</span> · 거부한 접속 <span class="@(Acs.RejectedRemotes > 0 ? "warn-text" : "")">@Acs.RejectedRemotes</span></dd>
+            }
+            <dt>하향 차단</dt><dd>F·R 프레임 버림 <span class="@(Acs.BlockedDown > 0 ? "warn-text" : "")">@Acs.BlockedDown</span> <span class="muted">(업데이트 진입·응답 종류는 ACS 경로로 메인보드에 넘기지 않음)</span> · 상향 적체로 버림 @Acs.Dropped</dd>
+        }
     </dl>
+    @if (Acs.Enabled && IsAcsServer)
+    {
+        <p class="muted small">Server 모드는 한 번에 한 연결만 받습니다 — 새 접속이 오면 기존 연결을 닫고 교체합니다. 다른 PC 가 접속해 ACS 연결을 빼앗지 않도록 <code>Gateway.Acs.AllowedRemotes</code> 에 ACS IP 를 넣으세요.@(AllowedText == "전체" ? " (지금은 비어 있어 모두 허용)" : "")</p>
+    }
 </section>
 
 <section class="card">
@@ -90,6 +105,8 @@
     public void Dispose() => timer?.Dispose();
 
     static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    bool IsAcsServer => Gw.Value.Acs.Mode.Equals("Server", StringComparison.OrdinalIgnoreCase);
+    string AllowedText => Gw.Value.Acs.AllowedRemotes is { } a && a.Any(x => !string.IsNullOrWhiteSpace(x)) ? string.Join(", ", a.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())) : "전체";
     static IEnumerable<string> LocalIps()
     {
         var list = new List<string>();

@@ -55,7 +55,7 @@
                     </div>
                 }
                 <div class="row-buttons small">
-                    <button type="button" @onclick="SelectOnline">온라인 전체 선택</button>
+                    <button type="button" @onclick="SelectOnline" title="번호 충돌 호기는 빼고 선택">온라인 전체 선택</button>
                     <button type="button" @onclick="SelectNeedUpdate" disabled="@(Fw is null)" title="선택한 펌웨어와 버전이 다른 온라인 호기만 (미지원·번호 충돌 제외)">업데이트 필요한 호기 선택</button>
                     <button type="button" @onclick="() => targets.Clear()">선택 해제</button>
                     <span class="muted">@targets.Count 대 선택@(Fw is null ? "" : $" · 칩의 작은 글씨 = 현재 {(Fw.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} 버전")</span>
@@ -76,6 +76,11 @@
                 </div>
                 <label>직접 입력 <input @bind="extraTargets" @bind:event="oninput" placeholder="7, 12-15 (아직 안 보이는 호기)" /></label>
                 @if (parseErr is not null) { <div class="msg err">@parseErr</div> }
+                @{ var conflicted = all.Where(id => Reg.Get(id)?.InConflict(Opt.Value.OfflineAfterSec) == true).OrderBy(x => x).ToList(); }
+                @if (conflicted.Count > 0)
+                {
+                    <div class="msg warn" role="alert">번호 충돌 호기 @conflicted.Count 대(@string.Join(", ", conflicted.Take(10).Select(x => x.ToString("D2")))@(conflicted.Count > 10 ? " …" : ""))는 같은 번호의 장치가 둘이라 작업에서 거부됩니다 — 선택에서 빼거나 한쪽 브리지의 agv 번호를 먼저 고치세요. <button type="button" class="small" @onclick="() => DropConflicted(conflicted)">충돌 호기 빼기</button></div>
+                }
             </div>
             @if (Fw?.Kind == FirmwareKind.Dsp)
             {
@@ -118,16 +123,18 @@
     {
         var isOpen = OpenId(list) == j.Id;
         <div class="job @j.State.ToString().ToLower()">
-            <div class="job-head" @onclick="() => ToggleOpen(isOpen, j.Id)">
+            <div class="job-head" tabindex="0" role="button" aria-expanded="@(isOpen ? "true" : "false")" aria-label="@($"{j.Name} 대상 {j.Targets.Count}대 {State(j)} — {(isOpen ? "접기" : "펼치기")}")"
+                 @onclick="() => ToggleOpen(isOpen, j.Id)" @onkeydown="e => HeadKey(e, isOpen, j.Id)">
                 <span class="state">@State(j)</span>
                 <b>@j.Name</b>
                 <span class="muted">@(j.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지") @j.FirmwareVersion@(j.Kind == FirmwareKind.Dsp ? (j.ApplyMode == ApplyMode.Approve ? " (승인 후 적용)" : " (바로 적용)") : "") · 대상 @j.Targets.Count 대 · 완료 @j.DoneCount / 실패 @j.FailCount@(j.StagedCount > 0 ? $" / 스테이징 {j.StagedCount}" : "")</span>
                 <span class="muted @(IsLate(j) ? "warn-text" : "")">@When(j, list)</span>
                 @if (j.State is JobState.Running or JobState.AwaitingApproval) { <span class="bar wide"><span style="width:@(Progress(j))%"></span></span> }
                 <span class="actions">
-                    @if (j.State == JobState.AwaitingApproval && j.ApprovedAt is null) { <button class="primary" @onclick:stopPropagation @onclick="() => Approve(j)">적용 시작</button> }
-                    @if (j.IsActive) { <button @onclick:stopPropagation @onclick="() => Cancel(j)">취소</button> }
-                    else { <button @onclick:stopPropagation @onclick="() => Delete(j)">삭제</button> }
+                    @* 머리 안 버튼: 클릭·Enter 가 머리(펼치기)로 번지지 않게 *@
+                    @if (j.State == JobState.AwaitingApproval && j.ApprovedAt is null) { <button class="primary" @onclick:stopPropagation @onkeydown:stopPropagation @onclick="() => Approve(j)">적용 시작</button> }
+                    @if (j.IsActive) { <button @onclick:stopPropagation @onkeydown:stopPropagation @onclick="() => Cancel(j)">취소</button> }
+                    else { <button @onclick:stopPropagation @onkeydown:stopPropagation @onclick="() => Delete(j)">삭제</button> }
                 </span>
             </div>
             @if (isOpen)
@@ -211,8 +218,18 @@
     public void Dispose() { JobSvc.Changed -= OnChanged; Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; }
     void Toggle(int id, bool on) { if (on) targets.Add(id); else targets.Remove(id); }
     void ToggleOpen(bool isOpen, string id) => open = isOpen ? "" : id;
+    // 작업 머리를 키보드로 펼치기 (Tab 으로 옮겨 Enter)
+    void HeadKey(KeyboardEventArgs e, bool isOpen, string id) { if (e.Key == "Enter") ToggleOpen(isOpen, id); }
+    void DropConflicted(IEnumerable<int> ids)
+    {
+        foreach (var id in ids) targets.Remove(id);
+        // 직접 입력에 적은 충돌 호기는 칸을 고쳐야 빠지므로 남은 번호로 다시 적는다
+        var rest = ParseTargets(extraTargets, out var e);
+        if (e is null) extraTargets = string.Join(", ", rest.Except(ids).OrderBy(x => x));
+    }
     void ToggleLog(string key) { if (!logOpen.Remove(key)) logOpen.Add(key); }
-    void SelectOnline() { foreach (var a in Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec))) targets.Add(a.Id); }
+    // 번호 충돌 호기는 작업에서 거부되므로 고르지 않는다 (결정 2A)
+    void SelectOnline() { foreach (var a in Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec) && !a.InConflict(Opt.Value.OfflineAfterSec))) targets.Add(a.Id); }
     void SelectNeedUpdate()
     {
         if (Fw is null) return;

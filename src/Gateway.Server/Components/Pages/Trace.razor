@@ -29,7 +29,7 @@
         <button @onclick="SendCfg" disabled="@(!int.TryParse(agv, out _))">@(AgvLabel)CFG_CMD 전송</button>
         @if (msg is not null) { <span class="msg @(err ? "err" : "")">@msg</span> }
     </div>
-    <p class="muted small">프레임을 <code>종류·PAN·MSG·호기2자리·본문</code> 로만 적으면 STX·공백·BCC·ETX 를 붙여 보냅니다 (호기 2자리는 프레임 안의 값을 씁니다 — 호기 칸을 채웠다면 같아야 합니다). <code>&lt;STX&gt;</code> 로 시작하면 적은 그대로 호기 칸의 호기로 보냅니다. 설정 변경·저장·재부팅 명령과 W/N(정지·출발·목적지) 프레임은 확인창을 거칩니다.</p>
+    <p class="muted small">프레임을 <code>종류·PAN·MSG·호기2자리·본문</code> 로만 적으면 STX·공백·BCC·ETX 를 붙여 보냅니다 (호기 2자리는 프레임 안의 값을 씁니다 — 호기 칸을 채웠다면 같아야 합니다). <code>&lt;STX&gt;</code> 로 시작하면 적은 그대로 호기 칸의 호기로 보냅니다. 설정 변경·저장·재부팅 명령과 W/N(정지·출발·목적지) 프레임은 확인창을 거칩니다. F(업데이트 진입)·R(응답) 프레임은 보낼 수 없습니다 — 배포 작업을 쓰세요.</p>
 </section>
 
 @code {
@@ -101,6 +101,8 @@
             type = s[0];
         }
         if (Refusal(a) is { } no) { msg = no; err = true; return; }
+        // 결정 12 확장: 메인보드 업데이트 진입(F)·응답(R) 프레임은 배포 작업만 쓴다 (REST 수동 전송과 같은 규칙)
+        if (ApiGuard.IsBlockedManualFrame(frame)) { msg = ApiGuard.BlockedManualFrameMessage; err = true; return; }
         if (frame.Length > AgvFrame.BridgeFrameMax) { msg = $"프레임이 {AgvFrame.BridgeFrameMax}바이트를 넘습니다"; err = true; return; }
         if (char.ToUpperInvariant(type) is 'W' or 'N'
             && !await Confirm($"{a:D2} 호기 메인보드에 {type} 프레임(정지·출발·목적지 지령)을 보냅니다.\n{AgvFrame.Fmt(frame)}\n\nAGV 가 움직이거나 멈출 수 있습니다. 보낼까요?")) return;

@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Gateway.Core\Gateway.Core.csproj" />
+    <!-- ApiGuardTests·FileLoggerTests 가 서버 클래스를 본다 (Program.cs 의 InternalsVisibleTo). 서버 클래스 시험은 Gateway.Server.Tests 로 옮기는 중 -->
     <ProjectReference Include="..\..\src\Gateway.Server\Gateway.Server.csproj" />
   </ItemGroup>
 

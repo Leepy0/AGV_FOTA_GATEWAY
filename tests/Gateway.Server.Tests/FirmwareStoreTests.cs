@@ -3,9 +3,12 @@ using Gateway.Core.Fota;
 using Gateway.Server.Data;
 using Gateway.Server.Services;
 
-namespace Gateway.Core.Tests;
+namespace Gateway.Server.Tests;
 
-/// <summary>펌웨어 저장소: DB 실패 시 메모리·폴더 정합(S-06), 삭제와 lock 순서(S-08), 버전·파일명 규칙(C-02·C-09), 옛 index.json 이전(S-05), 변경 알림(U-10)</summary>
+/// <summary>
+/// 펌웨어 저장소: DB 실패 시 메모리·폴더 정합(S-06), 삭제와 lock 순서(S-08), 버전·파일명 규칙(C-02·C-09), 옛 index.json 이전(S-05), 변경 알림(U-10).
+/// (서버 클래스라 Gateway.Server.Tests 로 옮김 — INT-A11)
+/// </summary>
 public class FirmwareStoreTests : IDisposable
 {
     readonly string _dir = Path.Combine(Path.GetTempPath(), "gw-fw-" + Guid.NewGuid().ToString("N"));
@@ -89,13 +92,15 @@ public class FirmwareStoreTests : IDisposable
     }
 
     [Fact]
-    public void InUseBy_counts_every_unfinished_job()
+    public void IsActive_counts_every_unfinished_job_including_awaiting_approval()
     {
-        Assert.True(FirmwareStore.InUseBy(new Job { State = JobState.Scheduled }));
-        Assert.True(FirmwareStore.InUseBy(new Job { State = JobState.Running }));
-        Assert.False(FirmwareStore.InUseBy(new Job { State = JobState.Done }));
-        Assert.False(FirmwareStore.InUseBy(new Job { State = JobState.Failed }));
-        Assert.False(FirmwareStore.InUseBy(new Job { State = JobState.Cancelled }));
+        // 펌웨어 '사용 중' 판정 = Job.IsActive 하나 (화면·REST·JobService 공통)
+        Assert.True(new Job { State = JobState.Scheduled }.IsActive);
+        Assert.True(new Job { State = JobState.Running }.IsActive);
+        Assert.True(new Job { State = JobState.AwaitingApproval }.IsActive);
+        Assert.False(new Job { State = JobState.Done }.IsActive);
+        Assert.False(new Job { State = JobState.Failed }.IsActive);
+        Assert.False(new Job { State = JobState.Cancelled }.IsActive);
     }
 
     [Fact]
@@ -108,6 +113,16 @@ public class FirmwareStoreTests : IDisposable
             st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "a.dspfw", new MemoryStream(img))]));
         Assert.Empty(st.List());
         Assert.Equal("", FwDirs());
+    }
+
+    [Fact]
+    public async Task Bad_dspfw_message_names_format_crc_and_block_structure()
+    {
+        var (_, st) = New();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "x.dspfw", new MemoryStream(new byte[64]))]));
+        Assert.Contains("블록 구조", ex.Message);
+        Assert.Contains("dsp_pack.py", ex.Message);
     }
 
     [Theory]

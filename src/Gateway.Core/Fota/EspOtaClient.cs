@@ -62,7 +62,7 @@ public sealed class EspOtaClient
                 if (stage == "busy" && resends > 0) { progress?.Invoke("OTA busy — 재전송 전 명령이 이미 진행 중"); continue; }
                 progress?.Invoke($"OTA {js}");
                 if (stage == "done") done = true;
-                else if (stage == "fail") throw new EspOtaException($"브리지 OTA 실패: {err}");
+                else if (stage == "fail") throw new EspOtaException(BridgeErrors.WithHint($"브리지 OTA 실패: {err}", err));
                 else if (stage == "busy") throw new EspOtaException("브리지가 이미 OTA 진행 중");
             }
             if (done) break;

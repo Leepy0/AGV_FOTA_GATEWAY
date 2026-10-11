@@ -14,7 +14,7 @@
         <NavLink href="" Match="NavLinkMatch.All">호기 현황 <span class="nav-badge">@online/@total</span></NavLink>
         <NavLink href="groups">구역</NavLink>
         <NavLink href="firmware">펌웨어</NavLink>
-        <NavLink href="jobs">배포 작업 @(running > 0 ? $"⟳ {running}" : scheduled > 0 ? $"({scheduled} 예약)" : "")</NavLink>
+        <NavLink href="jobs">배포 작업 @(running > 0 ? $"⟳ {running}" : scheduled > 0 ? $"({scheduled} 예약)" : "")@if (awaiting > 0) { <span class="nav-badge warn" title="스테이징을 마치고 'AGV 정지 확인 → 적용 시작' 승인을 기다리는 작업">적용 대기 @awaiting</span> }</NavLink>
         <NavLink href="trace">통신 로그</NavLink>
         <NavLink href="update">서버 업데이트 @(Upd.Stage is UpdateStage.Available or UpdateStage.Ready ? "●" : "")</NavLink>
         <NavLink href="settings">설정</NavLink>
@@ -50,7 +50,7 @@
 </div>
 
 @code {
-    int online, total, running, scheduled;
+    int online, total, running, scheduled, awaiting;
     ErrorBoundary? boundary;
     protected override void OnParametersSet() => boundary?.Recover();   // 화면을 옮기면 오류 표시를 거둔다
     void Recover() => boundary?.Recover();
@@ -59,6 +59,7 @@
     {
         var s = Reg.Snapshot(); total = s.Count; online = s.Count(a => a.Online(Opt.Value.OfflineAfterSec));
         var j = Jobs.List(); running = j.Count(x => x.State == JobState.Running); scheduled = j.Count(x => x.State == JobState.Scheduled);
+        awaiting = j.Count(x => x.State == JobState.AwaitingApproval && x.ApprovedAt is null);
     }
     void OnChanged() => InvokeAsync(() => { Refresh(); StateHasChanged(); });
     public void Dispose() { Reg.Changed -= OnChanged; Upd.Changed -= OnChanged; Jobs.Changed -= OnChanged; }
