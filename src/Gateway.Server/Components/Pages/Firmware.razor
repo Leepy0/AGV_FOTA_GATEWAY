@@ -2,6 +2,7 @@
 @inject FirmwareStore Store
 @inject JobService JobSvc
 @inject IJSRuntime JS
+@implements IDisposable
 
 <PageTitle>펌웨어 · AGV FOTA</PageTitle>
 <h1>펌웨어</h1>
@@ -10,14 +11,14 @@
     <h2>업로드</h2>
     <div class="form">
         <label>종류
-            <select @bind="kind">
+            <select @bind="kind" @bind:after="KindChanged">
                 <option value="Dsp">메인보드 DSP (TMS320F2808, .dspfw)</option>
                 <option value="Esp">브리지 ESP32-S3 (agv_wifi_bridge.bin)</option>
             </select>
         </label>
         @if (kind == "Dsp")
         {
-            <p class="muted">CCS 빌드 결과를 <code>tools/dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전·CRC 는 파일 헤더에서 읽습니다. 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
+            <p class="muted">CCS 빌드 결과를 <code>tools/dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전·CRC 는 파일 헤더에서 읽습니다(버전은 8자 이하 영문·숫자·._-). 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
             <label>.dspfw 파일 <InputFile OnChange="e => file = e.File" accept=".dspfw" /></label>
         }
         else
@@ -35,19 +36,19 @@
 </section>
 
 <section class="card">
-    <h2>목록 <span class="muted small">@Store.List().Count 개</span></h2>
-    @if (Store.List().Count == 0) { <div class="empty">등록된 펌웨어가 없습니다.</div> }
+    <h2>목록 <span class="muted small">@list.Count 개</span></h2>
+    @if (list.Count == 0) { <div class="empty">등록된 펌웨어가 없습니다.</div> }
     else
     {
         <div class="table-wrap">
         <table class="grid">
             <thead><tr><th>종류</th><th>버전</th><th>프로젝트</th><th>파일</th><th>SHA-256</th><th>업로드</th><th>메모</th><th>사용</th><th></th></tr></thead>
             <tbody>
-                @foreach (var e in Store.List())
+                @foreach (var e in list)
                 {
-                    var jobs = JobSvc.List().Where(j => j.FirmwareId == e.Id).ToList();
-                    var active = jobs.Where(j => j.State is JobState.Scheduled or JobState.Running).ToList();
-                    var dup = Store.List().Count(x => x.Kind == e.Kind && x.Version == e.Version) > 1;
+                    var jobs = jobList.Where(j => j.FirmwareId == e.Id).ToList();
+                    var active = jobs.Where(FirmwareStore.InUseBy).ToList();
+                    var dup = list.Count(x => x.Kind == e.Kind && x.Version == e.Version) > 1;
                     <tr>
                         <td>@(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")</td>
                         <td><b>@e.Version</b> @(dup ? "⚠" : "")</td>
@@ -57,13 +58,13 @@
                         <td>@e.UploadedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</td>
                         <td class="small wrap">@e.Notes</td>
                         <td class="small">@(active.Count > 0 ? $"진행·예약 {active.Count}" : jobs.Count > 0 ? $"작업 {jobs.Count}건" : "")</td>
-                        <td><button @onclick="() => Delete(e)" disabled="@(active.Count > 0)" title="@(active.Count > 0 ? "예약·실행 중인 작업이 쓰는 펌웨어입니다 — 작업을 먼저 취소" : "")">삭제</button></td>
+                        <td><button @onclick="() => Delete(e)" disabled="@(active.Count > 0)" title="@(active.Count > 0 ? "끝나지 않은 작업이 쓰는 펌웨어입니다 — 작업을 먼저 취소" : "")">삭제</button></td>
                     </tr>
                 }
             </tbody>
         </table>
         </div>
-        @if (Store.List().GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="muted small">⚠ 같은 종류·버전이 여러 개 있습니다. 작업 만들 때 헷갈리지 않도록 오래된 것을 지우세요.</p> }
+        @if (list.GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="muted small">⚠ 같은 종류·버전이 여러 개 있습니다. 작업 만들 때 헷갈리지 않도록 오래된 것을 지우세요.</p> }
     }
 </section>
 
@@ -72,6 +73,24 @@
     IBrowserFile? file;
     bool busy, err;
     string? msg, warn;
+    IReadOnlyList<FirmwareEntry> list = [];
+    IReadOnlyList<Job> jobList = [];
+
+    // 다른 PC·REST 로 올린 펌웨어, 작업 상태 변화(삭제 버튼 활성)를 바로 반영
+    protected override void OnInitialized()
+    {
+        Store.Changed += OnChanged; JobSvc.Changed += OnChanged;
+        Load();
+    }
+    void Load() { list = Store.List(); jobList = JobSvc.List(); }
+    void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+    public void Dispose() { Store.Changed -= OnChanged; JobSvc.Changed -= OnChanged; }
+
+    // 이 펌웨어를 쓰는 끝나지 않은 작업 이름
+    List<string> ActiveJobNames(string id) => JobSvc.List().Where(j => j.FirmwareId == id && FirmwareStore.InUseBy(j)).Select(j => j.Name).ToList();
+
+    // 종류를 바꾸면 이전 InputFile 이 사라지므로 고른 파일도 비운다 (사라진 요소의 파일은 읽을 수 없음)
+    void KindChanged() { file = null; msg = null; warn = null; err = false; }
 
     async Task Upload()
     {
@@ -88,15 +107,27 @@
             if (dups > 0) warn = $"같은 버전 {e.Version} 이 이미 {dups}개 등록되어 있습니다 — 내용이 같다면 하나만 남기세요.";
             file = null; version = ""; notes = "";
         }
+        catch (Microsoft.JSInterop.JSException) { msg = "파일을 읽지 못했습니다 — 파일을 다시 고르세요"; err = true; file = null; }
         catch (Exception ex) { msg = ex.Message; err = true; }
-        finally { busy = false; }
+        finally { busy = false; Load(); }
     }
 
     async Task Delete(FirmwareEntry e)
     {
-        if (JobSvc.List().Any(j => j.FirmwareId == e.Id && j.State is JobState.Scheduled or JobState.Running)) { msg = "예약·실행 중인 작업이 쓰는 펌웨어입니다"; err = true; return; }
-        if (!await JS.InvokeAsync<bool>("confirm", $"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
-        Store.Delete(e.Id);
-        msg = null;
+        msg = null; err = false;
+        try
+        {
+            var users = ActiveJobNames(e.Id);
+            if (users.Count > 0) { msg = $"작업 {string.Join(", ", users)} 이(가) 쓰는 펌웨어입니다 — 작업을 먼저 취소하세요"; err = true; return; }
+            if (!await JS.InvokeAsync<bool>("confirm", $"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
+            // 확인창이 떠 있는 동안 작업이 생겼을 수 있으므로 지우기 직전에 다시 확인
+            // (작업 lock 과 펌웨어 lock 을 겹쳐 잡지 않는다 — lock 순서 작업 → 펌웨어)
+            users = ActiveJobNames(e.Id);
+            if (users.Count > 0) { msg = $"그사이 작업 {string.Join(", ", users)} 이(가) 이 펌웨어를 쓰게 되어 지우지 않았습니다"; err = true; }
+            else msg = Store.Delete(e.Id) ? $"삭제: {e.Version}" : "이미 삭제된 펌웨어입니다";
+        }
+        catch (JSDisconnectedException) { }
+        catch (Exception ex) { msg = "삭제 실패: " + ex.Message; err = true; }
+        finally { Load(); }
     }
 }

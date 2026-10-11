@@ -35,7 +35,13 @@
         {
             <div class="banner info">새 서버 버전 @(Upd.Latest?.Tag) 을(를) 받았습니다 — <a href="update">서버 업데이트</a> 에서 적용하세요.</div>
         }
-        @Body
+        @* 화면 처리기에서 예외가 나도 회로가 끊기지 않게 — 오류를 보여 주고, 다른 화면으로 가거나 '다시 시도'로 복구 *@
+        <ErrorBoundary @ref="boundary">
+            <ChildContent>@Body</ChildContent>
+            <ErrorContent Context="ex">
+                <div class="error-box" role="alert">화면 처리 중 오류가 났습니다: @ex.Message <button @onclick="Recover">다시 시도</button></div>
+            </ErrorContent>
+        </ErrorBoundary>
     </main>
 </div>
 
@@ -45,6 +51,9 @@
 
 @code {
     int online, total, running, scheduled;
+    ErrorBoundary? boundary;
+    protected override void OnParametersSet() => boundary?.Recover();   // 화면을 옮기면 오류 표시를 거둔다
+    void Recover() => boundary?.Recover();
     protected override void OnInitialized() { Reg.Changed += OnChanged; Upd.Changed += OnChanged; Jobs.Changed += OnChanged; Refresh(); }
     void Refresh()
     {

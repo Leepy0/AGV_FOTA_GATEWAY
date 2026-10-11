@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Gateway.Core.Fota;
 using Gateway.Server.Data;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Gateway.Server.Services;
 
@@ -33,14 +34,21 @@ public sealed class FirmwareStore
 {
     readonly string _root;
     readonly GatewayDb _db;
+    readonly ILogger _log;
     readonly object _lock = new();
     readonly List<FirmwareEntry> _entries = new();
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+    /// <summary>저장된 파일 이름 최대 길이 — 메인보드 스테이징 URL(http://IP:포트/fw/{id}/{파일명}) 이 브리지 한도 199자를 넘지 않게</summary>
+    public const int MaxFileName = 60;
 
-    public FirmwareStore(string dataDir, GatewayDb db)
+    /// <summary>목록이 바뀌면 (등록·삭제) — 화면 갱신용</summary>
+    public event Action? Changed;
+
+    public FirmwareStore(string dataDir, GatewayDb db, ILogger<FirmwareStore>? log = null)
     {
         _root = Path.Combine(dataDir, "firmware");
         _db = db;
+        _log = (ILogger?)log ?? NullLogger.Instance;
         Directory.CreateDirectory(_root);
         Load();
         MigrateJson(Path.Combine(_root, "index.json"));
@@ -60,28 +68,34 @@ public sealed class FirmwareStore
             });
     }
 
-    /// <summary>SQLite 도입 전 index.json 이 있으면 한 번 가져오고 .migrated 로 이름을 바꾼다</summary>
+    /// <summary>
+    /// SQLite 도입 전 index.json 이 있으면 한 번 가져오고 .migrated 로 이름을 바꾼다.
+    /// 한 트랜잭션으로 넣고 커밋에 성공했을 때만 이름을 바꾼다. 실패하면 로그만 남기고 원본을 둬 다음 기동 때 다시 시도한다 (기동은 계속).
+    /// </summary>
     void MigrateJson(string indexPath)
     {
         if (!File.Exists(indexPath)) return;
         try
         {
             var old = JsonSerializer.Deserialize<List<FirmwareEntry>>(File.ReadAllText(indexPath), Json) ?? new();
-            int n = 0;
-            foreach (var e in old.Where(e => e.Files.Count == 1 && !_entries.Any(x => x.Id == e.Id)))
+            var add = old.Where(e => e.Files.Count == 1 && !_entries.Any(x => x.Id == e.Id)).GroupBy(e => e.Id).Select(g => g.First()).ToList();
+            if (add.Count > 0)
             {
-                Insert(e); _entries.Add(e); n++;
+                using var c = _db.Open();
+                using var tx = c.BeginTransaction();
+                foreach (var e in add) Insert(c, e);
+                tx.Commit();
+                _entries.AddRange(add);
             }
             File.Move(indexPath, indexPath + ".migrated", true);
-            if (n > 0) Console.WriteLine($"firmware index.json → SQLite: {n}개 이전");
+            if (add.Count > 0) _log.LogInformation("firmware index.json → SQLite: {N}개 이전", add.Count);
         }
-        catch (Exception e) { Console.Error.WriteLine("firmware index.json 이전 실패: " + e.Message); }
+        catch (Exception e) { _log.LogError("firmware index.json 이전 실패 (원본 유지, 다음 기동 때 다시 시도): {Msg}", e.Message); }
     }
 
-    void Insert(FirmwareEntry e)
+    static void Insert(Microsoft.Data.Sqlite.SqliteConnection c, FirmwareEntry e)
     {
         var f = e.Files[0];
-        using var c = _db.Open();
         GatewayDb.Exec(c, """
             INSERT OR REPLACE INTO firmware(id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256)
             VALUES($id, $kind, $ver, $proj, $notes, $up, $slot, $file, $size, $sha)
@@ -121,6 +135,9 @@ public sealed class FirmwareStore
                 if (kind == FirmwareKind.Dsp)
                 {
                     var info = DspfwImage.Parse(bytes) ?? throw new InvalidOperationException($"{name}: .dspfw 형식이 아니거나 CRC 가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)");
+                    // 앱의 버전 응답이 8자 고정이라 그보다 길면 굽고 나서도 '버전 다름' 실패가 된다
+                    if (!DspVersion.IsValid(info.Version))
+                        throw new InvalidOperationException($"메인보드 버전은 {DspVersion.MaxLength}자 이하 영문·숫자·._- 만 됩니다 (파일 헤더 버전 '{info.Version}') — dsp_pack.py --ver 를 고쳐 다시 묶으세요");
                     if (string.IsNullOrEmpty(e.Version)) e.Version = info.Version;
                     else if (e.Version != info.Version) throw new InvalidOperationException($"입력한 버전 {e.Version} 과 파일 헤더 버전 {info.Version} 이 다릅니다");
                     e.Files.Add(new FirmwareFile { Slot = "dspfw", FileName = outName, Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) });
@@ -145,13 +162,20 @@ public sealed class FirmwareStore
             if (e.Files.Count == 0) throw new InvalidOperationException("파일이 없습니다");
             if (string.IsNullOrEmpty(e.Version)) throw new InvalidOperationException("버전을 알 수 없습니다");
             if (string.IsNullOrEmpty(e.Project)) e.Project = kind == FirmwareKind.Dsp ? "agv-dsp" : EspAppImage.BridgeProject;
+            // DB 에 먼저 쓰고, 성공했을 때만 메모리에 반영 (실패하면 아래에서 폴더 정리)
+            lock (_lock)
+            {
+                using (var c = _db.Open()) Insert(c, e);
+                _entries.Add(e);
+            }
         }
         catch
         {
-            try { Directory.Delete(dir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            TryDeleteDir(dir);
             throw;
         }
-        lock (_lock) { Insert(e); _entries.Add(e); }
+        _log.LogInformation("펌웨어 등록: {Kind} {Ver} ({Id})", e.Kind, e.Version, e.Id);
+        RaiseChanged();
         return e;
     }
 
@@ -161,23 +185,60 @@ public sealed class FirmwareStore
         lock (_lock) return _entries.FirstOrDefault(e => e.Kind == kind && e.Version == version.Trim());
     }
 
-    /// <summary>파일명을 ASCII 안전 문자로 정리 (URL·배치 호환, 경로 조작 방지)</summary>
+    /// <summary>파일명을 ASCII 안전 문자로 정리하고 MaxFileName 자 이하로 줄인다 (URL·배치 호환, 경로 조작 방지, 확장자 유지)</summary>
     public static string SafeName(string name)
     {
         var cleaned = System.Text.RegularExpressions.Regex.Replace(name, @"[^A-Za-z0-9._-]+", "_").Trim('.', '_');
-        return string.IsNullOrEmpty(cleaned) ? "firmware.bin" : cleaned;
+        if (string.IsNullOrEmpty(cleaned)) return "firmware.bin";
+        if (cleaned.Length <= MaxFileName) return cleaned;
+        var ext = Path.GetExtension(cleaned);
+        if (ext.Length > 10) ext = "";
+        var stem = cleaned[..^ext.Length].TrimEnd('.', '_');
+        return stem[..Math.Min(stem.Length, MaxFileName - ext.Length)].TrimEnd('.', '_') + ext;
     }
 
+    /// <summary>펌웨어를 아직 쓰는 작업인지 — 끝나지 않은 작업 전부 (예약·실행·적용 대기 등)</summary>
+    public static bool InUseBy(Job j) => j.State is not (JobState.Done or JobState.Failed or JobState.Cancelled);
+
+    /// <summary>
+    /// 펌웨어를 지운다 (DB 를 먼저 지우고 성공했을 때만 메모리에서 뺀다 — DB 가 실패하면 예외를 던지고 목록은 그대로).
+    /// lock 순서는 작업 → 펌웨어: JobService 가 작업 lock 안에서 Get·Delete 를 부를 수 있으므로 여기서는 저장소 lock 안에서 다른 서비스를 부르지 않는다.
+    /// '사용 중' 확인은 부르는 쪽 몫이다.
+    /// </summary>
     public bool Delete(string id)
     {
+        FirmwareEntry? e;
         lock (_lock)
         {
-            var e = _entries.FirstOrDefault(x => x.Id == id);
+            e = _entries.FirstOrDefault(x => x.Id == id);
             if (e is null) return false;
-            _entries.Remove(e);
             using (var c = _db.Open()) GatewayDb.Exec(c, "DELETE FROM firmware WHERE id=$id", ("$id", id));
-            try { Directory.Delete(Path.Combine(_root, id), true); } catch (IOException) { }
-            return true;
+            _entries.Remove(e);
         }
+        TryDeleteDir(Path.Combine(_root, id));
+        _log.LogInformation("펌웨어 삭제: {Kind} {Ver} ({Id})", e.Kind, e.Version, id);
+        RaiseChanged();
+        return true;
+    }
+
+    void TryDeleteDir(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir)) return;
+            try { Directory.Delete(dir, true); }
+            catch (UnauthorizedAccessException)
+            {
+                // 읽기 전용 파일이 있으면 속성을 풀고 한 번 더
+                foreach (var f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) File.SetAttributes(f, FileAttributes.Normal);
+                Directory.Delete(dir, true);
+            }
+        }
+        catch (Exception x) { _log.LogWarning("펌웨어 폴더 삭제 실패 {Dir}: {Msg}", dir, x.Message); }
+    }
+
+    void RaiseChanged()
+    {
+        try { Changed?.Invoke(); } catch (Exception x) { _log.LogDebug("firmware changed: {Msg}", x.Message); }
     }
 }
