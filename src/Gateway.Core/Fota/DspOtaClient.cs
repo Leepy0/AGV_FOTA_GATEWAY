@@ -6,6 +6,48 @@ namespace Gateway.Core.Fota;
 
 public sealed class DspOtaException(string message) : Exception(message);
 
+/// <summary>
+/// 브리지가 보고하는 오류 코드(err)의 운용자용 한국어 안내 — 메인보드(DSP_OTA_RESULT)·브리지 자체 OTA(OTA_RESULT) 공통.
+/// 코드는 AGV_Wifi_Bridge main/dsp_ota.c·ota.c 의 보고 그대로.
+/// </summary>
+public static class BridgeErrors
+{
+    /// <summary>오류 코드의 안내 문구. 모르는 코드면 null</summary>
+    public static string? Hint(string? err)
+    {
+        var e = (err ?? "").Trim();
+        return e switch
+        {
+            _ when e.StartsWith("app_ng") => "메인보드 앱이 업데이트 진입을 거부 — AGV 가 정지 상태인지 확인",
+            "app_no_reply" => "메인보드 앱이 응답하지 않음 — 정지 확인 후 다시 (앱이 멈춘 호기는 복구 적용 필요)",
+            "uart_busy" => "브리지 → 메인보드 송신 대기열이 가득 참 — 잠시 뒤 다시",
+            "url_host" => "URL 호스트가 브리지에 설정된 서버 IP 와 다름 — PublicBaseUrl 은 브리지 server IP 와 같은 IPv4 여야 함 (비우면 자동)",
+            "url_too_long" => "URL 이 브리지 한도를 넘음 — 펌웨어 파일명을 줄여 다시 올리기",
+            "bad_url" => "URL 형식 오류 — http:// 로 시작하고 255자 미만이어야 함 (PublicBaseUrl 확인)",
+            "bad_request" => "브리지가 명령 JSON 을 읽지 못함 — 서버·브리지 버전 확인",
+            "ver_invalid" => "메인보드 버전 형식 오류 (1~8자 영문·숫자·._-) — dsp_pack.py --ver 확인",
+            "image_bad" or "image_crc" or "stage_invalid" or "crc_mismatch" or "stage_block" => "이미지 검증 실패 — dsp_pack.py 로 다시 만들어 올리기",
+            "no_bootloader" => "부트로더 응답 없음 — 메인보드 전원·배선 확인 (복구 적용이면 안내에 따라 메인보드 전원을 껐다 켜기)",
+            "boot_proto" => "부트로더 프로토콜 버전이 맞지 않음 — 부트로더 갱신 필요 (메인보드 앱은 그대로)",
+            "esp_ota_busy" => "브리지 자체 업데이트(OTA) 진행 중이라 메인보드 적용 거부 — 브리지 OTA 가 끝난 뒤 다시",
+            "mainboard_programming" => "브리지가 메인보드를 굽는 중이라 브리지 OTA 거부 — 메인보드 적용이 끝난 뒤 다시",
+            "mainboard_staging" => "브리지가 메인보드 이미지를 받는 중(스테이징)이라 브리지 OTA 거부 — 스테이징이 끝난 뒤 다시",
+            "no_mem" => "브리지 메모리 부족으로 시작하지 못함 — 잠시 뒤 다시, 반복되면 브리지 재부팅",
+            "busy" or "not_ready" => "브리지가 앞선 메인보드 명령을 처리 중 — 잠시 뒤 다시",
+            "no_partition" or "nopart" => "브리지에 dspfw 파티션이 없음 — USB 로 한 번 전체 굽기 필요",
+            "ver_mismatch" => "구운 뒤 메인보드 앱이 보고한 버전이 이미지와 다름",
+            "erase" or "verify" or "write_header" or "stage_read" => "메인보드 굽기 실패 — 다시 적용 (앱이 지워졌으면 부트로더가 업데이트 모드에서 기다림)",
+            _ when e.StartsWith("http_") || e.StartsWith("begin") || e.StartsWith("perform") => "브리지가 서버에서 파일을 받지 못함 — 서버 HTTP 포트·방화벽·PublicBaseUrl 확인",
+            _ when e.StartsWith("flash_") => "브리지 플래시 쓰기 오류 — 다시 시도, 반복되면 브리지 점검",
+            _ when e.StartsWith("finish") || e.StartsWith("project mismatch") => "브리지 이미지 검증 실패 — build/agv_wifi_bridge.bin 을 올렸는지 확인",
+            _ => null,
+        };
+    }
+
+    /// <summary>메시지 뒤에 오류 코드 안내를 붙인다 (모르는 코드면 그대로)</summary>
+    public static string WithHint(string message, string? err) => Hint(err) is { } h ? $"{message} — {h}" : message;
+}
+
 /// <summary>DSP_OTA_RESULT 한 건: {job, stage, pct?, ver?, err?}</summary>
 public sealed record DspOtaResult(long Job, string Stage, int Pct, string Ver, string Err)
 {
@@ -96,7 +138,8 @@ public sealed class DspOtaClient : IDisposable
     }
 
     /// <summary>
-    /// 같은 job 의 보고와 heartbeat 를 함께 본다. "fail" 이면 예외, 목표 단계면 반환. 이 job 의 보고·진행 표시가 idle 만큼 끊기면 시간 초과.
+    /// 같은 job 의 보고와 heartbeat 를 함께 본다. "fail" 이면 예외, 목표 단계면 반환. 이 job 의 보고·진행 표시가 idle 만큼 끊기면 시간 초과
+    /// (복구 적용의 wait_power·retry 보고도 보고이므로 받을 때마다 대기 시한이 늘어난다).
     /// 수신 흔적이 Resend 동안 없으면 resend() 로 다시 보낸다(최대 MaxResends). 재전송 뒤에는 job 0 의 fail(not_staged 등)과 busy 를
     /// 앞서 보낸 명령이 처리 중인 흔적으로 보고 무시한다.
     /// </summary>
@@ -130,12 +173,16 @@ public sealed class DspOtaClient : IDisposable
                     sawJob = true;
                     if (apply && r.Stage == "start" && r.Ver.Length > 0) expected ??= r.Ver;   // start 에 스테이징 버전이 실려 옴
                 }
-                if (js == _lastJs) continue;                                            // 반복 보고 (브리지 0.5.2 는 최종 보고 3회)
-                _lastJs = js;
+                // 반복 보고 (브리지 0.5.2 는 최종 보고 3회). wait_power 처럼 같은 내용을 주기적으로 보내는 진행 보고는 매번 넘긴다
+                if (r.Stage is "staged" or "done" or "fail")
+                {
+                    if (js == _lastJs) continue;
+                    _lastJs = js;
+                }
                 if (apply && r.Stage is "staged" or "download") continue;               // 스테이징 쪽 보고가 늦게 도착 (반복 보고·재전송한 START)
                 if (r.Stage == "fail" && resends > 0 && (r.Job == 0 || r.Err == "busy")) continue;  // 재전송한 명령의 중복 처리 결과
                 progress?.Invoke(r);
-                if (r.Stage == "fail") throw new DspOtaException($"브리지 보고 실패: {r.Err}{(r.Ver.Length > 0 ? $" (ver {r.Ver})" : "")}");
+                if (r.Stage == "fail") throw new DspOtaException(BridgeErrors.WithHint($"브리지 보고 실패: {r.Err}{(r.Ver.Length > 0 ? $" (ver {r.Ver})" : "")}", r.Err));
                 if (r.Stage == target) return r;
             }
 

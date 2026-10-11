@@ -115,25 +115,22 @@ api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
     finally { foreach (var (_, _, s) in files) s.Dispose(); }
 }).DisableAntiforgery();
-api.MapDelete("/firmware/{id}", (string id, FirmwareStore fw, JobService jobs) =>
+api.MapDelete("/firmware/{id}", (string id, JobService jobs) =>
 {
-    // 끝나지 않은 작업이 참조하는 펌웨어는 지우지 않는다 (작업을 먼저 취소).
-    // 확인(작업 lock)과 삭제(펌웨어 lock)는 겹쳐 잡지 않는다 — 펌웨어 lock 안에서 작업 lock 을 잡으면 lock 순서(작업 → 펌웨어)가 엇갈려 교착된다
-    var inUse = jobs.List().Where(j => j.FirmwareId == id && FirmwareStore.InUseBy(j)).ToList();
-    if (inUse.Count > 0) return Results.Conflict($"작업 {string.Join(", ", inUse.Select(j => j.Name))} 이(가) 이 펌웨어를 사용 중입니다 — 작업을 먼저 취소하세요");
-    return fw.Delete(id) ? Results.Ok() : Results.NotFound("펌웨어 없음");
+    // 끝나지 않은 작업(대기·실행 중·적용 대기)이 쓰는 펌웨어는 지우지 않는다 — 화면과 같은 원자적 경로 (확인·삭제 사이에 작업이 생기지 않음)
+    if (jobs.DeleteFirmwareIfUnused(id, out var inUse)) return Results.Ok();
+    return inUse.Count > 0
+        ? Results.Conflict($"작업 {string.Join(", ", inUse.Select(j => $"'{j.Name}'"))} 이(가) 이 펌웨어를 사용 중입니다 — 작업을 먼저 취소하세요")
+        : Results.NotFound("펌웨어 없음");
 });
 api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
-api.MapPost("/jobs", (JobCreateRequest r, JobService jobs) =>
+api.MapPost("/jobs", (JobCreateRequest? r, JobService jobs) =>
 {
     // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용)
-    try
-    {
-        var mode = string.IsNullOrWhiteSpace(r.ApplyMode) ? ApplyMode.Approve
-                 : Enum.TryParse<ApplyMode>(r.ApplyMode, true, out var m) && Enum.IsDefined(m) ? m : throw new InvalidOperationException("applyMode 는 Approve 또는 Immediate");
-        return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId ?? "", r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime()));
-    }
+    if (r is null) return Results.BadRequest("본문(JSON)이 없습니다");
+    if (JobApi.Check(r, out var mode) is { } bad) return Results.BadRequest(bad);
+    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId!, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime())); }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
 // queued=true: 이 작업이 끝나면 곧바로 이어서 시작될 대기 작업도 함께 취소
@@ -151,6 +148,7 @@ api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService li
     if (string.IsNullOrEmpty(r.Data)) return Results.BadRequest("data 가 비어 있습니다");
     var frame = AgvFrame.ParseData(r.Data);
     if (frame.Length > AgvFrame.BridgeFrameMax) return Results.BadRequest($"프레임이 {AgvFrame.BridgeFrameMax}바이트를 넘습니다 ({frame.Length})");
+    if (ApiGuard.IsBlockedManualFrame(frame)) return Results.BadRequest(ApiGuard.BlockedManualFrameMessage);
     return link.SendMainDown(agv, frame) ? Results.Ok() : Results.NotFound("호기 endpoint 없음");
 });
 api.MapPost("/agvs/{agv:int}/info", (int agv, BridgeUdpService link) =>
@@ -235,6 +233,8 @@ app.Lifetime.ApplicationStarted.Register(() =>
         if (Uri.TryCreate(a.Replace("*", "localhost").Replace("+", "localhost"), UriKind.Absolute, out var u) && u.Scheme == "http")
             app.Services.GetRequiredService<JobService>().HttpPort = u.Port;
     app.Logger.LogInformation("AGV FOTA Gateway 시작: {Urls} / 데이터 {Dir}", string.Join(", ", addrs), dataDir);
+    // 브리지 0.5.2 는 URL 호스트가 자기 server IP 와 같아야 받는다 — 호스트명으로 적었으면 미리 알림 (설정 화면에도 표시)
+    if (opt.PublicBaseUrlProblem() is { } urlProblem) app.Logger.LogWarning("{Problem}", urlProblem);
 });
 
 app.Run();
@@ -244,9 +244,49 @@ record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, strin
 record SendRequest(string? Data);
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
 
+/// <summary>POST /api/jobs 입력 검사</summary>
+static class JobApi
+{
+    /// <summary>문제가 있으면 400 사유, 없으면 null (mode = 적용 방식, 비었으면 Approve)</summary>
+    internal static string? Check(JobCreateRequest r, out ApplyMode mode)
+    {
+        mode = ApplyMode.Approve;
+        if (string.IsNullOrWhiteSpace(r.FirmwareId)) return "firmwareId 가 비어 있습니다 (GET /api/firmware 의 id)";
+        if (r.Targets is null || r.Targets.Count == 0 || r.Targets.Any(t => t is < 1 or > 99)) return "대상 호기(1~99)를 하나 이상 targets 에 넣으세요";
+        if (!string.IsNullOrWhiteSpace(r.ApplyMode))
+        {
+            var t = r.ApplyMode.Trim();
+            // 숫자("1")·정의되지 않은 값은 받지 않는다
+            if (int.TryParse(t, out _) || !Enum.TryParse(t, true, out mode) || !Enum.IsDefined(mode)) { mode = ApplyMode.Approve; return "applyMode 는 Approve 또는 Immediate"; }
+        }
+        if (r.NotAfter is { } na)
+        {
+            var u = na.ToUniversalTime();
+            if (u <= DateTime.UtcNow) return "notAfter(마감 시각)가 이미 지났습니다";
+            if (r.ScheduledAt is { } sa && u <= sa.ToUniversalTime()) return "notAfter(마감 시각)는 scheduledAt(예약 시각)보다 뒤여야 합니다";
+        }
+        return null;
+    }
+}
+
 /// <summary>/api 공통 검사 — 다른 출처의 변경 요청 거부(CSRF), 오류를 짧은 사유로, 수동 전송 거부 조건</summary>
 static class ApiGuard
 {
+    internal const string BlockedManualFrameMessage = "업데이트 진입(F)·응답(R) 프레임은 수동 전송할 수 없습니다 — 배포 작업을 쓰세요";
+
+    /// <summary>
+    /// 수동 전송(REST·통신 로그 화면)으로 보내면 안 되는 프레임인지 — 종류 F(메인보드 업데이트 진입·전송)·R(응답).
+    /// ACS 중계와 같은 규칙(AcsRelayPolicy.IsBlockedDown)에, STX 없이 적은 프레임·중간에 STX 가 끼인 프레임도 본다.
+    /// </summary>
+    internal static bool IsBlockedManualFrame(ReadOnlySpan<byte> f)
+    {
+        if (AcsRelayPolicy.IsBlockedDown(f)) return true;
+        if (f.Length > 0 && f[0] is (byte)'F' or (byte)'R') return true;
+        for (int i = 0; i + 1 < f.Length; i++)
+            if (f[i] == AgvFrame.Stx && f[i + 1] is (byte)'F' or (byte)'R') return true;
+        return false;
+    }
+
     /// <summary>
     /// 브라우저가 다른 출처 페이지에서 보낸 변경 요청(POST·PUT·DELETE·PATCH)이면 true.
     /// Sec-Fetch-Site=cross-site 이거나, Origin 헤더가 있는데 scheme·호스트·포트가 이 요청과 다르면 거부한다.

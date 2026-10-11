@@ -298,6 +298,58 @@ public class DspOtaClientTests
         Assert.Equal("""{"job":18}""", link.Sent[^1]);
     }
 
+    // ── INT-A3: 복구 적용 — 재전송에도 recover, wait_power 를 받는 동안 대기 시한 연장 ──
+
+    [Fact]
+    public async Task Resent_apply_keeps_recover_flag()
+    {
+        var link = new FakeEspLink();
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast);
+        await c.StageAsync("http://x/f", Img("2.0.0"), 21);
+        link.DropCommands = 1;
+        Assert.Equal("2.0.0", await c.ApplyAsync(21, recover: true, expectedVersion: "2.0.0"));
+        Assert.Equal(new[] { """{"job":21,"recover":1}""", """{"job":21,"recover":1}""" }, link.Sent.Skip(1).ToArray());
+    }
+
+    [Fact]
+    public async Task Wait_power_reports_extend_the_idle_deadline_and_each_is_shown()
+    {
+        var link = new FakeEspLink();
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast);   // 적용 idle 600ms
+        await c.StageAsync("http://x/f", Img("2.0.0"), 22);
+        link.Silent = true;                                                   // 브리지가 전원 재투입을 기다리며 wait_power 만 보냄
+        var stages = new List<string>();
+        var apply = c.ApplyAsync(22, r => { lock (stages) stages.Add(r.Stage); }, recover: true);
+        for (int i = 0; i < 8; i++) { link.Inject("""{"job":22,"stage":"wait_power"}"""); await Task.Delay(200); }   // 1.6초 > idle
+        Assert.False(apply.IsCompleted);
+        link.Inject("""{"job":22,"stage":"done","ver":"2.0.0"}""");
+        Assert.Equal("2.0.0", await apply.WaitAsync(TimeSpan.FromSeconds(5)));
+        lock (stages) Assert.Equal(8, stages.Count(x => x == "wait_power"));    // 같은 내용의 주기 보고도 매번 넘김
+    }
+
+    // ── INT-A3·A4: 오류 코드 한국어 안내 ──
+
+    [Theory]
+    [InlineData("app_ng_03")] [InlineData("app_no_reply")] [InlineData("uart_busy")] [InlineData("url_host")] [InlineData("url_too_long")]
+    [InlineData("ver_invalid")] [InlineData("image_bad")] [InlineData("no_bootloader")] [InlineData("esp_ota_busy")]
+    [InlineData("mainboard_programming")] [InlineData("mainboard_staging")] [InlineData("bad_url")] [InlineData("no_mem")]
+    [InlineData("http_status")] [InlineData("perform ESP_FAIL")] [InlineData("busy")]
+    public void Every_bridge_error_code_has_a_korean_hint(string err) => Assert.NotNull(BridgeErrors.Hint(err));
+
+    [Fact]
+    public async Task Fail_report_message_carries_the_hint()
+    {
+        var link = new FakeEspLink();
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast);
+        await c.StageAsync("http://x/f", Img("2.0.0"), 23);
+        link.Silent = true;
+        var apply = c.ApplyAsync(23);
+        link.Inject("""{"job":23,"stage":"fail","err":"esp_ota_busy"}""");
+        var ex = await Assert.ThrowsAsync<DspOtaException>(() => apply);
+        Assert.Contains("esp_ota_busy", ex.Message);
+        Assert.Contains("브리지 자체 업데이트", ex.Message);
+    }
+
     [Fact]
     public void Status_parses_dsp_fields()
     {

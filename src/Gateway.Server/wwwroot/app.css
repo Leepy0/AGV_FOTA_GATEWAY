@@ -78,6 +78,8 @@ h1:focus { outline: none; }
 .banner.err { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
 .banner.info { background: #dbeafe; border-color: #93c5fd; color: #1e3a8a; }
 .nav-badge { float: right; font-size: 11px; background: #374151; color: #e5e7eb; padding: 1px 7px; border-radius: 10px; }
+/* 적용 대기(운용자 승인 필요)는 눈에 띄게, 좁은 화면에서도 보이게 */
+.nav-badge.warn { background: #fef3c7; color: #92400e; font-weight: 600; }
 .msg.warn { color: var(--warn); }
 .chip.same { border-color: var(--ok); background: #f0fdf4; }
 .chip.same small { color: var(--ok); }
@@ -92,6 +94,7 @@ h1:focus { outline: none; }
     .ellipsis { max-width: 140px; }
     .kv { grid-template-columns: 1fr; gap: 0 0; } .kv dt { margin-top: 6px; }
     .nav-badge { display: none; }
+    .nav-badge.warn { display: inline; float: none; margin-left: 4px; }
 }
 .form label > input.w-sm { min-width: 0; width: 80px; } .form label > input.w-md { min-width: 0; width: 220px; } .form label > input.w-lg { min-width: 0; width: 380px; max-width: 100%; }
 @media (max-width: 700px) { .form label > input.w-sm { width: 80px; } .form label > input.w-md, .form label > input.w-lg { width: calc(100% - 16px); } }

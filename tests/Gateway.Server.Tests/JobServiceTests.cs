@@ -374,4 +374,132 @@ public class JobServiceTests
         Assert.True(k.Svc.DeleteFirmwareIfUnused(fw.Id, out _));
         Assert.Null(k.Store.Get(fw.Id));
     }
+
+    // ── INT-A1: 펌웨어 삭제는 하나의 원자적 경로, 작업 생성과 경쟁해도 교착·고아 작업 없음 ──
+
+    [Fact]
+    public void Delete_unknown_firmware_reports_not_found_and_in_use_is_empty()
+    {
+        using var k = new JobTestKit();
+        Assert.False(k.Svc.DeleteFirmwareIfUnused("nope", out var inUse));
+        Assert.Empty(inUse);
+    }
+
+    [Fact]
+    public async Task Concurrent_delete_and_create_never_leave_a_job_without_firmware()
+    {
+        using var k = new JobTestKit();
+        for (int round = 0; round < 15; round++)
+        {
+            var fw = k.AddDsp($"3.0.{round}");
+            using var go = new ManualResetEventSlim();
+            var creates = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+            {
+                go.Wait();
+                try { return k.Svc.Create("", fw.Id, [7], DateTime.UtcNow.AddHours(1), true); }
+                catch (InvalidOperationException) { return null; }   // 펌웨어 없음·지우는 중
+            })).ToList();
+            var delete = Task.Run(() => { go.Wait(); return k.Svc.DeleteFirmwareIfUnused(fw.Id, out _); });
+            go.Set();
+            // 교착이면 여기서 시간 초과
+            var made = (await Task.WhenAll(creates).WaitAsync(TimeSpan.FromSeconds(10))).Where(j => j is not null).ToList();
+            var deleted = await delete.WaitAsync(TimeSpan.FromSeconds(10));
+            if (deleted) Assert.Empty(made);                       // 지웠으면 그 펌웨어로 만든 작업이 없어야 함
+            else { Assert.NotEmpty(made); Assert.NotNull(k.Store.Get(fw.Id)); }
+            foreach (var j in made) k.Svc.Cancel(j!.Id);
+        }
+    }
+
+    // ── INT-A10: 저장은 작업 lock 밖에서, 실패해도 계속 돈다 ──
+
+    [Fact]
+    public async Task Save_failure_does_not_stop_the_service()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        using (var c = k.Db.Open())
+            Gateway.Server.Data.GatewayDb.Exec(c, "CREATE TRIGGER no_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(FAIL, 'disk full'); END");
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);   // 저장 실패해도 만들어짐 (메모리)
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.Done, j.State);
+        Assert.Equal(TargetState.Done, j.Results[0].State);
+        Assert.Single(k.Svc.List());
+        // DB 가 돌아오면 다음 저장이 최신 상태를 쓴다
+        using (var c = k.Db.Open()) Gateway.Server.Data.GatewayDb.Exec(c, "DROP TRIGGER no_jobs");
+        Assert.True(k.Svc.Delete(j.Id));
+        var j2 = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.Done, k.Restart().Get(j2.Id)!.State);
+    }
+
+    [Fact]
+    public async Task Locked_database_does_not_block_readers_of_the_job_list()
+    {
+        using var k = new JobTestKit();
+        var fw = k.AddDsp();
+        using var locker = k.Db.Open();
+        using var tx = locker.BeginTransaction();
+        Gateway.Server.Data.GatewayDb.Exec(locker, "DELETE FROM jobs WHERE id='x'");   // 쓰기 잠금을 잡는다
+        var create = Task.Run(() => k.Svc.Create("", fw.Id, [7], DateTime.UtcNow.AddHours(1), true));
+        await Task.Delay(300);
+        Assert.False(create.IsCompleted);                    // DB 잠금을 기다리는 중
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var list = k.Svc.List();                             // 작업 lock 은 비어 있어야 함
+        Assert.True(sw.ElapsedMilliseconds < 500, sw.ElapsedMilliseconds.ToString());
+        Assert.Single(list);
+        var j = await create.WaitAsync(TimeSpan.FromSeconds(JobService.SaveTimeoutSec + 5));   // 짧게 기다리고 포기
+        Assert.Equal(JobState.Scheduled, j.State);
+        tx.Rollback();
+    }
+
+    [Fact]
+    public async Task Final_state_survives_restart_after_lock_free_saves()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7); k.Link.Add(8);
+        var fw = k.AddDsp("2.0.0");
+        var j = k.Svc.Create("", fw.Id, [7, 8], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        var again = k.Restart().Get(j.Id)!;
+        Assert.Equal(JobState.Done, again.State);
+        Assert.All(again.Results, r => { Assert.Equal(TargetState.Done, r.State); Assert.Equal(100, r.Percent); });
+        Assert.Equal(j.Results[0].Log.Count, again.Results[0].Log.Count);
+    }
+
+    // ── INT-A3: 진행률은 낮추지 않음, 단계 문구 ──
+
+    [Fact]
+    public void Retry_and_wait_power_do_not_lower_progress()
+    {
+        static Gateway.Core.Fota.DspOtaResult R(string st, int pct = -1) => new(1, st, pct, "", "");
+        int p = JobService.DspPercent(0, R("progress", 80));
+        Assert.Equal(81, p);
+        p = JobService.DspPercent(p, R("retry", 1));
+        Assert.Equal(81, p);
+        p = JobService.DspPercent(p, R("erase"));
+        Assert.Equal(81, p);
+        p = JobService.DspPercent(p, R("progress", 10));
+        Assert.Equal(81, p);
+        Assert.Equal(81, JobService.DspPercent(p, R("wait_power")));
+        Assert.Equal(81, JobService.DspPercent(p, R("resend")));
+        Assert.Equal(100, JobService.DspPercent(p, R("done", 100)));
+        Assert.Contains("전원", JobService.DspStageText(R("wait_power")));
+        Assert.Contains("재시도 2회째", JobService.DspStageText(R("retry", 2)));
+        Assert.Contains("다시 보냄", JobService.DspStageText(R("resend")));
+    }
+
+    // ── INT-A5: PublicBaseUrl 이 호스트명이면 실패 메시지에 url_host 안내 ──
+
+    [Fact]
+    public async Task Hostname_public_base_url_adds_url_host_note_to_failures()
+    {
+        using var k = new JobTestKit("http://gateway.local:8080");
+        var fw = k.AddDsp();
+        var j = k.Svc.Create("", fw.Id, [9], null, true, ApplyMode.Immediate);   // 9호기 없음 → 실패
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("url_host", j.Results[0].Message);
+        Assert.Contains("IPv4", j.Results[0].Message);
+    }
 }

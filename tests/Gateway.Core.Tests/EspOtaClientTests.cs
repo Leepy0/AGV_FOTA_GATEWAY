@@ -140,6 +140,20 @@ public class EspOtaClientTests
         Assert.Contains("이미 OTA 진행 중", ex.Message);
     }
 
+    [Theory]
+    [InlineData("mainboard_staging", "스테이징")]
+    [InlineData("mainboard_programming", "메인보드를 굽는 중")]
+    [InlineData("url_host", "PublicBaseUrl")]
+    [InlineData("no_mem", "메모리")]
+    [InlineData("bad_url", "URL 형식")]
+    public async Task Fail_codes_are_explained_in_korean(string err, string hint)
+    {
+        var b = new FakeOtaBridge { FailErr = err };
+        var ex = await Assert.ThrowsAsync<EspOtaException>(() => Run(b));
+        Assert.Contains(err, ex.Message);
+        Assert.Contains(hint, ex.Message);
+    }
+
     [Fact]
     public async Task Fail_report_throws_with_err()
     {

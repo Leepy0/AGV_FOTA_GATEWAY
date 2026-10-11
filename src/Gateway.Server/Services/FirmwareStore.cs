@@ -134,7 +134,7 @@ public sealed class FirmwareStore
                 bool renameByVersion = Path.GetFileNameWithoutExtension(outName).Trim('_').Length < 3;
                 if (kind == FirmwareKind.Dsp)
                 {
-                    var info = DspfwImage.Parse(bytes) ?? throw new InvalidOperationException($"{name}: .dspfw 형식이 아니거나 CRC 가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)");
+                    var info = DspfwImage.Parse(bytes) ?? throw new InvalidOperationException($"{name}: .dspfw 형식·CRC·블록 구조가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)");
                     // 앱의 버전 응답이 8자 고정이라 그보다 길면 굽고 나서도 '버전 다름' 실패가 된다
                     if (!DspVersion.IsValid(info.Version))
                         throw new InvalidOperationException($"메인보드 버전은 {DspVersion.MaxLength}자 이하 영문·숫자·._- 만 됩니다 (파일 헤더 버전 '{info.Version}') — dsp_pack.py --ver 를 고쳐 다시 묶으세요");
@@ -197,15 +197,12 @@ public sealed class FirmwareStore
         return stem[..Math.Min(stem.Length, MaxFileName - ext.Length)].TrimEnd('.', '_') + ext;
     }
 
-    /// <summary>펌웨어를 아직 쓰는 작업인지 — 끝나지 않은 작업 전부 (예약·실행·적용 대기 등)</summary>
-    public static bool InUseBy(Job j) => j.State is not (JobState.Done or JobState.Failed or JobState.Cancelled);
-
     /// <summary>
     /// 펌웨어를 지운다 (DB 를 먼저 지우고 성공했을 때만 메모리에서 뺀다 — DB 가 실패하면 예외를 던지고 목록은 그대로).
-    /// lock 순서는 작업 → 펌웨어: JobService 가 작업 lock 안에서 Get·Delete 를 부를 수 있으므로 여기서는 저장소 lock 안에서 다른 서비스를 부르지 않는다.
-    /// '사용 중' 확인은 부르는 쪽 몫이다.
+    /// 화면·REST 는 이것을 직접 부르지 않고 JobService.DeleteFirmwareIfUnused 를 쓴다('사용 중' 확인과 작업 생성 차단이 거기에 있음).
+    /// lock 순서는 작업 → 펌웨어 한 방향: 저장소 lock 안에서는 다른 서비스를 부르지 않는다 (DB 만).
     /// </summary>
-    public bool Delete(string id)
+    internal bool Delete(string id)
     {
         FirmwareEntry? e;
         lock (_lock)
