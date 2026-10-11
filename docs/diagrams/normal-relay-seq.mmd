@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant RF as RFID 리더
+  participant APP as 메인보드 앱
+  participant ESP as 브리지
+  participant GW as 게이트웨이
+  participant ACS as ACS
+  loop 1초마다
+    ESP-->>GW: STATUS 0x10 · heartbeat JSON
+  end
+  Note over GW: 마지막 패킷 뒤 5초 지나면 오프라인
+  RF->>ESP: 태그 데이터 (무수신 5ms 로 구분)
+  ESP->>APP: 그대로 바이패스 · Wi-Fi 와 무관
+  ESP-->>GW: RFID 0x03 · UDP 50001 브로드캐스트
+  Note over GW: 통신 로그에만 기록
+  APP->>ESP: 프레임 STX … ETX
+  Note over APP,ESP: R 프레임은 브리지가 소비 · 나머지는 그대로 올림
+  ESP->>GW: MAIN_UP 0x01
+  GW->>ACS: E · A 프레임만 TCP 로 (중계 켜짐일 때)
+  ACS->>GW: 지령 프레임
+  GW->>ESP: MAIN_DOWN 0x02 · 프레임의 호기 번호로
+  ESP->>APP: 프레임 단위로 송신

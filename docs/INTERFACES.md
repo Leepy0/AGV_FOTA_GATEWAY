@@ -4,7 +4,7 @@
 
 | 규격 | 원본 | 이 저장소의 구현 |
 |---|---|---|
-| 브리지 UDP 패킷 (헤더 10B, 타입 0x01~0x41) | `AGV_Wifi_Bridge/main/proto.h` (커밋 74da5df, PR #3) | `Gateway.Core/Bridge/BridgePacket.cs` |
+| 브리지 UDP 패킷 (헤더 10B, 타입 0x01~0x41) | `AGV_Wifi_Bridge/main/proto.h` (main 0dfbdf6, PR #4, v0.5.1) | `Gateway.Core/Bridge/BridgePacket.cs` |
 | 브리지 INFO(0x11/0x12), heartbeat `dsp`/`dspb`/`dsp_st`/`staged` | `AGV_Wifi_Bridge/main/dsp_ota.c` dsp_ota_status_json | `Gateway.Core/Bridge/BridgeStatus.cs` |
 | 브리지 0.5.1 `dsp_st=nopart` (dspfw 파티션 없음 → `no_partition` 거부) | `AGV_Wifi_Bridge/main/dsp_ota.c` | `JobService.RunDspAsync` 가 작업 시작 전에 거부, 호기 현황 ⚠ 표시 |
 | 서버 데이터베이스 (SQLite `data/gateway.db`, 스키마 v1: firmware·jobs·job_targets·agv_groups·agv_positions·agv_last_seen) | 이 저장소 | `Gateway.Server/Data/GatewayDb.cs` (Migrate 에 버전 단계 추가로만 변경) |
@@ -19,7 +19,7 @@
 
 - 브리지는 설정된 `server` IP 에서 온 하향 패킷만 받고, 상향 패킷을 그 IP 의 `server_port`(50000) 로 보낸다. Gateway 는 마지막 수신 endpoint(IP:local_port) 로 하향 송신한다.
 - 서버 하향 패킷을 받으면 브리지는 자기 새 펌웨어·원격 설정을 확정한다. Gateway 가 보내는 모든 패킷(PING, MAIN_DOWN, CFG_CMD)이 그 역할을 한다.
-- MAIN_DOWN 은 256B 를 넘으면 브리지가 버린다. DSP OTA 의 최장 프레임은 블록 112B 일 때 242B.
+- MAIN_DOWN 은 256B 를 넘으면 브리지가 버린다. B안은 MAIN_DOWN 으로 펌웨어를 보내지 않는다.
 
 ## ACS 로 넘기는 것
 
@@ -31,4 +31,4 @@
 **B안 채택.** 서버는 메인보드와 직접 프레임을 주고받지 않는다. 브리지에 `.dspfw` 를 스테이징시키고(0x32), 적용 명령(0x34)을 보내면
 브리지가 메인보드를 부트로더로 보내 UART 로 굽고 단계를 보고한다(0x33). 브리지→메인보드 `F…V000`/`U000` 과 메인보드→브리지 `R` 프레임은
 브리지가 만들고 소비하므로 서버에 올라오지 않는다. `DSP_OTA` 저장소(서버→AGV F 프레임 블록 전송)는 보관으로 돌렸다.
-- 호기 번호가 일치하는 정상 프레임을 하나라도 받으면 DSP 가 새 펌웨어를 자동 확정한다 (기본 설정). 재부팅 뒤 Gateway 가 보내는 `S` 가 그 역할을 한다.
+- B안에는 확정 절차가 없다. 부트로더는 앱으로 점프할 때마다 부트 카운터를 올리고, 앱은 메인 루프에 들어가면 `fwup_boot_ok()` 로 0 으로 돌린다(자기 호기 `F` 프레임을 처리할 때도 자동). 카운터가 3 을 넘으면 부트로더가 업데이트 모드에 머물러 새 이미지를 기다린다 (`AGV_Wifi_Bridge/dsp/boot/boot_main.c`, `dsp/app/app_fwupdate.c`). Gateway 는 관여하지 않는다.

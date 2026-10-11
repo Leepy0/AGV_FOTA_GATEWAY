@@ -81,7 +81,9 @@ jobs:
             -p:Version=${{ steps.ver.outputs.ver }} -p:SourceRevisionId=$GITHUB_SHA \
             -p:BuildChannel=${{ steps.ver.outputs.channel }} \
             -o dist/$APP
-          cp deploy/*.bat docs/DEPLOY.md dist/$APP/
+          # 설치 가이드·전체 흐름 문서와 그림 (문서 안의 images/... 상대 경로가 zip 안에서도 그대로 맞도록 루트에 images/)
+          cp deploy/*.bat docs/DEPLOY.md docs/SYSTEM_FLOW.md dist/$APP/
+          mkdir -p dist/$APP/images && cp -r docs/images/diagrams docs/images/screens dist/$APP/images/
           rm -f dist/$APP/appsettings.Development.json dist/$APP/web.config
           if [[ "${{ steps.ver.outputs.channel }}" == "dev" ]]; then ZIP=AgvFotaGateway-dev_win-x64.zip; echo "ZIP=$ZIP" >> "$GITHUB_ENV"; fi
           (cd dist && zip -qr "$ZIP" $APP)

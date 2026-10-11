@@ -1,0 +1,23 @@
+flowchart LR
+  subgraph F["① 발굴 — 관점 8개"]
+    direction TB
+    f1["계약 · 서버 · 연동·배포 · 화면"]
+    f2["보안·안전 · 브리지 · 메인보드 · 문서·시험"]
+  end
+  subgraph V["② 반박 검증"]
+    direction TB
+    v1["관점마다 다른 에이전트가<br/>코드에서 직접 확인<br/>근거 없으면 반박"]
+  end
+  subgraph R["③ 재검증"]
+    direction TB
+    r1["high 판정 건은<br/>독립 에이전트가 한 번 더"]
+  end
+  subgraph C["④ 누락 점검"]
+    direction TB
+    c1["전체 결과를 보고<br/>빈 영역 3곳 추가 발굴 → 검증"]
+  end
+  subgraph D["⑤ 문서 반영"]
+    direction TB
+    d1["문서 오류는 바로 교정<br/>교정분도 다시 대조"]
+  end
+  F --> V --> R --> C --> D

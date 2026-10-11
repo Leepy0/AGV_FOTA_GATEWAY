@@ -1,0 +1,16 @@
+flowchart TD
+  S(["호기 차례 · 진행 0%"]) --> C1{"5초 안에<br/>패킷을 받았나?"}
+  C1 -- 아니오 --> F1["실패 · 호기 오프라인"]
+  C1 -- 예 --> C2{"heartbeat 의<br/>dsp_st 값"}
+  C2 -- "없음 · 브리지 0.5.0 미만" --> F2["실패 · 지원하지 않음"]
+  C2 -- nopart --> F3["실패 · dspfw 파티션 없음<br/>USB 전체 굽기 필요"]
+  C2 -- programming --> F4["실패 · 이미 프로그래밍 중"]
+  C2 -- "idle · downloading · staged" --> ST["① 스테이징 0x32<br/>download → staged · 5~30%"]
+  ST -- "fail · 3분 무보고" --> F5["실패 · 스테이징<br/>메인보드 앱은 그대로"]
+  ST -- staged --> AP["② 적용 0x34<br/>start → enter → erase → progress → verify<br/>32~92%"]
+  AP -- "fail · 90초 무보고" --> F6["실패 · 적용<br/>err 로 상태 판단"]
+  AP -- "done · ver" --> V{"ver 가<br/>이미지 버전과 같나?"}
+  V -- 아니오 --> F7["실패 · 버전 다름"]
+  V -- 예 --> HB{"30초 안에<br/>heartbeat dsp = 새 버전?"}
+  HB -- 아니오 --> F8["실패 · heartbeat 버전 불일치"]
+  HB -- 예 --> OK(["완료 · 100%"])

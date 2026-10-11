@@ -1,0 +1,10 @@
+flowchart TB
+  subgraph FLASH["F2808 플래시 64K 워드"]
+    direction TB
+    D["섹터 D · C · B — 0x3E8000 ~ 0x3F3FFF<br/><b>앱 영역</b> 최대 49,088 워드<br/>0x3E8000 앱 헤더 64워드 (패커가 채움 · 맨 마지막에 기록)<br/>0x3E8040 codestart (부트로더가 여기로 점프)"]
+    A["섹터 A — 0x3F4000 ~ 0x3F7FFF<br/><b>상주 부트로더</b> · OTA 로 지우지 않음<br/>0x3F7F00 부트로더 정보 블록 · 0x3F7FF6 BEGIN · CSM 0xFFFF 유지"]
+  end
+  subgraph RAM["RAM M1 끝 6워드 · 워치독 리셋에도 유지"]
+    BC["0x7FA ~ 0x7FB 부트 카운터"]
+    BF["0x7FC ~ 0x7FF 부트플래그"]
+  end

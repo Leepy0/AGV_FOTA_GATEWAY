@@ -1,0 +1,22 @@
+flowchart LR
+  subgraph AGV["AGV × N대"]
+    direction TB
+    DSP["메인보드 F2808<br/>부트로더 + 앱"]
+    RF["RFID 리더"]
+    ESP["Wi-Fi 브리지 ESP32-S3<br/>UDP 50000 에서 하향 수신"]
+    DSP <-->|"UART J4 · 115200"| ESP
+    RF -->|"UART"| ESP
+  end
+  subgraph PC["게이트웨이 PC"]
+    direction TB
+    U["UDP 50000<br/>브리지 패킷 송수신"]
+    R["UDP 50001<br/>RFID 로그 · 선택"]
+    H["TCP 8080<br/>화면 · REST API · /fw/ 파일"]
+  end
+  ESP -->|"상향 · heartbeat · MAIN_UP · 결과"| U
+  U -->|"하향 · 마지막 송신 주소로"| ESP
+  ESP -->|"RFID 브로드캐스트"| R
+  ESP -->|"OTA 때 HTTP GET"| H
+  BR["브라우저<br/>PC · 태블릿 · 휴대폰"] -->|"HTTP"| H
+  PC -->|"HTTPS 443 · 서버 업데이트"| GH["github.com"]
+  PC <-->|"TCP 6000 중계 · REST"| ACS["ACS 서버"]

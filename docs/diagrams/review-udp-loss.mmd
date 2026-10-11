@@ -1,0 +1,14 @@
+sequenceDiagram
+  autonumber
+  participant G as 게이트웨이
+  participant B as 브리지
+  participant M as 메인보드
+  G->>B: DSP_OTA_START (한 번)
+  B->>G: staged (한 번)
+  G->>B: DSP_OTA_APPLY (한 번)
+  B->>M: U → HELLO → ERASE → WRITE → VERIFY
+  M-->>B: 새 앱 기동 · 버전 응답
+  B--xG: done (한 번) · 유실
+  Note over B,M: heartbeat 에는 이미 새 버전 · idle
+  Note over G,M: 서버는 done 만 기다림 → 90초 뒤 "브리지 보고 없음" 실패
+  Note over G,M: 실패 시 중단(기본 켬) → 남은 호기 전부 건너뜀

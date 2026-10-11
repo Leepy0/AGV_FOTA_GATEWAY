@@ -1,0 +1,17 @@
+flowchart TB
+  subgraph R["① TCP 중계"]
+    direction LR
+    M1["메인보드 프레임<br/>MAIN_UP · AcsRelayService"] --> F{"종류<br/>E · A ?"}
+    F -- 예 --> A1["ACS 로 그대로"]
+    F -- "아니오<br/>W · N · F/R · 신규" --> X["보내지 않음<br/>통신 로그만"]
+    A2["ACS 지령 프레임"] --> D1["호기 번호로 골라<br/>MAIN_DOWN"]
+  end
+  subgraph P["② 위치 보고 REST"]
+    direction LR
+    S1["호기 위치 AgvPositionStore<br/>→ AcsPositionPushService"] --> S2["1초마다 바뀐 호기만<br/>임시 JSON"] --> S3["REST POST → ACS<br/>기본 LogOnly"]
+  end
+  subgraph I["③ 소속 받기 REST"]
+    direction LR
+    G1["REST GET ← ACS · 5분마다<br/>AcsInventoryPullService"] --> G2["필드 매핑 해석<br/>AcsInventory.Fields"] --> G3["구역 트리<br/>AgvGroupStore"]
+  end
+  R ~~~ P ~~~ I

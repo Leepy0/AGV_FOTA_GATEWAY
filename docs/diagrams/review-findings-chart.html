@@ -1,0 +1,38 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>
+.viz-root{--surface-1:#fcfcfb;--text-primary:#0b0b0b;--text-secondary:#52514e;--text-muted:#7a7974;--grid:#e6e5e1;
+  --sev-high:#d03b3b;--sev-med:#ec835a;--sev-low:#fab219;color-scheme:light}
+body{margin:0;background:#fcfcfb}
+.viz-root{font-family:"Malgun Gothic","Noto Sans CJK KR","Noto Sans KR",sans-serif;background:var(--surface-1);color:var(--text-primary);padding:20px 24px;width:860px}
+h1{font-size:18px;margin:0 0 4px;font-weight:700}
+.sub{font-size:13px;color:var(--text-secondary);margin:0 0 14px}
+.legend{display:flex;gap:18px;font-size:13px;color:var(--text-secondary);margin:0 0 10px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+svg text{font-family:inherit}
+</style></head><body><div class="viz-root" id="root">
+<h1>관점별 지적 수 (검증 후 유지 91건)</h1>
+<p class="sub">반박된 1건 제외. 심각도는 검증 에이전트가 다시 매긴 값. 숫자는 표로도 문서에 있습니다.</p>
+<div class="legend"><span><i class="sw" style="background:var(--sev-high)"></i>▲ high 1</span><span><i class="sw" style="background:var(--sev-med)"></i>■ medium 40</span><span><i class="sw" style="background:var(--sev-low)"></i>● low 50</span></div>
+<svg id="c" width="860" height="360"></svg></div>
+<script>
+const rows=[["계약(저장소 간)",0,4,5],["서버 핵심",0,4,7],["연동·배포",1,1,9],["화면",0,6,6],["보안·안전",0,5,6],["브리지 펌웨어",0,3,2],["메인보드·부트로더",0,7,4],["문서·시험",0,7,5],["누락 점검",0,3,6]];
+const svg=document.getElementById('c'), NS='http://www.w3.org/2000/svg';
+const L=150, W=620, rowH=34, barH=20, max=12, T0=8;
+const css=getComputedStyle(document.getElementById('root'));
+const col=[css.getPropertyValue('--sev-high'),css.getPropertyValue('--sev-med'),css.getPropertyValue('--sev-low')];
+const el=(t,a,txt)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;svg.appendChild(e);return e;};
+const x=v=>L+v/max*W;
+for(let g=0;g<=max;g+=2){el('line',{x1:x(g),x2:x(g),y1:T0,y2:T0+rows.length*rowH,stroke:css.getPropertyValue('--grid'),'stroke-width':1});
+  el('text',{x:x(g),y:T0+rows.length*rowH+16,'text-anchor':'middle','font-size':12,fill:css.getPropertyValue('--text-muted')},g);}
+rows.forEach((r,i)=>{const y=T0+i*rowH+(rowH-barH)/2;
+  el('text',{x:L-10,y:y+barH/2+4,'text-anchor':'end','font-size':13,fill:css.getPropertyValue('--text-primary')},r[0]);
+  let acc=0; const segs=[r[1],r[2],r[3]];
+  segs.forEach((v,k)=>{ if(!v) return; const x0=x(acc), x1=x(acc+v); const gap=2;
+    const w=Math.max(0,x1-x0-gap);
+    el('rect',{x:x0,y:y,width:w,height:barH,rx:4,fill:col[k]});
+    if(w>=18) el('text',{x:x0+w/2,y:y+barH/2+4,'text-anchor':'middle','font-size':12,'font-weight':700,fill:'#0b0b0b'},v);
+    acc+=v; });
+  el('text',{x:x(acc)+6,y:y+barH/2+4,'font-size':12,fill:css.getPropertyValue('--text-secondary')},acc+'건');
+});
+el('text',{x:L+W/2,y:T0+rows.length*rowH+34,'text-anchor':'middle','font-size':12,fill:css.getPropertyValue('--text-muted')},'지적 수');
+</script></body></html>

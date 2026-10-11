@@ -43,8 +43,8 @@ dotnet build && dotnet test
    - 태그 푸시가 안 되는 환경(Claude 클라우드 세션의 git 프록시는 태그 푸시를 끊는다): Actions `build` 를 `workflow_dispatch` 로
      `release=true` 입력과 함께 실행 (GitHub MCP `actions_run_trigger` inputs `{"release":"true"}`, 또는 Actions 탭 → Run workflow → 정식 배포 체크).
      csproj 버전으로 태그를 만든다. 그 버전 태그가 이미 다른 커밋에 있으면 실패한다.
-   - `AgvFotaGateway_X.Y.Z_win-x64.zip` — 런타임 포함 단일 exe + appsettings.json + 배포 bat + DEPLOY.md
-   - `latest.json` — 사내 HTTP 피드용 (`Update.Source=Url`)
+   - `AgvFotaGateway_win-x64.zip`(고정 이름) — 최상위 `AgvFotaGateway\` 폴더 안에 런타임 포함 단일 exe + appsettings.json + 배포 bat + DEPLOY.md + SYSTEM_FLOW.md + `images\`
+   - `AgvFotaGateway_win-x64.zip.sha256`, `AgvFotaGateway.json`(매니페스트). 사내 서버로 배포하면 `Update.BaseUrl` 또는 `Update.ManifestUrl` 로 가리킨다
 4. **릴리스 노트**: 이전 태그 이후 커밋 메시지로 자동 생성(Co-Authored-By·Claude-Session 줄 제거). 다듬고 싶으면 릴리스를 편집한다.
 5. **검증**: Actions 초록(`actions_list` → `list_workflow_runs`), Release 자산 3개(`get_release_by_tag`): zip, `.sha256`, `AgvFotaGateway.json` 의 `version`·`sha256`.
    공개 저장소면 `curl -sL https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` 에 새 버전이 보이는지.
@@ -58,7 +58,7 @@ dotnet build && dotnet test
 
 사용자에게 알려 줄 절차. `docs/DEPLOY.md` 와 같다.
 
-1. Release 의 zip 을 서버 PC 에 풀기 (예: `C:\AgvFotaGateway`)
+1. Release 의 zip 을 서버 PC 의 `C:\` 에 풀기 — zip 안 `AgvFotaGateway\` 폴더째 풀려 `C:\AgvFotaGateway\AgvFotaGateway.exe` 가 된다 (`C:\Program Files` 아래는 피함)
 2. `install-service.bat` 우클릭 → 관리자 권한으로 실행 — 서비스 등록(자동 시작·자동 재시작), 방화벽 TCP 8080 / UDP 50000·50001 허용, 브라우저 열기
 3. 브리지에 서버 PC IP 를 `set server` 로 설정 → 호기 현황에 나타남
 
@@ -68,7 +68,9 @@ dotnet build && dotnet test
 
 설치된 서버는 시작 3초 뒤와 6시간마다 매니페스트로 새 릴리스를 확인한다. 화면 **서버 업데이트** → 지금 확인 → 받기(SHA-256 검증) → 적용(현재 exe 는 `.old`, 재시작 약 10초).
 `Update.AutoApply=true` 면 배포 작업이 없을 때 자동 적용. 잘못 배포했으면 "이전 버전으로 되돌리기". 적용 기록 `data\update\apply.log`.
-적용이 실패하면 수동: zip 을 같은 폴더에 덮어쓰고(`appsettings.json`, `data\` 제외) `install-service.bat` 재실행.
+적용이 실패하면 수동(`docs/DEPLOY.md` 9-4): 배포 작업이 없는지 확인 → 관리자 권한으로 `net stop AgvFotaGateway`(실행 중 exe 는 잠겨 있어 덮어쓸 수 없음) →
+`AgvFotaGateway.exe` 를 `AgvFotaGateway.exe.old` 로 이름 바꿈 → zip 안 `AgvFotaGateway\` 의 파일을 설치 폴더로 복사(`appsettings.json` 은 빼고, `data\` 는 zip 에 없음) →
+`net start AgvFotaGateway`(또는 `install-service.bat` 재실행) → **설정** 화면에서 버전 확인.
 
 ## 하지 말 것
 

@@ -1,0 +1,16 @@
+stateDiagram-v2
+  direction TB
+  [*] --> Scheduled: 작업 만들기 (지금 · 예약)
+  Scheduled --> Running: 예약 시각 도달 + 실행 중 작업 없음
+  Scheduled --> Cancelled: 취소 / 서버가 꺼져 있다 30분 넘게 지나 켜짐
+  Running --> Done: 모든 호기 성공
+  Running --> Failed: 한 대라도 실패 / 서버 재시작
+  Running --> Cancelled: 실행 중 취소
+  note right of Running
+    호기는 한 대씩 순서대로 진행
+    "한 대라도 실패하면 중단" 이면
+    실패 뒤 호기는 건너뜀(Skipped)
+  end note
+  Done --> [*]
+  Failed --> [*]
+  Cancelled --> [*]

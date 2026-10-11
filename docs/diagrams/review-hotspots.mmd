@@ -1,0 +1,26 @@
+flowchart LR
+  subgraph PC["게이트웨이 PC"]
+    direction TB
+    UI["화면 · REST API<br/>4 확인창 없음 · 기본 7호기<br/>12 외부 페이지 요청 차단 없음"]
+    JOB["배포 작업 실행기<br/>4 정지 확인 없음<br/>6 기동 직후 · 늦은 예약 바로 시작<br/>3 8자 넘는 버전을 실패로 판정"]
+    UPD["자체 업데이트<br/>1 적용 뒤 서비스로 재시작 안 됨"]
+    UDP["UDP 수신<br/>5 송신원 · 중복 번호 검증 없음<br/>9 수신 루프에서 DB 동기 쓰기"]
+    GRP["구역 · ACS 소속<br/>7 빈 응답이면 소속 전부 삭제<br/>11 경로 '/' 충돌"]
+    LOG["파일 로그<br/>8 예외가 작업 실패로 번짐"]
+  end
+  subgraph AGV["AGV"]
+    direction TB
+    ESP["Wi-Fi 브리지<br/>2 명령 · 보고를 한 번만 보냄<br/>3 버전 8자 규칙 미강제"]
+    DSP["메인보드 부트로더<br/>10 BRKDT 처리 없음 · 10분 정지<br/>재시도 없음 · JTAG 로만 교체"]
+  end
+  UI --> JOB
+  GRP -->|"구역으로 대상 선택"| JOB
+  UPD -.->|"재시작"| JOB
+  JOB -.- LOG
+  JOB --> UDP
+  UDP <-->|"UDP 50000 · 2"| ESP
+  ESP <-->|"UART J4"| DSP
+  classDef p0 fill:#fde2e2,stroke:#d03b3b,stroke-width:2px,color:#111827
+  classDef p1 fill:#fff1d6,stroke:#d97706,stroke-width:2px,color:#111827
+  class JOB,UPD,UDP,LOG,ESP,DSP p0
+  class UI,GRP p1

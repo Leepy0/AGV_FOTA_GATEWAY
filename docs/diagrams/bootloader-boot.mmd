@@ -1,0 +1,12 @@
+flowchart TD
+  RST(["리셋 · 전원 투입 또는 워치독"]) --> INIT["클럭 100MHz · 플래시 API 준비"]
+  INIT --> FLAG{"부트플래그 0x7FC<br/>진입 요청이 있나?"}
+  FLAG -- "예 · 앱이 UOK 응답 뒤 기록" --> UPD
+  FLAG -- 아니오 --> CHK{"앱 헤더 magic · 헤더 CRC<br/>앱 CRC32 모두 유효?"}
+  CHK -- "아니오 · 앱 없음 또는 쓰다 끊김" --> UPD
+  CHK -- 예 --> CNT{"부트 카운터 +1<br/>3회를 넘었나?"}
+  CNT -- "예 · fwup_boot_ok 없이 연속 리셋<br/>= 기동 불능 앱" --> UPD
+  CNT -- 아니오 --> JMP(["0x3E8040 앱으로 점프<br/>앱이 메인 루프에서 fwup_boot_ok → 카운터 0"])
+  UPD["업데이트 모드 · SCI-A 115200<br/>HELLO · ERASE · WRITE · VERIFY 처리<br/>잘린 패킷은 100ms 뒤 재동기"]
+  UPD -- "RESET 0 명령" --> RST
+  UPD -- "유효 패킷 없이 10분 + 앱 유효" --> RST

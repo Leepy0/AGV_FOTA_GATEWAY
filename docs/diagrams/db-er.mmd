@@ -1,0 +1,54 @@
+erDiagram
+  firmware ||--o{ jobs : "firmware_id"
+  jobs ||--|{ job_targets : "job_id (CASCADE)"
+  agv_groups |o--o| agv_last_seen : "agv"
+  agv_last_seen |o--o| agv_positions : "agv"
+  firmware {
+    text id PK
+    text kind "Dsp | Esp"
+    text version
+    text file_name
+    int size
+    text sha256
+    text uploaded_at
+  }
+  jobs {
+    text id PK
+    text name
+    text firmware_id
+    text state "Scheduled | Running | Done | Failed | Cancelled"
+    text scheduled_at
+    int stop_on_failure
+  }
+  job_targets {
+    text job_id PK
+    int agv PK
+    text state
+    int percent
+    text version_before
+    text version_after
+    text log
+  }
+  agv_groups {
+    int agv PK
+    text product_family
+    text floor
+    text line
+    text process
+    text route
+    text source "acs | manual | import"
+  }
+  agv_positions {
+    int agv PK
+    real x
+    real y
+    real heading
+    text state
+  }
+  agv_last_seen {
+    int agv PK
+    text last_seen
+    text fw
+    text dsp
+    text status_json
+  }

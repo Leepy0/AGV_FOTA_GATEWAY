@@ -88,7 +88,7 @@ curl -X POST localhost:8080/api/acs/push
 | `Gateway.Core/Acs/AcsInventoryMapper.cs` | **스키마 반영 지점** — ACS 응답 JSON → `AgvAssignment` 목록. 필드 이름은 `AcsInventoryFieldMap` 으로 |
 | `Gateway.Server/Options/AcsInventoryOptions.cs` | `appsettings.json` 의 `AcsInventory` 섹션 (주소·인증·주기·필드 매핑) |
 | `Gateway.Server/Services/AcsInventoryPullService.cs` | 주기 GET → 해석 → 저장소 반영. 미리보기(저장 없이 해석) |
-| `Gateway.Server/Services/AgvGroupStore.cs` | `data/agv_groups.json`. 출처 acs / manual / import |
+| `Gateway.Server/Services/AgvGroupStore.cs` | SQLite `data/gateway.db` 의 `agv_groups` 표 (예전 `agv_groups.json` 은 첫 실행 때 자동 이전). 출처 acs / manual / import |
 | 화면 **구역** (`/groups`) | 트리, 호기 표, 직접 입력, CSV 가져오기·내려받기, ACS 미리보기·지금 받기, "이 호기들에 배포" |
 | 화면 **배포 작업** | 구역 단계별 선택 → 그 아래 호기 전부 대상에 추가 (`/jobs?group=경로` 로도 진입) |
 | 화면 **호기 현황** | 구역 열, 구역 필터 (`/?group=경로`) |

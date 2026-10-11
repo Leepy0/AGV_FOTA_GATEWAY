@@ -1,0 +1,41 @@
+sequenceDiagram
+  autonumber
+  participant GW as 게이트웨이
+  participant ESP as 브리지 ESP32
+  participant APP as 메인보드 앱
+  participant BL as 메인보드 부트로더
+  rect rgb(239, 246, 255)
+  Note over GW,ESP: ① 스테이징 — 브리지는 주행 중에도 받을 수 있음<br/>단, 지금 게이트웨이 작업은 스테이징 직후 바로 ②로 넘어가므로 시작 전에 AGV 를 세울 것
+  GW->>ESP: DSP_OTA_START 0x32 {url, ver, crc32, size, job, apply:0}
+  ESP->>GW: HTTP GET .dspfw (4KB 씩 지우며 dspfw 파티션에 기록)
+  ESP-->>GW: DSP_OTA_RESULT 0x33 download 20…100%
+  ESP->>ESP: 파일 CRC · 앱 헤더 검사
+  ESP-->>GW: staged · ver
+  end
+  rect rgb(254, 243, 199)
+  Note over GW,BL: ② 적용 — AGV 정지 상태에서만 · 약 20~30초
+  GW->>ESP: DSP_OTA_APPLY 0x34 {job}
+  ESP-->>GW: start
+  ESP-->>GW: enter
+  ESP->>APP: F 프레임 U000 (업데이트 진입 요청)
+  APP-->>ESP: R 프레임 UOK00 · 정지 조건 아니면 UNG + 사유 → fail app_ng_NN
+  APP->>BL: 부트플래그 기록 → 워치독 리셋
+  ESP->>BL: HELLO (1.5초 × 3회)
+  BL-->>ESP: 프로토콜·부트로더 버전
+  ESP->>BL: ERASE 섹터 B·C·D
+  ESP-->>GW: erase
+  loop 블록 128워드씩
+    ESP->>BL: WRITE addr, data
+    BL-->>ESP: OK (쓰고 읽어 비교)
+  end
+  ESP-->>GW: progress 0…100%
+  ESP->>BL: WRITE 앱 헤더 (맨 마지막)
+  ESP->>BL: VERIFY → app CRC
+  ESP-->>GW: verify
+  ESP->>BL: RESET 0
+  BL->>APP: 헤더·CRC 유효 → 앱으로 점프
+  ESP->>APP: F 프레임 V000 (버전 조회, 1초 간격 8회)
+  APP-->>ESP: R 프레임 V 앱버전 · 부트로더버전 · 빌드일
+  ESP-->>GW: done · ver
+  end
+  GW->>GW: heartbeat 의 dsp 버전이 새 버전인지 확인 (30초)
