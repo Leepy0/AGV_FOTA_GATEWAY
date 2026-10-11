@@ -30,4 +30,63 @@ public class BridgePacketTests
         Assert.Equal(("0.3.0", "ota_0", "valid", -55, "saved", false), (s.Fw, s.Part, s.Ota, s.Rssi, s.Cfg, s.SetupAp));
         Assert.Null(BridgeStatus.Parse("not json"u8));
     }
+
+    [Theory]
+    [InlineData(10, 11, 0)]          // 연속
+    [InlineData(10, 15, 4)]          // 4개 누락
+    [InlineData(10, 10, 0)]          // 중복
+    [InlineData(65535, 0, 0)]        // 넘김
+    [InlineData(65530, 3, 8)]        // 넘김 + 누락 (65531..65535, 0..2)
+    [InlineData(36000, 0, 0)]        // 10시간 가동 뒤 재부팅 — 29535 를 손실로 잡지 않는다
+    [InlineData(100, 0, 0)]          // 짧게 가동 뒤 재부팅
+    [InlineData(1000, 40000, 38999)] // 오래 오프라인 (브리지는 오프라인 중에도 번호를 올린다)
+    public void Seq_loss_handles_wrap_reboot_and_gap(int last, int seq, int loss)
+        => Assert.Equal(loss, BridgeSeq.Loss((ushort)last, (ushort)seq));
+
+    [Fact]
+    public void Seq_check_skips_echoed_types()
+    {
+        Assert.False(BridgeSeq.Tracked(BridgePacket.Pong));         // 서버 PING 의 seq 반송
+        Assert.False(BridgeSeq.Tracked(BridgePacket.CfgResult));    // 서버 CFG_CMD 의 seq 반송
+        Assert.True(BridgeSeq.Tracked(BridgePacket.Status));
+        Assert.True(BridgeSeq.Tracked(BridgePacket.MainUp));
+    }
+
+    const string Heartbeat = """{"fw":"0.5.1","part":"ota_0","ota":"valid","up":100,"rssi":-55,"ch":6,"bssid":"aa:bb","disc":2,"m_rx":10,"heap":1000,"cfg":"saved","setup":0,"dsp":"1.0.0","staged":null}""";
+    const string Info = """{"agv":7,"mac":"24:0a:c4:00:00:01","ip":"10.0.0.7","fw":"0.5.1","part":"ota_0","ota":"valid","cfg":"saved","setup":0,"up":101,"dsp":"1.0.0","staged":null}""";
+
+    static BridgeStatus P(string js) => BridgeStatus.Parse(System.Text.Encoding.UTF8.GetBytes(js))!;
+
+    [Fact]
+    public void Info_merge_keeps_wifi_and_counters()
+    {
+        var m = BridgeStatus.Merge(P(Info), P(Heartbeat), info: true);
+        Assert.Equal(("24:0a:c4:00:00:01", "10.0.0.7", 101L), (m.Mac, m.Ip, m.UpSeconds));
+        Assert.Equal((-55, 6, "aa:bb", 2L, 10L), (m.Rssi, m.Channel, m.Bssid, m.Disconnects, m.MainRx));
+        Assert.Contains("\"rssi\":-55", m.Raw);   // DB(status_json)에 남는 원문도 합친 값
+    }
+
+    [Fact]
+    public void Heartbeat_merge_keeps_info_mac_and_ip_only()
+    {
+        var withInfo = BridgeStatus.Merge(P(Info), P(Heartbeat), info: true);
+        var hb2 = Heartbeat.Replace("\"up\":100", "\"up\":102").Replace("\"rssi\":-55", "\"rssi\":-60").Replace("\"ota\":\"valid\"", "\"ota\":\"pending\"");
+        var m = BridgeStatus.Merge(P(hb2), withInfo, info: false);
+        Assert.Equal(("24:0a:c4:00:00:01", "10.0.0.7"), (m.Mac, m.Ip));
+        Assert.Equal((-60, 102L, "pending"), (m.Rssi, m.UpSeconds, m.Ota));
+        Assert.DoesNotContain("\"agv\"", m.Raw);  // INFO 전용 다른 키는 heartbeat 에 끌어오지 않는다
+
+        // heartbeat 에 mac 이 있으면(브리지 0.5.2+) 그 값이 우선
+        var hbMac = Heartbeat.Replace("{", "{\"mac\":\"24:0a:c4:00:00:02\",");
+        Assert.Equal("24:0a:c4:00:00:02", BridgeStatus.Merge(P(hbMac), withInfo, info: false).Mac);
+        // 직전 상태가 없으면 그대로
+        Assert.Equal("", BridgeStatus.Merge(P(Heartbeat), null, info: false).Mac);
+    }
+
+    [Theory]
+    [InlineData("saved", "valid", false)]
+    [InlineData("trial", "valid", true)]
+    [InlineData("saved", "pending", true)]
+    public void Confirm_ping_needed_for_trial_or_pending(string cfg, string ota, bool need)
+        => Assert.Equal(need, P($$"""{"cfg":"{{cfg}}","ota":"{{ota}}"}""").NeedsConfirmPing);
 }

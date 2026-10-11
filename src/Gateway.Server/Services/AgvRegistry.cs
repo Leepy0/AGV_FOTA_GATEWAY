@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using Gateway.Core.Bridge;
 using Gateway.Server.Data;
+using Microsoft.Data.Sqlite;
 
 namespace Gateway.Server.Services;
 
@@ -28,13 +29,24 @@ public sealed class AgvState
     public long ConflictCount;
     /// <summary>번호 충돌 중인지 (최근 offlineAfterSec×2 안에 다른 주소에서 패킷이 왔음). 충돌 중에는 배포·수동 전송을 거부한다</summary>
     public bool InConflict(int offlineAfterSec) => ConflictEndPoint is not null && (DateTime.UtcNow - ConflictAt).TotalSeconds < offlineAfterSec * 2;
+    /// <summary>충돌 경고(Trace·로그)를 마지막으로 남긴 시각 — 빈도 제한용</summary>
+    public DateTime ConflictWarnedAt { get; set; }
+    /// <summary>cfg=trial / ota=pending 확정용 자동 PING 을 마지막으로 보낸 시각 (호기당 5초에 1회)</summary>
+    public DateTime LastAutoPing { get; set; }
 }
 
-/// <summary>호기 목록. 변경 알림은 최대 초당 몇 번으로 묶어서 보낸다. 마지막 접속은 SQLite 에 남겨 재시작 뒤에도 "n시간 전" 으로 보인다</summary>
+/// <summary>
+/// 호기 목록. 변경 알림은 최대 초당 몇 번으로 묶어서 보낸다. 마지막 접속은 SQLite 에 남겨 재시작 뒤에도 "n시간 전" 으로 보인다.
+/// DB 쓰기는 수신 루프에서 하지 않는다 — Touch 는 표시만 하고 Flush(BridgeUdpService 의 타이머·종료 시)가 모아서 쓴다.
+/// </summary>
 public sealed class AgvRegistry
 {
+    /// <summary>레지스트리 쓰기 연결의 잠금 대기 (초). 다른 프로그램이 DB 를 잠가도 오래 막히지 않게</summary>
+    const int DbTimeoutSec = 2;
     readonly ConcurrentDictionary<int, AgvState> _agvs = new();
-    readonly GatewayDb? _db;
+    readonly ConcurrentDictionary<int, byte> _dirty = new();
+    readonly object _flushLock = new();
+    readonly string? _cs;
     public event Action? Changed;
     int _pending;
 
@@ -42,7 +54,7 @@ public sealed class AgvRegistry
 
     public AgvRegistry(GatewayDb db)
     {
-        _db = db;
+        _cs = new SqliteConnectionStringBuilder { DataSource = db.Path, Pooling = true, DefaultTimeout = DbTimeoutSec }.ToString();
         using var c = db.Open();
         using var cmd = GatewayDb.Cmd(c, "SELECT agv, last_seen, endpoint, status_json FROM agv_last_seen");
         using var r = cmd.ExecuteReader();
@@ -56,45 +68,87 @@ public sealed class AgvRegistry
         }
     }
 
-    /// <summary>heartbeat 를 받을 때 호출: 30초에 한 번 DB 에 마지막 접속·상태를 남긴다 (브리지 50대 × 1Hz 에도 쓰기는 분당 100번 이하)</summary>
+    /// <summary>heartbeat 를 받을 때 호출: 30초에 한 번(버전·endpoint 가 바뀌면 바로) DB 기록 대상으로 표시만 한다 — 수신 루프에서 DB I/O 없음</summary>
     public void Touch(AgvState a)
     {
         var key = $"{a.Status?.Fw}|{a.Status?.Part}|{a.Status?.Dsp}|{a.Status?.DspBoot}|{a.EndPoint}";
-        if (_db is null || ((DateTime.UtcNow - a.LastPersisted).TotalSeconds < 30 && key == a.LastPersistedKey)) return;
+        if (_cs is null || ((DateTime.UtcNow - a.LastPersisted).TotalSeconds < 30 && key == a.LastPersistedKey)) return;
         a.LastPersisted = DateTime.UtcNow; a.LastPersistedKey = key;
-        try
-        {
-            using var c = _db.Open();
-            GatewayDb.Exec(c, """
-                INSERT OR REPLACE INTO agv_last_seen(agv, last_seen, endpoint, fw, part, dsp, dsp_boot, status_json)
-                VALUES($agv, $seen, $ep, $fw, $part, $dsp, $dspb, $js)
-                """, ("$agv", a.Id), ("$seen", GatewayDb.Ts(a.LastSeen)), ("$ep", a.EndPoint?.ToString()), ("$fw", a.Status?.Fw), ("$part", a.Status?.Part),
-                ("$dsp", a.Status?.Dsp), ("$dspb", a.Status?.DspBoot), ("$js", a.StatusRaw.Length > 0 ? a.StatusRaw : null));
-        }
-        catch (Exception) { }
+        _dirty[a.Id] = 0;
     }
+
+    /// <summary>
+    /// 표시된 호기의 최신 상태를 한 트랜잭션으로 DB 에 쓴다. 잠금 대기는 DbTimeoutSec 까지.
+    /// 실패하면 다시 표시해 두고(다음 Flush 에서 재시도) 예외를 그대로 던진다 — 호출 쪽이 빈도를 제한해 로그를 남긴다.
+    /// </summary>
+    /// <returns>기록한 호기 수</returns>
+    public int Flush()
+    {
+        if (_cs is null) return 0;
+        lock (_flushLock)
+        {
+            if (_dirty.IsEmpty) return 0;
+            var list = new List<AgvState>();
+            foreach (var id in _dirty.Keys)
+                if (_dirty.TryRemove(id, out _) && Get(id) is { } a) list.Add(a);
+            try
+            {
+                using var c = new SqliteConnection(_cs);
+                c.Open();
+                using var tx = c.BeginTransaction();
+                foreach (var a in list)
+                {
+                    var st = a.Status;
+                    using var cmd = GatewayDb.Cmd(c, """
+                        INSERT OR REPLACE INTO agv_last_seen(agv, last_seen, endpoint, fw, part, dsp, dsp_boot, status_json)
+                        VALUES($agv, $seen, $ep, $fw, $part, $dsp, $dspb, $js)
+                        """, ("$agv", a.Id), ("$seen", GatewayDb.Ts(a.LastSeen)), ("$ep", a.EndPoint?.ToString()), ("$fw", st?.Fw), ("$part", st?.Part),
+                        ("$dsp", st?.Dsp), ("$dspb", st?.DspBoot), ("$js", a.StatusRaw.Length > 0 ? a.StatusRaw : null));
+                    cmd.Transaction = tx;
+                    cmd.ExecuteNonQuery();
+                }
+                tx.Commit();
+                return list.Count;
+            }
+            catch
+            {
+                foreach (var a in list) _dirty.TryAdd(a.Id, 0);
+                throw;
+            }
+        }
+    }
+
+    /// <summary>마지막 기록 뒤 패킷이 온 호기를 모두 기록 대상으로 — 종료 직전 마지막 접속 시각을 정확히 남기려고</summary>
+    public void MarkAllSeen()
+    {
+        if (_cs is null) return;
+        foreach (var a in _agvs.Values)
+            if (a.LastSeen > a.LastPersisted) _dirty[a.Id] = 0;
+    }
+
+    /// <summary>DB 에 아직 쓰지 않은 호기 수</summary>
+    public int PendingWrites => _dirty.Count;
 
     public AgvState GetOrAdd(int id) => _agvs.GetOrAdd(id, i => new AgvState { Id = i });
     public AgvState? Get(int id) => _agvs.TryGetValue(id, out var a) ? a : null;
     public IReadOnlyList<AgvState> Snapshot() => _agvs.Values.OrderBy(a => a.Id).ToList();
     public BridgeStatus? StatusOf(int id) => Get(id)?.Status;
 
-    /// <summary>타입별 seq 연속성 검사 → 누락 수</summary>
+    /// <summary>타입별 seq 연속성 검사 → 누락 수 (판정 규칙은 BridgeSeq.Loss)</summary>
     public static int CheckSeq(AgvState a, byte type, ushort seq)
     {
         lock (a.LastSeq)
         {
-            int loss = 0;
-            if (a.LastSeq.TryGetValue(type, out var last))
-            {
-                var expect = (ushort)(last + 1);
-                var diff = (ushort)(seq - expect);
-                // 뒤로 간 번호(diff 가 32768 이상)는 브리지 재부팅으로 0 부터 다시 시작한 것 — 손실이 아니다
-                if (seq != expect && diff < 32768) loss = diff;
-            }
+            int loss = a.LastSeq.TryGetValue(type, out var last) ? BridgeSeq.Loss(last, seq) : 0;
             a.LastSeq[type] = seq;
             return loss;
         }
+    }
+
+    /// <summary>seq 기준을 비운다 — 브리지 재부팅(up 감소) 또는 다른 장치로 endpoint 가 바뀐 경우</summary>
+    public static void ResetSeq(AgvState a)
+    {
+        lock (a.LastSeq) a.LastSeq.Clear();
     }
 
     public void NotifyChanged()

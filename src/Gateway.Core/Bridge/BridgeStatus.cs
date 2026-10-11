@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Gateway.Core.Bridge;
 
@@ -39,6 +40,43 @@ public sealed record BridgeStatus(
             return null;
         }
     }
+
+    /// <summary>
+    /// 새로 받은 heartbeat/INFO 를 직전 상태와 합친다 — 서로 없는 필드를 지우지 않게.
+    /// INFO 는 무선·카운터 필드가 없으므로 직전 상태에 INFO 의 키만 덮어쓴다.
+    /// heartbeat 는 전체를 새 값으로 하되, heartbeat 에 없는 mac·ip(INFO 값)는 직전 값을 유지한다.
+    /// 직전 상태가 없거나(다른 장치로 바뀐 경우 포함) JSON 객체가 아니면 새 값 그대로.
+    /// </summary>
+    public static BridgeStatus Merge(BridgeStatus fresh, BridgeStatus? old, bool info)
+    {
+        if (old is null) return fresh;
+        try
+        {
+            if (JsonNode.Parse(fresh.Raw) is not JsonObject n || JsonNode.Parse(old.Raw) is not JsonObject o) return fresh;
+            JsonObject merged;
+            if (info)
+            {
+                merged = o;
+                foreach (var (k, v) in n) merged[k] = v?.DeepClone();
+            }
+            else
+            {
+                merged = n;
+                foreach (var k in InfoOnlyKeys)
+                    if (!n.ContainsKey(k) && o.TryGetPropertyValue(k, out var v)) merged[k] = v?.DeepClone();
+            }
+            return Parse(System.Text.Encoding.UTF8.GetBytes(merged.ToJsonString())) ?? fresh;
+        }
+        catch (Exception e) when (e is JsonException or ArgumentException or InvalidOperationException)
+        {
+            return fresh;   // 중복 키 등 — 합치지 않는다
+        }
+    }
+
+    static readonly string[] InfoOnlyKeys = ["mac", "ip"];
+
+    /// <summary>서버 하향 패킷으로 확정해야 하는 상태 — 원격 설정 시험 적용(cfg=trial) 또는 브리지 OTA 미확정(ota=pending). 서버가 PING 을 자동으로 보낸다</summary>
+    public bool NeedsConfirmPing => Cfg == "trial" || Ota == "pending";
 
     /// <summary>메인보드 앱 버전을 아는 브리지인지 (0.5.0 미만·응답 없는 구 앱은 "" 또는 "?")</summary>
     public bool HasDsp => !string.IsNullOrEmpty(Dsp) && Dsp != "?";

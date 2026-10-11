@@ -46,6 +46,18 @@ public class AgvFrameTests
     }
 
     [Fact]
+    public void IsForAcs_rejects_truncated_or_corrupt_frames()
+    {
+        var e = AgvFrame.Build('E', '3', '1', 7, "I012245"u8);
+        Assert.False(AgvFrame.IsForAcs(e[..^1]));            // ETX 없이 시간 초과로 끊긴 조각 (uart_bridge no_etx)
+        Assert.False(AgvFrame.IsForAcs(e[..10]));            // 중간에서 잘린 조각 (overlong)
+        var bad = (byte[])e.Clone(); bad[7] ^= 0x01;         // 노이즈로 본문 1비트 깨짐 → BCC 불일치
+        Assert.False(AgvFrame.IsForAcs(bad));
+        Assert.True(AgvFrame.IsAcsKind(e[..^1]));            // 깨진 ACS 프레임으로 집계할 대상
+        Assert.False(AgvFrame.IsAcsKind(AgvFrame.Build('R', '1', '1', 7, "V1"u8)));
+    }
+
+    [Fact]
     public void Split_handles_partial_and_concatenated_frames()
     {
         var a = AgvFrame.Build('E', '1', '1', 7, "I012245"u8);
