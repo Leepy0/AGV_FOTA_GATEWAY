@@ -37,7 +37,7 @@
         else
         {
             <ul class="tree">
-                <li><a class="@(sel == "" ? "on" : "")" @onclick='() => Select("")'>전체 <span class="cnt">@Store.Tree.Count</span></a></li>
+                <li><a class="@(sel == "" ? "on" : "")" tabindex="0" role="button" aria-current="@(sel == "" ? "true" : null)" @onclick='() => Select("")' @onkeydown='e => OnItemKey(e, "")'>전체 <span class="cnt">@Store.Tree.Count</span></a></li>
                 @foreach (var n in Store.Tree.Children) { @RenderNode(n) }
             </ul>
         }
@@ -50,6 +50,7 @@
             <a class="button" href="?path=@Uri.EscapeDataString(sel)" @onclick:preventDefault @onclick='() => Nav.NavigateTo("/?group=" + Uri.EscapeDataString(sel))'>호기 현황에서 보기</a>
             <a class="button" href="api/groups/export.csv" target="_blank">CSV 내려받기</a>
         </div>
+        @if (rowMsg is not null) { <div class="msg err" role="alert">@rowMsg</div> }
         <div class="table-wrap">
         <table class="grid">
             <thead><tr><th>호기</th><th>상태</th><th>제품군</th><th>층</th><th>라인</th><th>공정</th><th>라우트</th><th>이름</th><th>출처</th><th>브리지 / 메인보드</th><th></th></tr></thead>
@@ -64,8 +65,8 @@
                         <tr class="editing">
                             <td><b>@agv.ToString("D2")</b></td>
                             <td><span class="dot @(on ? "ok" : "bad")"></span></td>
-                            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <td><input class="cell" @bind="editVals[lv]" list="lv@(lv)" placeholder="@AgvGroup.LevelNames[lv]" /></td> }
-                            <td><input class="cell" @bind="editName" /></td>
+                            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <td><input class="cell" @bind="editVals[lv]" list="lv@(lv)" placeholder="@AgvGroup.LevelNames[lv]" aria-label="@AgvGroup.LevelNames[lv]" /></td> }
+                            <td><input class="cell" @bind="editName" aria-label="표시 이름" /></td>
                             <td class="small">manual</td>
                             <td class="small">@st?.Status?.Fw / @(st?.Status is { } s2 && s2.HasDsp ? s2.Dsp : "-")</td>
                             <td><button class="primary" @onclick="SaveEdit">저장</button> <button @onclick="() => edit = null">취소</button></td>
@@ -103,7 +104,7 @@
         <p class="muted small">미접속 호기도 넣을 수 있습니다 (ACS 목록 기준). 같은 호기를 다시 넣으면 덮어씁니다.</p>
 
         <h2 style="margin-top:16px">CSV 붙여넣기 (일괄)</h2>
-        <textarea class="csv" @bind="csv" rows="5" placeholder="@CsvPlaceholder"></textarea>
+        <textarea class="csv" @bind="csv" rows="5" aria-label="CSV 붙여넣기" placeholder="@CsvPlaceholder"></textarea>
         <div class="row-buttons"><button @onclick="ImportCsv" disabled="@string.IsNullOrWhiteSpace(csv)">가져오기</button> <span class="muted small">엑셀에서 열을 복사해 붙여 넣어도 됩니다 (탭 구분). 첫 줄 머리글은 건너뜁니다.</span></div>
         @if (csvResult is not null) { <div class="msg @(csvErr ? "err" : "")">@csvResult</div> }
     </section>
@@ -117,7 +118,7 @@
     readonly string[] editVals = new string[AgvGroup.Levels];
     readonly string[] newVals = new string[AgvGroup.Levels];
     string editName = "", newAgv = "", csv = "";
-    string? msg, csvResult, preview;
+    string? msg, rowMsg, csvResult, preview;
     bool err, csvErr, busy;
     readonly HashSet<string> collapsed = new();
 
@@ -133,15 +134,23 @@
     void OnChanged() => InvokeAsync(StateHasChanged);
     public void Dispose() { Store.Changed -= OnChanged; Reg.Changed -= OnChanged; Inv.Changed -= OnChanged; }
 
-    void Select(string path) { sel = path; edit = null; }
+    void Select(string path) { sel = path; edit = null; rowMsg = null; }
     void ToggleCollapse(string path) { if (!collapsed.Remove(path)) collapsed.Add(path); }
+    void OnItemKey(KeyboardEventArgs e, string path) { if (e.Key is "Enter" or "NumpadEnter") Select(path); }
 
     RenderFragment RenderNode(GroupNode n) => __builder =>
     {
         var open = !collapsed.Contains(n.Path);
         <li>
-            <span class="tw" @onclick="() => ToggleCollapse(n.Path)">@(n.Children.Count == 0 ? "·" : open ? "▾" : "▸")</span>
-            <a class="@(sel == n.Path ? "on" : "") lv@(n.Level)" @onclick="() => Select(n.Path)" title="@n.LevelName">@n.Name <span class="cnt">@n.Count</span></a>
+            @if (n.Children.Count == 0)
+            {
+                <button type="button" class="tw" disabled aria-hidden="true" tabindex="-1">·</button>
+            }
+            else
+            {
+                <button type="button" class="tw" aria-expanded="@(open ? "true" : "false")" aria-label="@($"{n.Name} {(open ? "접기" : "펼치기")}")" @onclick="() => ToggleCollapse(n.Path)">@(open ? "▾" : "▸")</button>
+            }
+            <a class="@(sel == n.Path ? "on" : "") lv@(n.Level)" tabindex="0" role="button" aria-current="@(sel == n.Path ? "true" : null)" @onclick="() => Select(n.Path)" @onkeydown="e => OnItemKey(e, n.Path)" title="@n.LevelName">@n.Name <span class="cnt">@n.Count</span></a>
             @if (open && n.Children.Count > 0)
             {
                 <ul>@foreach (var c in n.Children) { @RenderNode(c) }</ul>
@@ -159,28 +168,44 @@
     void SaveEdit()
     {
         if (edit is not int agv) return;
-        Store.Set(agv, AgvGroup.Trimmed(editVals[0], editVals[1], editVals[2], editVals[3], editVals[4]), editName.Trim());
-        edit = null;
+        rowMsg = null;
+        try
+        {
+            Store.Set(agv, AgvGroup.Trimmed(editVals[0], editVals[1], editVals[2], editVals[3], editVals[4]), editName.Trim());
+            edit = null;
+        }
+        catch (Exception e) { rowMsg = $"{agv:D2} 저장 실패: {e.Message}"; }   // 편집 행은 그대로 두고 다시 시도할 수 있게
     }
     async Task Remove(int agv)
     {
-        if (await JS.InvokeAsync<bool>("confirm", $"{agv:D2} 호기의 소속을 지울까요?")) Store.Remove(agv);
+        rowMsg = null;
+        if (!await JS.InvokeAsync<bool>("confirm", $"{agv:D2} 호기의 소속을 지울까요?")) return;
+        try { Store.Remove(agv); }
+        catch (Exception e) { rowMsg = $"{agv:D2} 삭제 실패: {e.Message}"; }
     }
     void AddOne()
     {
         msg = null; err = false;
         if (!int.TryParse(newAgv, out var agv) || agv is < 1 or > 99) { msg = "호기 번호는 1~99"; err = true; return; }
         var g = AgvGroup.Trimmed(newVals[0], newVals[1], newVals[2], newVals[3], newVals[4]);
-        Store.Set(agv, g);
+        try { Store.Set(agv, g); }
+        catch (Exception e) { msg = $"{agv:D2} 추가 실패: {e.Message}"; err = true; return; }
         msg = $"{agv:D2} → {g.Path}";
         newAgv = "";
     }
     void ImportCsv()
     {
         var items = GroupCsv.Parse(csv, DateTimeOffset.UtcNow, out var errors);
-        var n = Store.Import(items);
+        int n;
+        try { n = Store.Import(items); }
+        catch (Exception e)
+        {
+            csvErr = true;
+            csvResult = $"저장 실패 — 반영 안 됨 ({items.Count}대): {e.Message}" + (errors.Count > 0 ? " · 오류: " + string.Join("; ", errors.Take(5)) : "");
+            return;
+        }
         csvErr = errors.Count > 0;
-        csvResult = $"{n}대 반영" + (errors.Count > 0 ? " · 오류: " + string.Join("; ", errors.Take(5)) : "");
+        csvResult = $"{n}대 반영" + (errors.Count > 0 ? " · 오류: " + string.Join("; ", errors.Take(5)) + (errors.Count > 5 ? $" … 외 {errors.Count - 5}건" : "") : "");
         if (n > 0 && errors.Count == 0) csv = "";
     }
     async Task Preview()
