@@ -14,9 +14,11 @@ sequenceDiagram
   OP->>SV: '적용' → 확인창 (ACS 중계 상태 · 온라인 호기 수)
   Note over SV,GH: 새 작업 시작을 먼저 막고<br/>실행 중인 작업이 없을 때만 진행
   SV->>BAT: 실행 (apply · PID · 앱 폴더 · 새 파일 폴더 · svc 또는 console)
+  BAT-->>SV: 첫 줄에서 run-ticket.txt → run-started.txt
+  Note over SV,BAT: 5초 안에 이 표시를 봐야 서버가 멈춤<br/>못 보면 오류 · 서버는 그대로 실행
   Note over SV: 서비스 종료
-  Note over GH,BAT: 서비스 중지 · 프로세스 종료 대기<br/>현재 exe → .old
-  Note over GH,BAT: 새 파일 복사 (appsettings.json 제외)
+  Note over GH,BAT: 서비스 중지 · 프로세스 종료 대기<br/>현재 exe → .prev
+  Note over GH,BAT: 새 파일 복사 (appsettings.json 제외)<br/>성공하면 .prev → .old (이전 .old 삭제)<br/>실패하면 .prev 를 되살림 (apply-failed)
   BAT->>SV: 서비스 시작 (콘솔 실행이었으면 exe 실행)
   loop 2초마다 · 최대 60초
     BAT->>SV: /api/health — 새 버전이 응답하나?
@@ -24,7 +26,7 @@ sequenceDiagram
   alt 응답함
     Note over BAT,SV: 끝 · 다음 기동 때 화면 기록에 '적용됨'
   else 60초 안에 응답 없음
-    Note over GH,BAT: 새 exe 중지 → .bad 로 보관<br/>.old 를 exe 로 복원
+    Note over GH,BAT: 새 exe 중지 → .bad 로 보관<br/>.old 를 exe 로 복원<br/>(.prev 가 남아 있으면 그것 · 직전 exe)
     BAT->>SV: 이전 버전으로 다시 시작
     Note over OP,SV: 화면 기록에 '자동 되돌림'<br/>이 버전은 자동 적용에서 뺌
   end

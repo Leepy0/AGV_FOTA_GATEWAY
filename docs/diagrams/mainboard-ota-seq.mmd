@@ -25,16 +25,25 @@ sequenceDiagram
   end
   rect rgb(254, 226, 226)
   Note over GW,BL: ③ 적용 — 한 대씩 · 호기마다 약 20~30초
-  GW->>ESP: DSP_OTA_APPLY 0x34 {job} · 앱 버전 ? 이면 recover:1
+  GW->>ESP: DSP_OTA_APPLY 0x34 {job}<br/>복구 적용 작업만 recover:1
   ESP-->>GW: start · ver
   Note over ESP,APP: 지우기 전에 이미지 다시 검사
   ESP-->>GW: enter
   ESP->>APP: F 프레임 U000 (업데이트 진입 요청)
-  APP-->>ESP: R 프레임 UOK00 · 정지 아니면 UNG → app_ng_NN
-  Note over ESP,APP: 무응답이면 app_no_reply 로 중단<br/>recover · 앱 버전 ? 일 때만<br/>부트로더로 바로 감
-  APP->>BL: 부트플래그 기록 → 워치독 리셋
+  alt 앱이 답함
+    APP-->>ESP: R 프레임 UOK00 · 정지 아니면 UNG → app_ng_NN
+    APP->>BL: 부트플래그 기록 → 워치독 리셋
+  else 무응답 · 3초 안에 앱 프레임 있음
+    ESP-->>GW: fail app_no_fwup
+    Note over ESP,APP: 살아 있는 구 앱 · recover 여도<br/>원시 모드 안 감 · JTAG 로 설치
+  else 무응답 · 앱 침묵 · 버전 앎 · recover 없음
+    ESP-->>GW: fail app_no_reply
+    Note over ESP,APP: 중계 유지 · dsp 를 ? 로<br/>60초마다 다시 물어 앱이 답하면 복귀
+  else 무응답 · 앱 침묵 · recover 또는 dsp ?
+    Note over ESP,BL: 앱을 거치지 않고 부트로더로 바로
+  end
   ESP->>BL: UART 115200 으로 전환 · HELLO (1.5초 × 3회)
-  Note over ESP,BL: recover 인데 무응답이면 wait_power<br/>60초 동안 HELLO 50ms 간격 · 전원 재투입 대기
+  Note over ESP,BL: 무응답 · recover 면 wait_power<br/>60초 동안 HELLO 50ms 간격 · 전원 재투입 대기<br/>recover 없으면 (dsp ?) 바로 no_bootloader
   BL-->>ESP: 프로토콜 · 부트로더 버전
   ESP->>BL: ERASE 섹터 B · C · D
   ESP-->>GW: erase

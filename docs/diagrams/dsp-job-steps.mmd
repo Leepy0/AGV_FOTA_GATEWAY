@@ -15,9 +15,9 @@ flowchart TD
   M -- 바로 적용 --> AP
   M -- "승인 후 적용" --> W(["적용 대기 · Staged<br/>전 호기 스테이징 뒤<br/>운용자 '적용 시작'"])
   W -- "승인 · 다시 온라인 · 충돌 확인" --> AP
-  AP["② 적용 0x34 · 같은 job 번호 · 32~92%<br/>앱 버전 ? 이면 5초 더 본 뒤 recover:1"]
-  AP -- "fail · 90초 무보고" --> F6["실패 · 적용<br/>err 로 상태 판단"]
-  AP -- "not_staged · job_mismatch" --> F10["실패 · 브리지 스테이징이 없어짐<br/>다시 배포"]
+  AP["② 적용 0x34 · 같은 job 번호 · 32~92%<br/>'복구 적용' 작업만 recover:1 (재전송 포함)"]
+  AP -- "fail · 90초 무보고" --> F6["실패 · 적용 · err 로 상태 판단<br/>일반 적용의 app_no_reply · no_bootloader 면<br/>'복구 적용으로 다시 배포' 안내"]
+  AP -- "not_staged · job_mismatch" --> F10["실패 · 브리지 스테이징이<br/>없어졌거나 바뀜<br/>새 작업으로 다시 배포"]
   AP -- "done 또는 heartbeat<br/>새 버전 · idle · staged 없음" --> V{{"ver 앞 8자가<br/>이미지 버전과 같나?"}}
   V -- 아니오 --> F7["실패 · 버전 다름"]
   V -- 예 --> HB{{"30초 안에<br/>heartbeat dsp = 새 버전?"}}

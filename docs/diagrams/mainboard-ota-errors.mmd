@@ -5,11 +5,11 @@ flowchart TD
   end
   subgraph R2["② 진입 · 굽기 전 거부"]
     direction LR
-    N["start → enter<br/>지우기 전 이미지 재검사<br/>앱에 업데이트 진입 요청"] -.- e2["app_ng_01 주행 · 02 충전 · 03 전압<br/>04 에러 · 09 기타 : 앱이 거부<br/>app_no_reply : 앱 무응답 (중계 유지)<br/>uart_busy : 메인보드 송신 대기열 가득<br/>no_bootloader · boot_proto : 부트로더 문제<br/>not_staged · job_mismatch · stage_invalid<br/>진행 wait_power : 메인보드 전원 재투입 대기"]
+    N["start → enter<br/>지우기 전 이미지 재검사<br/>앱에 업데이트 진입 요청"] -.- e2["app_ng_01 주행 · 02 충전 · 03 전압<br/>04 에러 · 09 기타 : 앱이 거부<br/>app_no_fwup : 구 앱 · 진입 미지원 (JTAG)<br/>app_no_reply : 앱 침묵 · dsp 를 ? 로<br/>uart_busy : 메인보드 송신 대기열 가득<br/>no_bootloader : HELLO 무응답<br/>boot_proto : 부트로더 프로토콜 다름<br/>not_staged · job_mismatch : 다시 배포<br/>stage_invalid : 이미지 손상<br/>진행 wait_power : 복구 적용 · 전원 재투입 대기"]
   end
   subgraph R3["③ 굽기 · 앱 지워짐"]
     direction LR
-    W["erase → progress → verify<br/>부트로더가 지우고 쓰고 검증"] -.- e3["erase · write* · program · verify*<br/>stage_read · stage_block<br/>진행 retry 1 · 2 : HELLO 부터 자동 재시도<br/>그래도 실패면 앱 없음 · 버전 ?<br/>→ 새 작업 (복구 적용)"]
+    W["erase → progress → verify<br/>부트로더가 지우고 쓰고 검증"] -.- e3["erase · write* · program · verify*<br/>stage_read · stage_block<br/>진행 retry 1 · 2 : HELLO 부터 자동 재시도<br/>그래도 실패면 앱 없음 · 버전 ?<br/>부트로더가 기다림 → 새 작업<br/>(일반 적용도 HELLO 로 바로)"]
   end
   subgraph R4["④ 확인"]
     direction LR
