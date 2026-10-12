@@ -229,22 +229,71 @@ public class JobServiceTests
         Assert.Empty(k.Link.Sent);
     }
 
-    // ── B-01: dsp="?" 호기는 복구 적용 (recover:1) ──
+    // ── R15·R1: 복구 적용은 운용자가 고른 작업만 (dsp="?" 만으로 붙이지 않음) ──
 
     [Fact]
-    public async Task Agv_without_app_version_gets_recover_flag()
+    public async Task Agv_without_app_version_gets_plain_apply_unless_recover_is_chosen()
     {
         using var k = new JobTestKit();
         k.Link.Add(7, dsp: "?");
         k.Link.Add(8);
         var fw = k.AddDsp();
         var j = k.Svc.Create("", fw.Id, [7, 8], null, true, ApplyMode.Immediate);
+        Assert.False(j.Recover);
         await k.TickAndWaitAsync();
         Assert.Equal(JobState.Done, j.State);
+        Assert.All(k.Link.Sent.Where(s => s.kind == "APPLY"), a => Assert.DoesNotContain("recover", a.json));
+        Assert.Contains(j.Results[0].Log, l => l.Contains("앱 버전 모름") && l.Contains("복구 적용"));
+    }
+
+    [Fact]
+    public async Task Recover_job_sends_recover_flag_to_every_target_and_survives_restart()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7, dsp: "?");
+        k.Link.Add(8);
+        var fw = k.AddDsp();
+        var j = k.Svc.Create("", fw.Id, [7, 8], null, true, ApplyMode.Approve, recover: true);
+        Assert.True(j.Recover);
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.AwaitingApproval, j.State);
+        var j2 = k.Restart().Get(j.Id)!;          // DB(v3 recover 열)에 보관
+        Assert.True(j2.Recover);
+        k.Svc.Approve(j.Id);
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.Done, j2.State);
         var applies = k.Link.Sent.Where(s => s.kind == "APPLY").ToList();
-        Assert.Contains("\"recover\":1", applies.Single(s => s.agv == 7).json);
-        Assert.DoesNotContain("recover", applies.Single(s => s.agv == 8).json);
-        Assert.Contains(j.Results[0].Log, l => l.Contains("복구 적용"));
+        Assert.Equal(2, applies.Count);
+        Assert.All(applies, a => Assert.Contains("\"recover\":1", a.json));
+        Assert.Contains(j2.Results[1].Log, l => l.Contains("복구 적용 —"));
+    }
+
+    [Fact]
+    public async Task Recover_is_refused_for_bridge_firmware()
+    {
+        using var k = new JobTestKit();
+        var fw = await k.Store.AddAsync(FirmwareKind.Esp, "", "", "", [("esp", "agv_wifi_bridge.bin",
+            new MemoryStream(Gateway.Core.Fota.EspAppImage.Build("0.5.3", Gateway.Core.Fota.EspAppImage.BridgeProject)))]);
+        Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", fw.Id, [7], null, true, recover: true));
+    }
+
+    [Theory]
+    [InlineData("app_no_reply", false, true)]
+    [InlineData("app_no_fwup", false, true)]
+    [InlineData("no_bootloader", false, true)]
+    [InlineData("no_bootloader", true, false)]   // 이미 복구 적용이면 덧붙이지 않음
+    [InlineData("erase", false, false)]
+    public async Task App_failures_suggest_recover_apply(string err, bool recover, bool hint)
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        k.Link.ApplyFailErr = err;
+        var fw = k.AddDsp();
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate, recover: recover);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains(err, j.Results[0].Message);
+        Assert.Equal(hint, j.Results[0].Message.Contains(JobService.RecoverHint));
     }
 
     // ── C-02·T-03: 9자 이상 버전도 앞 8자로 맞춰 봄 ──

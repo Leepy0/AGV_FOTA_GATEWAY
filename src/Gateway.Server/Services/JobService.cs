@@ -32,6 +32,8 @@ public sealed class TargetResult
     /// <summary>되돌릴 수 없는 명령(메인보드 APPLY·브리지 OTA_START)을 보냄 — 취소해도 브리지는 끝까지 진행</summary>
     public bool Committed { get; set; }
     public List<string> Log { get; set; } = new();
+    /// <summary>브리지 OTA 시작 전 실행 슬롯 (취소 뒤 재설치 확인용, 저장 안 함)</summary>
+    internal string PartBefore { get; set; } = "";
 }
 
 public sealed class Job
@@ -47,6 +49,11 @@ public sealed class Job
     public bool StopOnFailure { get; set; } = true;
     /// <summary>메인보드만 의미 있음 (브리지는 늘 즉시)</summary>
     public ApplyMode ApplyMode { get; set; } = ApplyMode.Approve;
+    /// <summary>
+    /// 메인보드 복구 적용 (운용자가 고른 작업만). 모든 대상의 APPLY(재전송 포함)에 recover:1 — 앱이 U 에 응답하지 않고 침묵하면
+    /// 브리지가 부트로더로 바로 들어가고, 안 잡히면 최대 60초 동안 전원 재투입을 기다린다. 브리지 작업은 늘 false
+    /// </summary>
+    public bool Recover { get; set; }
     /// <summary>마감 시각(UTC). 지나면 남은 호기는 시작하지 않고 건너뜀. null = 제한 없음</summary>
     public DateTime? NotAfter { get; set; }
     /// <summary>적용 승인 시각 (AwaitingApproval 에서 승인되면 실행기가 적용 단계를 시작)</summary>
@@ -102,15 +109,23 @@ public sealed class JobService : BackgroundService
     public const int EspUrlMax = 255;
     /// <summary>예약(또는 '지금 바로' 생성) 시각이 이보다 오래 지나도록 시작하지 못한 작업은 자동 취소 (서버 중단·앞 작업 지연 모두)</summary>
     public const int StaleScheduleMinutes = 30;
-    /// <summary>작업 저장 때 DB 잠금을 기다리는 최대 시간(초). 넘으면 이번 저장은 건너뛰고 로그 (다음 저장이 최신 상태를 씀)</summary>
+    /// <summary>작업 저장 때 DB 잠금을 기다리는 최대 시간(초). 넘으면 실패한 복사본을 창구에 남기고 Tick 이 다시 쓴다</summary>
     internal const int SaveTimeoutSec = 2;
     /// <summary>저장 실패 로그 최소 간격 (그 사이 실패는 세기만 함)</summary>
     static readonly TimeSpan SaveErrorLogGap = TimeSpan.FromSeconds(30);
+    /// <summary>저장 재시도가 실패하면 이만큼 쉬었다가 다시 (DB 가 잠긴 동안 매 Tick 마다 SaveTimeoutSec 씩 붙잡지 않게)</summary>
+    internal TimeSpan SaveRetryGap { get; set; } = TimeSpan.FromSeconds(5);
+    DateTime _nextSaveRetry = DateTime.MinValue;
+    int _lastUnsaved;
 
     /// <summary>대상 시작 때 오프라인이면 heartbeat 를 이만큼 기다린 뒤 판정 (Wi-Fi 순간 끊김·재시작 직후)</summary>
     internal TimeSpan OnlineWait { get; set; } = TimeSpan.FromSeconds(20);
-    /// <summary>적용 직전 앱 버전이 '?' 면 이만큼 heartbeat 를 더 본다 (브리지 재부팅 직후 3초 동안은 '?' — 그때 바로 복구 적용으로 보지 않게)</summary>
-    internal TimeSpan DspVersionWait { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>취소 뒤 브리지가 계속 진행하는 호기를 heartbeat·보고로 따라가 보는 최대 시간</summary>
+    internal TimeSpan FollowUpTimeout { get; set; } = TimeSpan.FromMinutes(3);
+    /// <summary>취소 뒤 메인보드 굽기 흔적(programming·이 job 의 보고)이 이만큼 없으면 '적용 안 됨'으로 기록</summary>
+    internal TimeSpan FollowUpNoApplyWait { get; set; } = TimeSpan.FromSeconds(30);
+    /// <summary>시험용: 1단계 끝에서 적용 대기로 바꾸기 직전 (취소와 엇갈리는 순간을 재현)</summary>
+    internal Action<Job>? BeforePark { get; set; }
     /// <summary>이 시각 전에는 새 작업을 시작하지 않는다 (기동 직후 heartbeat 수집·HTTP 포트 확정 대기)</summary>
     internal DateTime NotBefore { get; set; } = DateTime.MaxValue;
     /// <summary>마지막으로 시작한 작업의 실행 태스크 (시험용)</summary>
@@ -155,7 +170,7 @@ public sealed class JobService : BackgroundService
     void Load()
     {
         using var c = _db.Open();
-        using (var cmd = GatewayDb.Cmd(c, "SELECT id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at, apply_mode, not_after, approved_at FROM jobs"))
+        using (var cmd = GatewayDb.Cmd(c, "SELECT id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at, apply_mode, not_after, approved_at, recover FROM jobs"))
         using (var r = cmd.ExecuteReader())
             while (r.Read())
                 _jobs.Add(new Job
@@ -165,6 +180,7 @@ public sealed class JobService : BackgroundService
                     CreatedAt = GatewayDb.Dt(r.GetString(8)), StartedAt = GatewayDb.DtN(r.IsDBNull(9) ? null : r.GetString(9)), FinishedAt = GatewayDb.DtN(r.IsDBNull(10) ? null : r.GetString(10)),
                     ApplyMode = Enum.TryParse<ApplyMode>(r.GetString(11), out var m) ? m : ApplyMode.Immediate,
                     NotAfter = GatewayDb.DtN(r.IsDBNull(12) ? null : r.GetString(12)), ApprovedAt = GatewayDb.DtN(r.IsDBNull(13) ? null : r.GetString(13)),
+                    Recover = r.GetInt64(14) != 0,
                 });
         var byId = _jobs.ToDictionary(j => j.Id);
         using (var cmd = GatewayDb.Cmd(c, "SELECT job_id, agv, state, percent, message, version_before, version_after, started_at, finished_at, log, stage_job FROM job_targets ORDER BY job_id, seq"))
@@ -208,39 +224,48 @@ public sealed class JobService : BackgroundService
     /// <summary>저장할 작업 한 건의 복사본 — 작업 lock 안에서 만들고(Snap) lock 밖에서 쓴다(Write)</summary>
     sealed record JobRow(long Seq, string Id, string Name, string FirmwareId, FirmwareKind Kind, string Version, DateTime? ScheduledAt, bool StopOnFailure,
                          JobState State, DateTime CreatedAt, DateTime? StartedAt, DateTime? FinishedAt, ApplyMode Mode, DateTime? NotAfter, DateTime? ApprovedAt,
-                         TargetRow[] Targets);
+                         bool Recover, TargetRow[] Targets);
     sealed record TargetRow(int Agv, TargetState State, int Percent, string Message, string VersionBefore, string VersionAfter,
                             DateTime? StartedAt, DateTime? FinishedAt, string Log, long StageJob);
-    /// <summary>작업 하나의 저장 창구: 이 객체를 잠그고 쓴다. Saved = 마지막으로 쓴 복사본 번호, Deleted = 기록을 지움(다시 쓰지 않음)</summary>
-    sealed class SaveSlot { public long Saved; public bool Deleted; }
+    /// <summary>
+    /// 작업 하나의 저장 창구: 이 객체를 잠그고 쓴다. Saved = 마지막으로 쓴 복사본 번호, Deleted = 기록을 지움(다시 쓰지 않음),
+    /// Pending = 쓰지 못한 가장 새 복사본, PendingDelete = 지우지 못함 — 둘 다 Tick 이 성공할 때까지 다시 시도한다
+    /// </summary>
+    sealed class SaveSlot { public long Saved; public bool Deleted; public JobRow? Pending; public bool PendingDelete; }
 
     /// <summary>작업 상태를 복사한다 (작업 lock 안에서, 또는 아직 다른 스레드가 모르는 생성자 단계에서)</summary>
     JobRow Snap(Job j) => new(++_saveSeq, j.Id, j.Name, j.FirmwareId, j.Kind, j.FirmwareVersion, j.ScheduledAt, j.StopOnFailure,
-        j.State, j.CreatedAt, j.StartedAt, j.FinishedAt, j.ApplyMode, j.NotAfter, j.ApprovedAt,
+        j.State, j.CreatedAt, j.StartedAt, j.FinishedAt, j.ApplyMode, j.NotAfter, j.ApprovedAt, j.Recover,
         j.Results.Select(r => new TargetRow(r.Agv, r.State, r.Percent, r.Message, r.VersionBefore, r.VersionAfter, r.StartedAt, r.FinishedAt,
                                             string.Join('\n', r.Log), r.StageJob)).ToArray());
 
     /// <summary>
     /// 복사본 한 건(대상 포함) 저장 — 작업 lock 밖에서. 같은 작업은 창구 lock 으로 한 번에 하나씩, 이미 더 새 복사본을 썼으면 건너뛴다.
-    /// DB 잠금은 SaveTimeoutSec 만 기다리고, 실패해도 서비스가 죽지 않도록 로그만 남긴다 (메모리 상태는 유지, 다음 저장이 최신을 씀).
+    /// DB 잠금은 SaveTimeoutSec 만 기다린다. 실패하면 서비스가 죽지 않도록 로그만 남기고 복사본을 창구(Pending)에 둔다 —
+    /// 취소·완료·적용 대기 전환처럼 뒤따르는 저장이 없는 마지막 상태도 Tick(RetryUnsaved)이 결국 DB 에 쓴다. 썼거나 쓸 필요가 없으면 true
     /// </summary>
-    void Write(JobRow s)
+    bool Write(JobRow s)
     {
         var slot = _slots.GetOrAdd(s.Id, _ => new SaveSlot());
         lock (slot)
         {
-            if (slot.Deleted || s.Seq <= slot.Saved) return;
+            if (slot.Deleted || s.Seq <= slot.Saved)
+            {
+                if (slot.Deleted || slot.Pending?.Seq <= slot.Saved) slot.Pending = null;
+                return true;
+            }
             try
             {
                 using var c = OpenDb();
                 using var tx = c.BeginTransaction();
                 GatewayDb.Exec(c, """
-                    INSERT OR REPLACE INTO jobs(id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at, apply_mode, not_after, approved_at)
-                    VALUES($id, $name, $fw, $kind, $ver, $sched, $stop, $state, $created, $started, $finished, $mode, $notafter, $approved)
+                    INSERT OR REPLACE INTO jobs(id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at, apply_mode, not_after, approved_at, recover)
+                    VALUES($id, $name, $fw, $kind, $ver, $sched, $stop, $state, $created, $started, $finished, $mode, $notafter, $approved, $recover)
                     """, ("$id", s.Id), ("$name", s.Name), ("$fw", s.FirmwareId), ("$kind", s.Kind.ToString()), ("$ver", s.Version),
                     ("$sched", GatewayDb.Ts(s.ScheduledAt)), ("$stop", s.StopOnFailure ? 1 : 0), ("$state", s.State.ToString()),
                     ("$created", GatewayDb.Ts(s.CreatedAt)), ("$started", GatewayDb.Ts(s.StartedAt)), ("$finished", GatewayDb.Ts(s.FinishedAt)),
-                    ("$mode", s.Mode.ToString()), ("$notafter", GatewayDb.Ts(s.NotAfter)), ("$approved", GatewayDb.Ts(s.ApprovedAt)));
+                    ("$mode", s.Mode.ToString()), ("$notafter", GatewayDb.Ts(s.NotAfter)), ("$approved", GatewayDb.Ts(s.ApprovedAt)),
+                    ("$recover", s.Recover ? 1 : 0));
                 int seq = 0;
                 foreach (var r in s.Targets)
                     GatewayDb.Exec(c, """
@@ -251,8 +276,36 @@ public sealed class JobService : BackgroundService
                         ("$log", r.Log), ("$stage", r.StageJob == 0 ? null : r.StageJob));
                 tx.Commit();
                 slot.Saved = s.Seq;
+                if (slot.Pending?.Seq <= s.Seq) slot.Pending = null;
+                return true;
             }
-            catch (Exception e) { SaveFailed("작업 저장 실패", s.Id, e); }
+            catch (Exception e)
+            {
+                if (slot.Pending is null || slot.Pending.Seq < s.Seq) slot.Pending = s;
+                SaveFailed("작업 저장 실패 (다시 시도함)", s.Id, e);
+                return false;
+            }
+        }
+    }
+
+    /// <summary>DB 에 아직 쓰지 못한 작업 수 (저장·삭제 대기). 화면 표시용</summary>
+    public int UnsavedCount => _slots.Values.Count(s => s.Pending is not null || s.PendingDelete);
+
+    /// <summary>
+    /// 쓰지 못한 복사본·삭제를 다시 시도 (Tick 에서, 작업 lock 밖). 하나라도 실패하면 DB 가 아직 잠긴 것으로 보고 SaveRetryGap 뒤에 이어서.
+    /// 그사이 더 새 복사본이 써졌으면 Write 가 건너뛰고 대기 표시만 지운다
+    /// </summary>
+    void RetryUnsaved()
+    {
+        var now = DateTime.UtcNow;
+        if (now < _nextSaveRetry) return;
+        foreach (var (id, slot) in _slots)
+        {
+            JobRow? pending; bool delete;
+            lock (slot) { pending = slot.Pending; delete = slot.PendingDelete; }
+            if (delete ? DeleteRow(id) : pending is null || Write(pending)) continue;
+            _nextSaveRetry = DateTime.UtcNow + SaveRetryGap;
+            return;
         }
     }
 
@@ -280,15 +333,30 @@ public sealed class JobService : BackgroundService
         _log.LogError("{What} ({Id}): {Msg}{More}", what, id, e.Message, skipped > 0 ? $" (그사이 실패 {skipped}건 더)" : "");
     }
 
-    /// <summary>작업 기록을 지운다 (lock 밖에서). 창구에 지움 표시를 남겨 늦게 도착한 저장이 기록을 되살리지 않게 한다</summary>
-    void DeleteRow(string id)
+    /// <summary>
+    /// 작업 기록을 지운다 (lock 밖에서). 창구에 지움 표시를 남겨 늦게 도착한 저장이 기록을 되살리지 않게 한다.
+    /// 실패하면 PendingDelete 로 남겨 Tick 이 다시 지운다 (재시작 뒤 지운 기록이 되살아나지 않게). 지웠으면 true
+    /// </summary>
+    bool DeleteRow(string id)
     {
         var slot = _slots.GetOrAdd(id, _ => new SaveSlot());
         lock (slot)
         {
             slot.Deleted = true;
-            try { using var c = OpenDb(); GatewayDb.Exec(c, "DELETE FROM jobs WHERE id=$id", ("$id", id)); }   // job_targets 는 CASCADE
-            catch (Exception e) { SaveFailed("작업 삭제 실패", id, e); }
+            slot.Pending = null;
+            try
+            {
+                using var c = OpenDb();
+                GatewayDb.Exec(c, "DELETE FROM jobs WHERE id=$id", ("$id", id));   // job_targets 는 CASCADE
+                slot.PendingDelete = false;
+                return true;
+            }
+            catch (Exception e)
+            {
+                slot.PendingDelete = true;
+                SaveFailed("작업 삭제 실패 (다시 시도함)", id, e);
+                return false;
+            }
         }
     }
 
@@ -332,8 +400,9 @@ public sealed class JobService : BackgroundService
         finally { lock (_lock) _deletingFw.Remove(firmwareId); }
     }
 
+    /// <summary>작업을 만든다. recover = 메인보드 복구 적용 (앱이 멈춘·지워진 호기용, 메인보드 작업만)</summary>
     public Job Create(string name, string firmwareId, IEnumerable<int>? targets, DateTime? scheduledAtUtc, bool stopOnFailure,
-                      ApplyMode applyMode = ApplyMode.Approve, DateTime? notAfterUtc = null)
+                      ApplyMode applyMode = ApplyMode.Approve, DateTime? notAfterUtc = null, bool recover = false)
     {
         var now = DateTime.UtcNow;
         if (string.IsNullOrWhiteSpace(firmwareId)) throw new InvalidOperationException("펌웨어를 고르세요 (firmwareId)");
@@ -354,6 +423,7 @@ public sealed class JobService : BackgroundService
             // 펌웨어 확인과 작업 추가를 한 lock 안에서 (DeleteFirmwareIfUnused 가 보는 목록과 엇갈리지 않게, 순서는 작업 → 펌웨어)
             if (_deletingFw.Contains(firmwareId)) throw new InvalidOperationException("펌웨어를 지우는 중입니다");
             var fw = _fw.Get(firmwareId) ?? throw new InvalidOperationException("펌웨어 없음");
+            if (recover && fw.Kind != FirmwareKind.Dsp) throw new InvalidOperationException("복구 적용은 메인보드 작업만 고를 수 있습니다");
             j = new Job
             {
                 Id = now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4],
@@ -361,7 +431,7 @@ public sealed class JobService : BackgroundService
                 FirmwareId = fw.Id, Kind = fw.Kind, FirmwareVersion = fw.Version, Targets = t,
                 ScheduledAt = scheduledAtUtc, StopOnFailure = stopOnFailure, State = JobState.Scheduled, CreatedAt = now,
                 // 브리지 작업은 스테이징 분리가 없어 늘 즉시
-                ApplyMode = fw.Kind == FirmwareKind.Dsp ? applyMode : ApplyMode.Immediate, NotAfter = notAfterUtc,
+                ApplyMode = fw.Kind == FirmwareKind.Dsp ? applyMode : ApplyMode.Immediate, NotAfter = notAfterUtc, Recover = recover,
                 Results = t.Select(a => new TargetResult { Agv = a }).ToList(),
             };
             _jobs.Add(j); row = Snap(j);
@@ -522,7 +592,11 @@ public sealed class JobService : BackgroundService
         }
         WriteAll(rows);
         if (started is not null) Run(started, startApply);
-        if (rows.Count > 0) Notify();
+        RetryUnsaved();
+        var unsaved = UnsavedCount;
+        bool unsavedChanged = unsaved != _lastUnsaved;
+        _lastUnsaved = unsaved;
+        if (rows.Count > 0 || unsavedChanged) Notify();
     }
 
     void Run(Job job, bool applyPhase)
@@ -572,8 +646,8 @@ public sealed class JobService : BackgroundService
             {
                 if (job.Kind == FirmwareKind.Esp) await RunEspAsync(fw!, r, ct);
                 else if (stagePhase) await StageDspAsync(fw!, r, ct);
-                else if (applyPhase) await ApplyDspAsync(fw!, r, ct);
-                else { await StageDspAsync(fw!, r, ct); await ApplyDspAsync(fw!, r, ct); }
+                else if (applyPhase) await ApplyDspAsync(fw!, r, job.Recover, ct);
+                else { await StageDspAsync(fw!, r, ct); await ApplyDspAsync(fw!, r, job.Recover, ct); }
                 if (stagePhase) { r.State = TargetState.Staged; r.Percent = 30; Add(r, "스테이징 완료 — 적용 대기 (전 호기 스테이징 뒤 화면에서 '적용 시작')"); }
                 else { r.State = TargetState.Done; r.Percent = 100; }
             }
@@ -591,22 +665,29 @@ public sealed class JobService : BackgroundService
             catch (Exception e)
             {
                 // 오류 코드 안내는 OTA 클라이언트가 붙인다 (BridgeErrors). PublicBaseUrl 이 IPv4 가 아니면 url_host 거부 가능성을 덧붙인다
-                var why = e.Message + (_publicUrlProblem is not null && e.Message.Contains("url_host") && !e.Message.Contains("PublicBaseUrl") ? $" ({_publicUrlProblem})" : "");
+                var why = e.Message + (_publicUrlProblem is not null && e.Message.Contains("url_host") && !e.Message.Contains("PublicBaseUrl") ? $" ({_publicUrlProblem})" : "")
+                        + (job.Kind == FirmwareKind.Dsp && !job.Recover && NeedsRecoverHint(e.Message) ? " — " + RecoverHint : "");
                 r.State = TargetState.Failed; Add(r, "ERROR " + why); r.Message = why;
                 if (job.StopOnFailure) stop = true;
             }
             r.FinishedAt = DateTime.UtcNow;
             Persist(job);
         }
-        if (stagePhase && !ct.IsCancellationRequested && !stop && job.StagedCount > 0 && fw is not null)
+        if (stagePhase && !stop && job.StagedCount > 0 && fw is not null)
         {
-            // 1단계 끝 — 실행기를 비우고 승인을 기다린다
-            JobRow row;
-            lock (_lock) { job.State = JobState.AwaitingApproval; job.ApprovedAt = null; row = Snap(job); }
-            Write(row);
-            Notify();
-            _log.LogInformation("job {Id} awaiting approval: staged {Staged} fail {Fail}", job.Id, job.StagedCount, job.FailCount);
-            return;
+            // 1단계 끝 — 실행기를 비우고 승인을 기다린다. 취소 여부는 lock 안에서 본다 (Cancel 은 같은 lock 안에서 토큰을 취소하므로
+            // 확인과 상태 변경 사이에 들어온 취소가 사라지지 않는다). 취소됐으면 아래의 취소 정리로
+            BeforePark?.Invoke(job);
+            JobRow? row = null;
+            lock (_lock)
+                if (!ct.IsCancellationRequested) { job.State = JobState.AwaitingApproval; job.ApprovedAt = null; row = Snap(job); }
+            if (row is not null)
+            {
+                Write(row);
+                Notify();
+                _log.LogInformation("job {Id} awaiting approval: staged {Staged} fail {Fail}", job.Id, job.StagedCount, job.FailCount);
+                return;
+            }
         }
         foreach (var r in job.Results.Where(r => r.State == TargetState.Staged))
         { r.State = TargetState.Skipped; r.Message = (ct.IsCancellationRequested ? "취소" : stop ? "앞 호기 실패로 중단" : "적용 안 함") + " (스테이징만 됨)"; }
@@ -711,24 +792,24 @@ public sealed class JobService : BackgroundService
         await c.StageAsync(url, img, r.StageJob, x => OnDspStage(r, x), ct);
     }
 
+    /// <summary>앱이 멈춘 호기에 복구 적용을 권하는 실패 안내 (일반 적용 작업에서 앱 무응답·구 앱·부트로더 무응답으로 실패했을 때)</summary>
+    internal const string RecoverHint = "복구 적용으로 다시 배포(앱이 멈춘 경우)";
+    internal static bool NeedsRecoverHint(string message) =>
+        !message.Contains(RecoverHint) && (message.Contains("app_no_reply") || message.Contains("app_no_fwup") || message.Contains("no_bootloader"));
+
     // 메인보드 OTA B안 2단계: 적용(0x34, 스테이징 때와 같은 job) → 보고(0x33) → heartbeat 의 dsp 버전 확인
-    async Task ApplyDspAsync(FirmwareEntry fw, TargetResult r, CancellationToken ct)
+    async Task ApplyDspAsync(FirmwareEntry fw, TargetResult r, bool recover, CancellationToken ct)
     {
         var agv = await WaitOnlineAsync(r, ct);
         var st = CheckDspBridge(agv);
         var (_, img) = await LoadDspImageAsync(fw, ct);
         if (r.StageJob == 0) throw new InvalidOperationException("스테이징 작업 번호 없음 — 다시 배포하세요");
-        // 앱 버전을 모르는 호기(dsp=?: 구 앱·앱 멈춤·브리지 재부팅 직후)는 잠깐 더 본 뒤에도 모르면 복구 적용.
-        // recover 가 있어도 브리지는 먼저 앱에 U 를 보내므로 앱이 살아 있으면 평소처럼 앱의 정지 확인을 거친다.
-        // 앱이 응답하지 않을 때만 부트로더로 바로 들어가고, 부트로더도 안 잡히면 최대 60초 동안 전원 재투입을 기다린다 (wait_power)
-        if (!st.HasDsp)
-        {
-            var until = DateTime.UtcNow + DspVersionWait;
-            while (DateTime.UtcNow < until && _reg.StatusOf(r.Agv) is { HasDsp: false }) await Task.Delay(250, ct);
-            st = _reg.StatusOf(r.Agv) ?? st;
-        }
-        bool recover = !st.HasDsp;
-        if (recover) Add(r, "메인보드 앱 버전 모름 (dsp=?) — 복구 적용으로 진행: 앱이 응답하면 평소대로, 응답하지 않으면 브리지가 부트로더로 바로 들어감 (안내가 나오면 메인보드 전원을 껐다 켜세요)");
+        // recover 는 운용자가 작업에서 고른 경우에만 (앱 버전 '?' 만으로 붙이지 않는다 — 살아 있는 구 앱 호기가 원시 모드에 오래 묶이지 않게).
+        // recover 여도 브리지는 먼저 앱에 U 를 보내므로 앱이 살아 있으면 평소처럼 앱의 정지 확인을 거친다
+        if (recover)
+            Add(r, "복구 적용 — 앱이 응답하지 않고 침묵하면 브리지가 부트로더로 바로 들어가고, 안 잡히면 최대 60초 동안 메인보드 전원 재투입을 기다림 (안내가 나오면 메인보드 전원을 껐다 켜세요, 그동안 RFID·ACS 중계 끊김)");
+        else if (!st.HasDsp)
+            Add(r, "메인보드 앱 버전 모름 (dsp=?) — 일반 적용: 앱이 응답하지 않으면 실패. 앱이 멈춘 호기면 '복구 적용' 작업으로 다시 배포");
         Add(r, $"적용{(recover ? " (복구)" : "")} — 메인보드 앱 정지, 약 20~30초");
         using var c = new DspOtaClient(_link, _reg.StatusOf, r.Agv);
         r.Committed = true;
@@ -759,31 +840,74 @@ public sealed class JobService : BackgroundService
         }
     }
 
-    /// <summary>취소했지만 브리지가 계속 진행하는 호기: 3분 동안 heartbeat 버전을 보고 결과를 기록에 남긴다</summary>
+    /// <summary>
+    /// 취소했지만 브리지가 계속 진행하는 호기: FollowUpTimeout 동안 보고·heartbeat 를 보고 결과를 기록에 남긴다.
+    /// 버전만 보지 않고 상태 변화로 판정한다 — 같은 버전 재설치에서는 취소 전 heartbeat 도 이미 기대 버전이기 때문.
+    /// 메인보드: 이 job 의 흔적(스테이징·programming·이 job 의 보고)을 본 뒤 idle·스테이징 없음·기대 버전이어야 '올라감'.
+    /// 굽기 흔적이 FollowUpNoApplyWait 동안 없으면 '적용 안 됨', programming 뒤 staged 로 돌아오면 '굽기 실패'.
+    /// 브리지: 재설치(이전 버전 = 기대 버전)면 실행 슬롯이 바뀐(새 이미지로 재부팅한) 것을 봐야 '올라감'.
+    /// </summary>
     void FollowUpAfterCancel(Job job, TargetResult r)
     {
         var expected = job.FirmwareVersion;
         bool dsp = job.Kind == FirmwareKind.Dsp;
+        var sub = dsp && r.StageJob != 0 ? _link.Subscribe(r.Agv) : null;   // 취소 뒤에도 오는 이 job 의 보고(0x33)
         // 그 사이 작업 기록을 지웠으면 Persist 가 다시 저장하지 않는다 (INSERT OR REPLACE 로 지운 기록이 되살아나지 않게)
         _ = Task.Run(async () =>
         {
+            using var _ = sub;
+            void End(string line, string? after)
+            {
+                if (!string.IsNullOrEmpty(after)) r.VersionAfter = after;
+                Add(r, line);
+                Persist(job);
+            }
             try
             {
-                var until = DateTime.UtcNow.AddMinutes(3);
-                while (DateTime.UtcNow < until)
+                var t0 = DateTime.UtcNow;
+                bool sawJob = false, programming = false, programmingHb = false;
+                while (DateTime.UtcNow - t0 < FollowUpTimeout)
                 {
                     var st = _reg.StatusOf(r.Agv);
-                    var cur = dsp ? st?.Dsp : st?.Fw;
-                    if (dsp ? DspVersion.Matches(cur, expected) && st?.DspState != "programming" : cur == expected)
+                    if (dsp)
                     {
-                        r.VersionAfter = cur!;
-                        Add(r, $"취소 — 브리지가 끝까지 진행해 {cur} 로 올라감 (heartbeat 확인)");
-                        Persist(job);
-                        return;
+                        while (sub is not null && sub.DspOtaResults.Reader.TryRead(out var js))
+                        {
+                            var x = DspOtaResult.Parse(js);
+                            if (x is null || x.Job != r.StageJob || x.Stage is "staged" or "download") continue;
+                            sawJob = programming = true;
+                            if (x.Stage == "done") { End($"취소 — 브리지가 끝까지 진행해 {x.Ver} 로 올라감 (완료 보고)", x.Ver); return; }
+                            if (x.Stage == "fail") { End("취소 — 브리지가 굽다가 실패: " + BridgeErrors.WithHint(x.Err, x.Err), st?.Dsp); return; }
+                        }
+                        if (st is not null)
+                        {
+                            if (st.StagedJob == r.StageJob) sawJob = true;
+                            if (st.DspState == "programming") sawJob = programming = programmingHb = true;
+                            else if (programmingHb && st.DspState == "staged")
+                            { End($"취소 — 브리지가 굽다가 실패 (스테이징 유지, 현재 앱 {st.Dsp}) — 호기 현황에서 확인하세요", st.Dsp); return; }
+                            if (sawJob && st.DspState == "idle" && st.StagedJob is null && DspVersion.Matches(st.Dsp, expected))
+                            { End($"취소 — 브리지가 끝까지 진행해 {st.Dsp} 로 올라감 (heartbeat 확인)", st.Dsp); return; }
+                            if (!programming && DateTime.UtcNow - t0 >= FollowUpNoApplyWait && _reg.Get(r.Agv)?.Online(_opt.OfflineAfterSec) == true)
+                            {
+                                End($"취소 — 적용 안 됨 (브리지가 굽기를 시작하지 않음{(st.StagedJob == r.StageJob ? ", 스테이징 유지" : "")}, 현재 앱 {(st.HasDsp ? st.Dsp : "?")})", null);
+                                return;
+                            }
+                        }
                     }
-                    await Task.Delay(1000, _stopping);
+                    else if (st is not null && st.Fw == expected)
+                    {
+                        if (r.VersionBefore != expected)
+                        { End($"취소 — 브리지가 끝까지 진행해 {st.Fw} 로 올라감 (heartbeat 확인)", st.Fw); return; }
+                        if (r.PartBefore.Length > 0 && st.Part.Length > 0 && st.Part != r.PartBefore)
+                        { End($"취소 — 브리지가 끝까지 진행해 {st.Fw} 재설치 (새 슬롯 {st.Part} 로 재부팅, heartbeat 확인)", st.Fw); return; }
+                    }
+                    await Task.Delay(500, _stopping);
                 }
-                Add(r, $"취소 — 3분 안에 새 버전 확인 안 됨 (현재 {(dsp ? _reg.StatusOf(r.Agv)?.Dsp : _reg.StatusOf(r.Agv)?.Fw) ?? "?"}) — 호기 현황에서 확인하세요");
+                var now = _reg.StatusOf(r.Agv);
+                var cur = (dsp ? now?.Dsp : now?.Fw) ?? "?";
+                Add(r, !dsp && r.VersionBefore == expected
+                    ? $"취소 — 버전 변화 없음 (재설치 여부 미확인, 현재 {cur}{(now?.Part is { Length: > 0 } p ? $" {p}" : "")}) — 호기 현황에서 확인하세요"
+                    : $"취소 — {FollowUpTimeout.TotalMinutes:0.#}분 안에 결과 확인 안 됨 (현재 {cur}) — 호기 현황에서 확인하세요");
                 Persist(job);
             }
             catch (OperationCanceledException) { }
@@ -803,6 +927,7 @@ public sealed class JobService : BackgroundService
     {
         var agv = await WaitOnlineAsync(r, ct);
         r.VersionBefore = agv.Status?.Fw ?? "";
+        r.PartBefore = agv.Status?.Part ?? "";
         if (agv.Status?.Fw == fw.Version)
             Add(r, $"이미 {fw.Version} 실행 중 — 그래도 진행 (재설치)");
         if (agv.Status?.Ota == "pending")

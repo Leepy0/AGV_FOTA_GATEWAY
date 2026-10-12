@@ -127,10 +127,11 @@ api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
 api.MapPost("/jobs", (JobCreateRequest? r, JobService jobs) =>
 {
-    // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용)
+    // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용).
+    // recover: 메인보드 복구 적용 (앱이 응답하지 않는 호기용 — 부트로더가 바로 안 잡히면 최대 60초 전원 재투입 대기, AGV 정지 필수)
     if (r is null) return Results.BadRequest("본문(JSON)이 없습니다");
     if (JobApi.Check(r, out var mode) is { } bad) return Results.BadRequest(bad);
-    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId!, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime())); }
+    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId!, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime(), r.Recover ?? false)); }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
 // queued=true: 이 작업이 끝나면 곧바로 이어서 시작될 대기 작업도 함께 취소
@@ -239,7 +240,8 @@ app.Lifetime.ApplicationStarted.Register(() =>
 
 app.Run();
 
-record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, DateTime? ScheduledAt, bool? StopOnFailure, string? ApplyMode, DateTime? NotAfter);
+record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, DateTime? ScheduledAt, bool? StopOnFailure, string? ApplyMode, DateTime? NotAfter,
+                        bool? Recover = null);
 record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, string? Process, string? Route, string? Name, string? Note);
 record SendRequest(string? Data);
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
