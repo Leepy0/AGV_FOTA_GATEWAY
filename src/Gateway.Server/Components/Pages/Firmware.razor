@@ -120,7 +120,7 @@
         {
             var users = ActiveJobNames(e.Id);
             if (users.Count > 0) { msg = $"작업 {string.Join(", ", users)} 이(가) 쓰는 펌웨어입니다 — 작업을 먼저 취소하세요"; err = true; return; }
-            if (!await JS.InvokeAsync<bool>("confirm", $"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
+            if (!await JS.ConfirmAsync($"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
             // 확인창이 떠 있는 동안 작업이 생겼을 수 있다 — REST 와 같은 원자적 경로가 사용 여부를 다시 보고 지운다
             if (JobSvc.DeleteFirmwareIfUnused(e.Id, out var inUse)) msg = $"삭제: {e.Version}";
             else if (inUse.Count > 0) { msg = $"그사이 작업 {string.Join(", ", inUse.Select(j => j.Name))} 이(가) 이 펌웨어를 쓰게 되어 지우지 않았습니다"; err = true; }
