@@ -179,7 +179,7 @@
     async Task Remove(int agv)
     {
         rowMsg = null;
-        if (!await JS.InvokeAsync<bool>("confirm", $"{agv:D2} 호기의 소속을 지울까요?")) return;
+        if (!await JS.ConfirmAsync($"{agv:D2} 호기의 소속을 지울까요?")) return;
         try { Store.Remove(agv); }
         catch (Exception e) { rowMsg = $"{agv:D2} 삭제 실패: {e.Message}"; }
     }
