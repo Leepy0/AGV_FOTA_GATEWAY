@@ -553,9 +553,15 @@ public sealed class JobService : BackgroundService
             catch (Exception e) { _log.LogError(e, "작업 스케줄러 오류"); }
             try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { break; }
         }
+        // 종료(서버 업데이트·재시작) 직전에 밀린 저장을 한 번 더 — 실패하면 재시작 뒤 DB 의 이전 상태가 남는다
+        try { _nextSaveRetry = DateTime.MinValue; RetryUnsaved(); }
+        catch (Exception e) { _log.LogWarning("종료 전 작업 저장 재시도 오류: {Msg}", e.Message); }
     }
 
-    /// <summary>스케줄러 한 번: 늦은 예약 취소 → 마감 지난 적용 대기 정리 → (비어 있으면) 승인된 적용 또는 다음 작업 시작. 상태가 바뀐 때만 알린다</summary>
+    /// <summary>
+    /// 스케줄러 한 번: 늦은 예약 취소 → 마감 지난 적용 대기 정리 → (비어 있으면) 승인된 적용 또는 다음 작업 시작 → 못 쓴 저장 재시도.
+    /// 상태(또는 저장 대기 수)가 바뀐 때만 알린다
+    /// </summary>
     internal void Tick()
     {
         var rows = new List<JobRow>();

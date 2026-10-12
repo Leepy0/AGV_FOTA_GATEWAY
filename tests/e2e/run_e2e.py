@@ -560,20 +560,22 @@ def s8_upload_reject(ctx):
 
 
 def s9_recover(ctx):
-    """구 앱(--nodsp, dsp='?') 호기 → 서버가 recover:1 로 적용, wait_power 뒤 전원 재투입으로 성공"""
-    f = ctx.fake("s9", [91], "--nodsp", "mute", "--power-cycle-sec", "3")
+    """멈춘 앱(--nodsp mute --app-frames no, dsp='?') 호기 → '복구 적용' 작업(recover:true)이 APPLY 에 recover:1, wait_power 뒤 전원 재투입으로 성공"""
+    f = ctx.fake("s9", [91], "--nodsp", "mute", "--app-frames", "no", "--power-cycle-sec", "3")
     ctx.wait_online([91], need_dsp=False)
     check(ctx.agv(91)["dsp"] == "?", f"dsp={ctx.agv(91)['dsp']}")
     fw = ctx.upload_dsp("1.9.0", seed=91)
-    j = ctx.create_job(fw, [91], "Immediate")
+    j = ctx.create_job(fw, [91], "Immediate", recover=True)
+    check(j.get("recover") is True, f"작업에 recover 가 없음: {j.get('recover')}")
     j = ctx.wait_job(j["id"], {"Done"}, 150)
     ap = f.rx("APPLY", 91)
     check(ap and all(e["json"].get("recover") == 1 for e in ap), f"APPLY 에 recover:1 없음: {[e['payload'] for e in ap]}")
+    check(f.ev("raw_mode", 91), "원시 모드(부트로더 직행) 흔적 없음")
     wp = [e for e in f.ev("dsp_report", 91) if e["stage"] == "wait_power"]
     check(wp, "wait_power 보고 없음")
     check(ctx.agv(91)["dsp"] == "1.9.0", f"dsp={ctx.agv(91)['dsp']}")
-    check(any("복구" in line for line in result(j, 91)["log"]), "작업 기록에 복구 적용 안내 없음")
-    return f"APPLY {ap[0]['payload']} → wait_power {len(wp)}회 → 전원 재투입 → Done dsp 1.9.0"
+    check(any("복구 적용" in line for line in result(j, 91)["log"]), "작업 기록에 복구 적용 안내 없음")
+    return f"recover 작업 → APPLY {ap[0]['payload']} → wait_power {len(wp)}회 → 전원 재투입 → Done dsp 1.9.0"
 
 
 def s10_manual_guard(ctx):
@@ -608,6 +610,30 @@ def s10_manual_guard(ctx):
     return f"F/R 400, 정상 프레임 전달({len(mains)}건), 다른 출처·cross-site 403, 같은 출처 200"
 
 
+def s12_old_app(ctx):
+    """살아 있는 구 앱(dsp='?') 일반 적용 → 원시 모드 없이 app_no_fwup / 버전 아는 앱이 U 에 침묵 → app_no_reply 뒤 dsp '?' (둘 다 recover 없음·복구 적용 안내)"""
+    f1 = ctx.fake("s12a", [85], "--nodsp", "mute")
+    f2 = ctx.fake("s12b", [86], "--app-u", "noreply", "--app-frames", "no")
+    ctx.wait_online([86])
+    ctx.wait_online([85], need_dsp=False)
+    check(ctx.agv(85)["dsp"] == "?", f"[85] dsp={ctx.agv(85)['dsp']}")
+    fw = ctx.upload_dsp("1.12.0", seed=85)
+    j = ctx.create_job(fw, [85, 86], "Immediate", stopOnFailure=False)
+    check(j.get("recover") is False, f"recover 를 고르지 않았는데 {j.get('recover')}")
+    j = ctx.wait_job(j["id"], {"Failed"}, 90)
+    r1, r2 = result(j, 85), result(j, 86)
+    check(r1["state"] == "Failed" and "app_no_fwup" in r1["message"], f"[85] {r1['state']} {r1['message']}")
+    check(r2["state"] == "Failed" and "app_no_reply" in r2["message"], f"[86] {r2['state']} {r2['message']}")
+    for r in (r1, r2):
+        check("복구 적용으로 다시 배포" in r["message"], f"[{r['agv']}] 복구 적용 안내 없음: {r['message']}")
+    ap = f1.rx("APPLY", 85) + f2.rx("APPLY", 86)
+    check(ap and all("recover" not in e["json"] for e in ap), f"recover 가 붙음: {[e['payload'] for e in ap]}")
+    check(not f1.ev("raw_mode") and not f2.ev("raw_mode"), "원시 모드에 들어감 (RFID·ACS 중계 끊김)")
+    check(not [e for e in f1.ev("dsp_report") + f2.ev("dsp_report") if e["stage"] == "wait_power"], "wait_power 보고가 나감")
+    ctx.wait(lambda: ctx.agv(86)["dsp"] == "?", 5, "[86] app_no_reply 뒤 heartbeat dsp '?'")
+    return "[85] app_no_fwup·[86] app_no_reply (원시 모드·wait_power 없음, recover 없음, 복구 적용 안내), 86 dsp → '?'"
+
+
 def s11_cfg_trial(ctx):
     """원격 설정 save·reboot → cfg=trial → 서버 자동 PING 으로 saved (결정 3)"""
     f = ctx.fake("s11", [2], "--confirm-sec", "60")
@@ -638,9 +664,10 @@ SCENARIOS = [
     (6, "호기 번호 충돌", s6_dup_id),
     (7, "마감 시각·잘못된 입력 400", s7_deadline_input),
     (8, ".dspfw 업로드 거부", s8_upload_reject),
-    (9, "구 앱 recover:1 적용", s9_recover),
+    (9, "멈춘 앱 복구 적용 (recover:true)", s9_recover),
     (10, "수동 전송 F/R·다른 출처 403", s10_manual_guard),
     (11, "원격 설정 trial → saved", s11_cfg_trial),
+    (12, "구 앱·침묵 앱 일반 적용 → app_no_fwup·app_no_reply", s12_old_app),
 ]
 
 

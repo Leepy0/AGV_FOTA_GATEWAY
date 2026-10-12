@@ -256,16 +256,19 @@ class Basics(FakeBridgeTest):
         self.fresh_hb(lambda h: h["cfg"] == "saved")
 
 
-class OldApp(FakeBridgeTest):
-    extra = ["--nodsp", "mute", "--power-cycle-sec", "0.5"]
+class HungApp(FakeBridgeTest):
+    """앱이 멈춤(버전·U 무응답, UART 프레임 없음) — 복구 적용 대상"""
+    extra = ["--nodsp", "mute", "--app-frames", "no", "--power-cycle-sec", "0.5"]
 
     def test_recover_wait_power(self):
         h = self.fresh_hb(lambda h: True)
         self.assertEqual(h["dsp"], "?")
         self.stage("2.0.0", 90)
-        self.send(fk.T_DSP_APPLY, b'{"job":90}')            # recover 없음: 앱 버전 '?' 라 부트로더 직행 → HELLO 실패
+        self.send(fk.T_DSP_APPLY, b'{"job":90}')            # recover 없음: 앱 버전 '?' 라 원시 모드 HELLO 3회만 → 실패 (wait_power 없음)
         self.pump(lambda: len(self.finals(90, "fail")) >= 3, 15)
         self.assertEqual(self.finals(90, "fail")[0]["err"], "no_bootloader")
+        self.assertFalse(self.finals(90, "wait_power"))
+        self.assertEqual(len(self.ev("raw_mode")), 1)
         # 같은 job 을 다시 APPLY 하면 10분 동안은 최근 결과(fail)를 재보고할 뿐 다시 굽지 않는다 (실제 브리지와 같음)
         self.send(fk.T_DSP_APPLY, b'{"job":90,"recover":1}')
         self.pump(lambda: len(self.finals(90, "fail")) >= 6, 10)
@@ -276,6 +279,40 @@ class OldApp(FakeBridgeTest):
         self.pump(lambda: len(self.finals(91, "done")) >= 3, 30)
         self.assertTrue(self.finals(91, "wait_power"))
         self.fresh_hb(lambda h: h["dsp"] == "2.0.0")
+
+
+class OldApp(FakeBridgeTest):
+    """살아 있는 구 앱(버전·U 무응답이지만 UART 프레임은 보냄) — recover 여도 원시 모드 없이 app_no_fwup"""
+    extra = ["--nodsp", "mute", "--power-cycle-sec", "0.5"]
+
+    def test_app_no_fwup_without_raw_mode(self):
+        self.assertEqual(self.fresh_hb(lambda h: True)["dsp"], "?")
+        self.stage("2.0.0", 80)
+        self.send(fk.T_DSP_APPLY, b'{"job":80}')
+        self.pump(lambda: len(self.finals(80, "fail")) >= 3, 15)
+        self.assertEqual(self.finals(80, "fail")[0]["err"], "app_no_fwup")
+        self.stage("2.0.0", 81)
+        self.send(fk.T_DSP_APPLY, b'{"job":81,"recover":1}')
+        self.pump(lambda: len(self.finals(81, "fail")) >= 3, 15)
+        self.assertEqual(self.finals(81, "fail")[0]["err"], "app_no_fwup")
+        self.assertFalse(self.ev("raw_mode"))
+        self.assertFalse(self.ev("power_cycle"))
+        self.assertFalse(self.finals(81, "wait_power"))
+        self.fresh_hb(lambda h: h["dsp_st"] == "staged" and h["staged"]["job"] == 81)
+
+
+class SilentAppKnownVersion(FakeBridgeTest):
+    """버전은 알지만 U 에 침묵하는 앱 — recover 없이 app_no_reply, heartbeat dsp 는 '?' 로 (원시 모드 없음)"""
+    extra = ["--app-u", "noreply", "--app-frames", "no"]
+
+    def test_app_no_reply_clears_version(self):
+        self.fresh_hb(lambda h: h["dsp"] == "1.0.0")
+        self.stage("2.0.0", 70)
+        self.send(fk.T_DSP_APPLY, b'{"job":70}')
+        self.pump(lambda: len(self.finals(70, "fail")) >= 3, 15)
+        self.assertEqual(self.finals(70, "fail")[0]["err"], "app_no_reply")
+        self.assertFalse(self.ev("raw_mode"))
+        self.fresh_hb(lambda h: h["dsp"] == "?" and h["dsp_build"] == "?")
 
 
 class EraseFail(FakeBridgeTest):
