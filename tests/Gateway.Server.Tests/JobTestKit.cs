@@ -21,6 +21,9 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     public bool SilentStage;     // START 에 아무 보고도 안 함 (실행 중 취소 시험)
     public bool HangApply;       // APPLY 에 start 만 보고하고 멈춤 (굽는 중 취소 시험)
     public string? StageFailErr; // START 에 이 오류로 fail 보고 (예: url_host)
+    public string? ApplyFailErr; // APPLY 에 start 뒤 이 오류로 fail 보고 (예: app_no_reply)
+    public bool DeafApply;       // APPLY 를 받기만 하고 아무것도 안 함 (명령 유실 — 스테이징 유지)
+    readonly Dictionary<int, (string fw, string part, long up)> _esp = new();
 
     /// <summary>호기를 온라인으로 등록 (dsp: 앱 버전, "?" = 앱 무응답)</summary>
     public AgvState Add(int agv, string dsp = "1.0.0", string dspState = "idle")
@@ -32,15 +35,22 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     public AgvState Beat(int agv)
     {
         var (dsp, st, job, ver) = _state[agv];
+        var (fw, part, up) = _esp.TryGetValue(agv, out var e) ? e : ("0.5.2", "ota_0", 10L);
         var staged = job == 0 ? "null" : $"{{\"job\":{job},\"ver\":\"{ver}\"}}";
         var a = reg.GetOrAdd(agv);
         a.Status = BridgeStatus.Parse(System.Text.Encoding.UTF8.GetBytes(
-            $"{{\"fw\":\"0.5.2\",\"part\":\"ota_0\",\"ota\":\"valid\",\"up\":10,\"dsp\":\"{dsp}\",\"dspb\":\"1.0.0\",\"dsp_st\":\"{st}\",\"staged\":{staged}}}"));
+            $"{{\"fw\":\"{fw}\",\"part\":\"{part}\",\"ota\":\"valid\",\"up\":{up},\"dsp\":\"{dsp}\",\"dspb\":\"1.0.0\",\"dsp_st\":\"{st}\",\"staged\":{staged}}}"));
         a.LastSeen = DateTime.UtcNow;
         return a;
     }
 
     public void SetDsp(int agv, string dsp) { _state[agv] = (dsp, "idle", 0, ""); Beat(agv); }
+    /// <summary>메인보드 상태만 바꿈 (스테이징 유지 — 굽다 실패해 staged 로 돌아온 경우 등)</summary>
+    public void SetDspState(int agv, string dsp, string dspState) { var s = _state[agv]; _state[agv] = (dsp, dspState, s.job, s.ver); Beat(agv); }
+    /// <summary>브리지 자체 펌웨어·실행 슬롯·가동 시간 (heartbeat fw/part/up)</summary>
+    public void SetEsp(int agv, string fw, string part, long up) { _esp[agv] = (fw, part, up); Beat(agv); }
+    /// <summary>브리지가 보내는 메인보드 OTA 보고를 흉내 (취소 뒤 확인 시험)</summary>
+    public void SendReport(int agv, long job, string stage, string? err = null) => Report(agv, job, stage, -1, null, err);
     /// <summary>브리지가 재부팅 등으로 스테이징을 잃음</summary>
     public void DropStaged(int agv) { var s = _state[agv]; _state[agv] = (s.dsp, "idle", 0, ""); Beat(agv); }
 
@@ -73,7 +83,9 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
         long job = d.RootElement.GetProperty("job").GetInt64();
         var s = _state[agv];
         if (job != s.job) { Report(agv, job, "fail", err: s.job == 0 ? "not_staged" : "job_mismatch"); return true; }
+        if (DeafApply) return true;
         Report(agv, job, "start", 0, s.ver);
+        if (ApplyFailErr is not null) { Report(agv, job, "fail", ver: s.ver, err: ApplyFailErr); return true; }
         if (HangApply) { _state[agv] = (s.dsp, "programming", s.job, s.ver); Beat(agv); return true; }
         foreach (var st in new[] { "enter", "erase" }) Report(agv, job, st);
         Report(agv, job, "progress", 100);
@@ -86,7 +98,7 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     }
 
     public bool SendMainDown(int agv, ReadOnlySpan<byte> frame) => true;
-    public bool SendOtaStart(int agv, string url) => true;
+    public bool SendOtaStart(int agv, string url) { lock (Sent) Sent.Add((agv, "OTA", url)); return true; }
     public bool SendInfoRequest(int agv) => true;
     public bool SendPing(int agv) => true;
     public AgvSubscription Subscribe(int agv)
@@ -121,7 +133,7 @@ sealed class JobTestKit : IDisposable
 
     public JobService NewService() => new(Microsoft.Extensions.Options.Options.Create(Opt), Store, Reg, Link, Db, NullLogger<JobService>.Instance)
     {
-        NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1), DspVersionWait = TimeSpan.FromMilliseconds(300),
+        NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1), SaveRetryGap = TimeSpan.Zero,
     };
 
     /// <summary>서버 재시작 흉내: 같은 DB 로 실행기를 새로 만든다</summary>

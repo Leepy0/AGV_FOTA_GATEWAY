@@ -162,12 +162,11 @@ public sealed class FirmwareStore
             if (e.Files.Count == 0) throw new InvalidOperationException("파일이 없습니다");
             if (string.IsNullOrEmpty(e.Version)) throw new InvalidOperationException("버전을 알 수 없습니다");
             if (string.IsNullOrEmpty(e.Project)) e.Project = kind == FirmwareKind.Dsp ? "agv-dsp" : EspAppImage.BridgeProject;
-            // DB 에 먼저 쓰고, 성공했을 때만 메모리에 반영 (실패하면 아래에서 폴더 정리)
-            lock (_lock)
-            {
-                using (var c = _db.Open()) Insert(c, e);
-                _entries.Add(e);
-            }
+            // DB 에 먼저 쓰고, 성공했을 때만 메모리에 반영 (실패하면 아래에서 폴더 정리).
+            // DB 는 저장소 lock 밖에서 — 새 id 는 아직 목록에 없어 다른 곳이 건드릴 수 없고, lock 안에서 DB 를 기다리면
+            // 작업 lock 을 쥔 JobService.Create(→ Get)까지 막힌다
+            using (var c = _db.Open()) Insert(c, e);
+            lock (_lock) _entries.Add(e);
         }
         catch
         {
@@ -199,19 +198,17 @@ public sealed class FirmwareStore
 
     /// <summary>
     /// 펌웨어를 지운다 (DB 를 먼저 지우고 성공했을 때만 메모리에서 뺀다 — DB 가 실패하면 예외를 던지고 목록은 그대로).
-    /// 화면·REST 는 이것을 직접 부르지 않고 JobService.DeleteFirmwareIfUnused 를 쓴다('사용 중' 확인과 작업 생성 차단이 거기에 있음).
-    /// lock 순서는 작업 → 펌웨어 한 방향: 저장소 lock 안에서는 다른 서비스를 부르지 않는다 (DB 만).
+    /// 화면·REST 는 이것을 직접 부르지 않고 JobService.DeleteFirmwareIfUnused 를 쓴다('사용 중' 확인과 작업 생성 차단이 거기에 있음 —
+    /// 같은 id 를 동시에 둘이 지우지 않는다).
+    /// 저장소 lock 은 메모리 목록만 지킨다: DB 는 lock 밖에서 (lock 을 쥔 채 DB 잠금을 기다리면 작업 lock 안의 Get 까지 막힌다).
     /// </summary>
     internal bool Delete(string id)
     {
         FirmwareEntry? e;
-        lock (_lock)
-        {
-            e = _entries.FirstOrDefault(x => x.Id == id);
-            if (e is null) return false;
-            using (var c = _db.Open()) GatewayDb.Exec(c, "DELETE FROM firmware WHERE id=$id", ("$id", id));
-            _entries.Remove(e);
-        }
+        lock (_lock) e = _entries.FirstOrDefault(x => x.Id == id);
+        if (e is null) return false;
+        using (var c = _db.Open()) GatewayDb.Exec(c, "DELETE FROM firmware WHERE id=$id", ("$id", id));
+        lock (_lock) _entries.Remove(e);
         TryDeleteDir(Path.Combine(_root, id));
         _log.LogInformation("펌웨어 삭제: {Kind} {Ver} ({Id})", e.Kind, e.Version, id);
         RaiseChanged();

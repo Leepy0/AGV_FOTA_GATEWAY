@@ -24,7 +24,9 @@
 - DSP_OTA_APPLY {job,recover}: 같은 job 을 굽는 중이면 무시. 최근 같은 job 적용 결과가 있으면 재보고. 스테이징이 있는데 job 이 다르면
   fail job_mismatch(ver=스테이징 버전). 스테이징이 없으면 start(job 0, ver "") → fail not_staged(job 0, ver "").
   start(0, ver) → [esp OTA 중이면 esp_ota_busy, 스테이징 재검사 실패면 stage_invalid/image_bad] → enter → 앱에 U:
-  OK 면 부트로더로, NG 면 app_ng_NN, 무응답이면 recover:1 이거나 앱 버전 '?' 일 때만 부트로더 직행(아니면 app_no_reply) →
+  OK 면 부트로더로, NG 면 app_ng_NN. 무응답이면: 직전 3초 안에 앱 프레임이 있었으면(앱은 살아 있으나 업데이트 진입 미지원 구 앱)
+  recover 와 상관없이 원시 모드 없이 app_no_fwup. 앱이 침묵(멈춤·지워짐)이면 recover:1 또는 앱 버전 '?' 일 때 원시 모드로
+  부트로더 직행, 아니면 앱 버전·빌드를 '?' 로 바꾸고 app_no_reply (60초마다 재조회로 앱이 살아 있으면 버전이 돌아옴) →
   HELLO(3회×1.5초) 실패 시 recover 면 wait_power(10초마다 보고, 최대 60초, --power-cycle-sec 뒤 전원 재투입 흉내) → 아니면 no_bootloader →
   erase(이때부터 dsp='?') → progress(10% 단위) → verify → 앱 기동 확인(1초 간격 최대 8회, 앱 버전 조회) → 버전 비교(ver_mismatch) →
   done(100, ver=앱이 보고한 버전 앞 8자) 3회. 지운 뒤 실패하면 retry(n) 보고 후 HELLO 부터 최대 2회 더. 적용 중 dsp_st=programming,
@@ -41,6 +43,7 @@
 
 남은 차이 (가짜라서 다른 점)
 - 메인보드·부트로더는 상태 기계로만 흉내낸다: UART 프레임(F/R·부트로더 패킷)·PAN ID 학습·MAIN_UP 은 없다(MAIN_DOWN 은 로그만).
+  U 무응답 때 '직전 3초 안에 앱 프레임을 받았는지'는 실제 수신 대신 --app-frames(와 메인보드 상태: 부트로더 대기 중이면 없음)로 정한다.
   boot_proto(부트로더 프로토콜 버전 불일치)·no_partition 외의 파티션 읽기 오류(stage_read)는 만들지 않는다.
 - 굽기·지우기·다운로드에 걸리는 시간은 실제보다 짧다(--speed 로 늘림). 프로토콜 대기 시간(앱 응답 2초, HELLO 1.5초×3,
   wait_power 10초 간격·60초, 앱 기동 확인 1초×8, 최종 보고 300ms 간격)은 실제 값.
@@ -61,6 +64,9 @@
                                     verify app(굽기 뒤 앱 무응답 → app_no_reply) ver(ver_mismatch) ota(브리지 OTA finish 실패). N 회만(기본 계속)
   --app-u ok|noreply|ng:NN         메인보드 앱의 U(업데이트 진입) 응답
   --nodsp [mute|boot]              앱이 버전에 응답하지 않음(dsp='?'). mute = 구 앱(U 도 무응답, 전원 재투입해야 부트로더), boot = 앱 없음(부트로더 대기 중)
+  --app-frames yes|no              앱이 메인보드 UART 로 프레임을 보내는지(기본 yes = 살아 있음). no = 앱 멈춤(침묵) —
+                                    --nodsp mute 와 함께 쓰면 멈춘 앱(복구 적용 대상), --app-u noreply 와 함께 쓰면 버전 조회에는 응답했지만
+                                    U 에 침묵하는 앱(app_no_reply 뒤 dsp '?' 전환 시험)
   --nopart / --legacy              dspfw 파티션 없음(dsp_st=nopart) / 0.4.x 브리지
   --dup-id                         각 호기마다 같은 번호·다른 MAC 의 두 번째 장치를 --dup-delay 초 뒤에 띄움 (포트 +100)
   --events FILE                    받은 명령·굽기·재부팅 등을 JSON 줄로 기록 (종단 시험이 검사)
@@ -1035,6 +1041,10 @@ class Bridge:
                     self.cur_start = 0
                     self.cur_apply = 0
 
+    def app_alive(self):
+        """직전 약 3초 안에 메인보드 UART 에서 앱 프레임을 받았는지 (앱이 돌고 있음 — 부트로더 대기 중이면 프레임 없음)"""
+        return self.board in ("app", "mute") and self.o.app_frames == "yes"
+
     def app_query(self, cmd, epoch):
         """메인보드 앱 F→R. 응답 dict 또는 None(응답 없음, 2초 대기)"""
         if self.board == "app":
@@ -1244,9 +1254,17 @@ class Bridge:
                 if not r["ok"]:
                     return "app_ng_%02u" % r["reason"]
                 self.sleep(0.4, epoch)      # BOOT_START_MS
+            elif self.app_alive():
+                # 앱은 살아 있으나 업데이트 진입(F/R)을 모르는 구 앱 — 원시 모드로 RFID·ACS 중계를 끊지 않는다
+                self.log("no U reply but app frames seen - app does not support update entry")
+                return "app_no_fwup"
             elif recover or self.dsp_ver == "?":
                 self.log("no U reply - trying bootloader directly (%s)" % ("recover" if recover else "app version unknown"))
+                self.event("raw_mode", job=job, recover=recover)
             else:
+                with self.lock:
+                    self.dsp_ver = "?"          # heartbeat 가 '?' 를 보고 — 다음 배포에서 복구 적용을 고를 수 있게
+                    self.dsp_build = "?"
                 return "app_no_reply"
         ok = self.hello(epoch)
         if not ok and recover and enter:
@@ -1338,6 +1356,7 @@ def parse_args(argv=None):
     ap.add_argument("--nodsp", nargs="?", const="mute", choices=("mute", "boot"), default=None,
                     help="앱이 버전에 응답하지 않음 (mute=구 앱, boot=앱 없음·부트로더 대기)")
     ap.add_argument("--app-u", default="ok", help="앱의 U 응답: ok | noreply | ng:NN")
+    ap.add_argument("--app-frames", choices=("yes", "no"), default="yes", help="앱이 UART 프레임을 보냄(살아 있음) / 안 보냄(멈춤)")
     ap.add_argument("--power-cycle-sec", type=float, default=3.0, help="wait_power 시작 후 전원 재투입 흉내까지 초 (음수 = 안 함)")
     ap.add_argument("--fail-at", default="", help="STAGE[:N] 단계 실패 주입")
     ap.add_argument("--nopart", action="store_true", help="dspfw 파티션 없음")

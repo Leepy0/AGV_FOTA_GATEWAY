@@ -7,7 +7,7 @@ namespace Gateway.Server.Tests;
 public class GatewayDbMigrationTests
 {
     [Fact]
-    public void V1_database_is_migrated_to_v2_and_old_jobs_read_as_immediate()
+    public void V1_database_is_migrated_to_v3_and_old_jobs_read_as_immediate()
     {
         var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
@@ -40,7 +40,8 @@ public class GatewayDbMigrationTests
             var db = new GatewayDb(dir);
             using (var c = db.Open())
             {
-                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("2", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='old1'")) Assert.Equal(0L, cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT apply_mode, not_after, approved_at FROM jobs WHERE id='old1'"))
                 using (var r = cmd.ExecuteReader())
                 {
@@ -50,8 +51,8 @@ public class GatewayDbMigrationTests
                 }
                 using (var cmd = GatewayDb.Cmd(c, "SELECT stage_job FROM job_targets WHERE job_id='old1'")) Assert.Equal(DBNull.Value, cmd.ExecuteScalar());
             }
-            Assert.Equal(2, GatewayDb.SchemaVersion);
-            // 두 번 열어도(이미 v2) 문제없음
+            Assert.Equal(3, GatewayDb.SchemaVersion);
+            // 두 번 열어도(이미 v3) 문제없음
             _ = new GatewayDb(dir);
 
             var store = new FirmwareStore(dir, db);
@@ -62,6 +63,7 @@ public class GatewayDbMigrationTests
             Assert.Equal(ApplyMode.Immediate, j.ApplyMode);
             Assert.Equal(JobState.Done, j.State);
             Assert.Equal(0, j.Results[0].StageJob);
+            Assert.False(j.Recover);
         }
         finally
         {
@@ -71,11 +73,46 @@ public class GatewayDbMigrationTests
     }
 
     [Fact]
-    public void New_database_starts_at_v2()
+    public void New_database_starts_at_v3()
     {
         using var k = new JobTestKit();
         using var c = k.Db.Open();
-        using var cmd = GatewayDb.Cmd(c, "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('apply_mode','not_after','approved_at')");
-        Assert.Equal(3L, cmd.ExecuteScalar());
+        using (var cmd = GatewayDb.Cmd(c, "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('apply_mode','not_after','approved_at','recover')"))
+            Assert.Equal(4L, cmd.ExecuteScalar());
+        using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+    }
+
+    [Fact]
+    public void V2_database_gets_recover_column_and_old_jobs_are_plain_apply()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig3-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            // v2 까지 만든 DB 흉내: 새 DB 에서 recover 열을 빼고 버전을 2 로 (SQLite 3.35+ DROP COLUMN)
+            var db0 = new GatewayDb(dir);
+            using (var c = db0.Open())
+                GatewayDb.Exec(c, """
+                    ALTER TABLE jobs DROP COLUMN recover;
+                    UPDATE meta SET value='2' WHERE key='schema_version';
+                    INSERT INTO jobs(id, name, firmware_id, kind, firmware_version, scheduled_at, stop_on_failure, state, created_at, started_at, finished_at, apply_mode)
+                    VALUES('v2job', 'v2 작업', 'fw1', 'Dsp', '1.0.0', NULL, 1, 'Done', '2026-10-01T00:00:00.0000000Z', NULL, NULL, 'Approve');
+                    """);
+            SqliteConnection.ClearAllPools();
+            var db = new GatewayDb(dir);
+            using (var c = db.Open())
+            {
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='v2job'")) Assert.Equal(0L, cmd.ExecuteScalar());
+            }
+            var svc = new JobService(Microsoft.Extensions.Options.Options.Create(new Gateway.Server.Options.GatewayOptions { DataDir = dir }),
+                                     new FirmwareStore(dir, db), new AgvRegistry(), new FakeBridges(new AgvRegistry()), db,
+                                     Microsoft.Extensions.Logging.Abstractions.NullLogger<JobService>.Instance);
+            Assert.False(svc.Get("v2job")!.Recover);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
     }
 }
