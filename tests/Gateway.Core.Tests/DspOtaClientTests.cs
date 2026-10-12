@@ -395,10 +395,11 @@ public class DspOtaClientTests
     public void Every_bridge_error_code_has_a_korean_hint(string err) => Assert.NotNull(BridgeErrors.Hint(err));
 
     [Fact]
-    public void Stuck_app_hints_point_to_recover_apply_and_old_app_to_jtag()
+    public void Stuck_app_hints_and_old_app_to_jtag()
     {
-        Assert.Contains("복구 적용", BridgeErrors.Hint("app_no_reply"));
-        Assert.Contains("복구 적용", BridgeErrors.Hint("no_bootloader"));
+        // '복구 적용으로 다시 배포' 는 작업 실행기가 복구 적용이 아닌 작업에만 덧붙인다 (JobService.RecoverHint) — 여기서는 겹치지 않게 뺀다
+        Assert.DoesNotContain("복구 적용으로", BridgeErrors.Hint("app_no_reply"));
+        Assert.Contains("전원", BridgeErrors.Hint("no_bootloader"));
         Assert.Contains("JTAG", BridgeErrors.Hint("app_no_fwup"));
     }
 

@@ -19,7 +19,7 @@ public static class BridgeErrors
         return e switch
         {
             _ when e.StartsWith("app_ng") => "메인보드 앱이 업데이트 진입을 거부 — AGV 가 정지 상태인지 확인",
-            "app_no_reply" => "메인보드 앱이 응답하지 않음 — 정지 확인 후 다시 (앱이 멈춘 호기면 복구 적용으로 다시 배포)",
+            "app_no_reply" => "메인보드 앱이 응답하지 않음(앱 프레임도 없음) — 정지 확인 후 다시",
             "app_no_fwup" => "메인보드 앱은 동작하나 업데이트 진입을 지원하지 않음(구 앱) — JTAG 로 부트로더와 새 앱을 설치해야 함",
             "uart_busy" => "브리지 → 메인보드 송신 대기열이 가득 참 — 잠시 뒤 다시",
             "url_host" => "URL 호스트가 브리지에 설정된 서버 IP 와 다름 — PublicBaseUrl 은 브리지 server IP 와 같은 IPv4 여야 함 (비우면 자동)",
@@ -28,7 +28,7 @@ public static class BridgeErrors
             "bad_request" => "브리지가 명령 JSON 을 읽지 못함 — 서버·브리지 버전 확인",
             "ver_invalid" => "메인보드 버전 형식 오류 (1~8자 영문·숫자·._-) — dsp_pack.py --ver 확인",
             "image_bad" or "image_crc" or "stage_invalid" or "crc_mismatch" or "stage_block" => "이미지 검증 실패 — dsp_pack.py 로 다시 만들어 올리기",
-            "no_bootloader" => "부트로더 응답 없음 — 메인보드 전원·배선 확인 (앱이 멈춘 호기면 복구 적용으로 다시 배포, 복구 적용 중이면 안내에 따라 메인보드 전원을 껐다 켜기)",
+            "no_bootloader" => "부트로더 응답 없음 — 메인보드 전원·배선 확인 (복구 적용 중이면 안내에 따라 메인보드 전원을 껐다 켜기)",
             "boot_proto" => "부트로더 프로토콜 버전이 맞지 않음 — 부트로더 갱신 필요 (메인보드 앱은 그대로)",
             "esp_ota_busy" => "브리지 자체 업데이트(OTA) 진행 중이라 메인보드 적용 거부 — 브리지 OTA 가 끝난 뒤 다시",
             "mainboard_programming" => "브리지가 메인보드를 굽는 중이라 브리지 OTA 거부 — 메인보드 적용이 끝난 뒤 다시",

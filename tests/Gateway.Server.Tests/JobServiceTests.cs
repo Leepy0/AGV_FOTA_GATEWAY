@@ -279,7 +279,7 @@ public class JobServiceTests
 
     [Theory]
     [InlineData("app_no_reply", false, true)]
-    [InlineData("app_no_fwup", false, true)]
+    [InlineData("app_no_fwup", false, false)]   // 살아 있는 구 앱 — 복구 적용으로도 안 됨, JTAG 안내만
     [InlineData("no_bootloader", false, true)]
     [InlineData("no_bootloader", true, false)]   // 이미 복구 적용이면 덧붙이지 않음
     [InlineData("erase", false, false)]
@@ -294,6 +294,8 @@ public class JobServiceTests
         Assert.Equal(TargetState.Failed, j.Results[0].State);
         Assert.Contains(err, j.Results[0].Message);
         Assert.Equal(hint, j.Results[0].Message.Contains(JobService.RecoverHint));
+        Assert.True(j.Results[0].Message.Split("복구 적용으로").Length <= 2, j.Results[0].Message);   // 안내가 두 번 붙지 않음
+        if (err == "app_no_fwup") Assert.Contains("JTAG", j.Results[0].Message);
     }
 
     // ── C-02·T-03: 9자 이상 버전도 앞 8자로 맞춰 봄 ──

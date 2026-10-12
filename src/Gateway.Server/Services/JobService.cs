@@ -800,8 +800,9 @@ public sealed class JobService : BackgroundService
 
     /// <summary>앱이 멈춘 호기에 복구 적용을 권하는 실패 안내 (일반 적용 작업에서 앱 무응답·구 앱·부트로더 무응답으로 실패했을 때)</summary>
     internal const string RecoverHint = "복구 적용으로 다시 배포(앱이 멈춘 경우)";
+    // app_no_fwup(살아 있는 구 앱)은 복구 적용으로도 원시 모드에 들어가지 않으므로 안내하지 않는다 — JTAG 안내(BridgeErrors)만
     internal static bool NeedsRecoverHint(string message) =>
-        !message.Contains(RecoverHint) && (message.Contains("app_no_reply") || message.Contains("app_no_fwup") || message.Contains("no_bootloader"));
+        !message.Contains(RecoverHint) && (message.Contains("app_no_reply") || message.Contains("no_bootloader"));
 
     // 메인보드 OTA B안 2단계: 적용(0x34, 스테이징 때와 같은 job) → 보고(0x33) → heartbeat 의 dsp 버전 확인
     async Task ApplyDspAsync(FirmwareEntry fw, TargetResult r, bool recover, CancellationToken ct)

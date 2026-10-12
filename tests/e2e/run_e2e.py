@@ -611,7 +611,7 @@ def s10_manual_guard(ctx):
 
 
 def s12_old_app(ctx):
-    """살아 있는 구 앱(dsp='?') 일반 적용 → 원시 모드 없이 app_no_fwup / 버전 아는 앱이 U 에 침묵 → app_no_reply 뒤 dsp '?' (둘 다 recover 없음·복구 적용 안내)"""
+    """살아 있는 구 앱(dsp='?') 일반 적용 → 원시 모드 없이 app_no_fwup(JTAG 안내) / 버전 아는 앱이 U 에 침묵 → app_no_reply 뒤 dsp '?'(복구 적용 안내) — 둘 다 recover 없음"""
     f1 = ctx.fake("s12a", [85], "--nodsp", "mute")
     f2 = ctx.fake("s12b", [86], "--app-u", "noreply", "--app-frames", "no")
     ctx.wait_online([86])
@@ -624,14 +624,14 @@ def s12_old_app(ctx):
     r1, r2 = result(j, 85), result(j, 86)
     check(r1["state"] == "Failed" and "app_no_fwup" in r1["message"], f"[85] {r1['state']} {r1['message']}")
     check(r2["state"] == "Failed" and "app_no_reply" in r2["message"], f"[86] {r2['state']} {r2['message']}")
-    for r in (r1, r2):
-        check("복구 적용으로 다시 배포" in r["message"], f"[{r['agv']}] 복구 적용 안내 없음: {r['message']}")
+    check("JTAG" in r1["message"] and "복구 적용으로" not in r1["message"], f"[85] 구 앱은 JTAG 안내만 (복구 적용으로도 안 됨): {r1['message']}")
+    check(r2["message"].count("복구 적용으로 다시 배포") == 1, f"[86] 복구 적용 안내가 한 번 있어야 함: {r2['message']}")
     ap = f1.rx("APPLY", 85) + f2.rx("APPLY", 86)
     check(ap and all("recover" not in e["json"] for e in ap), f"recover 가 붙음: {[e['payload'] for e in ap]}")
     check(not f1.ev("raw_mode") and not f2.ev("raw_mode"), "원시 모드에 들어감 (RFID·ACS 중계 끊김)")
     check(not [e for e in f1.ev("dsp_report") + f2.ev("dsp_report") if e["stage"] == "wait_power"], "wait_power 보고가 나감")
     ctx.wait(lambda: ctx.agv(86)["dsp"] == "?", 5, "[86] app_no_reply 뒤 heartbeat dsp '?'")
-    return "[85] app_no_fwup·[86] app_no_reply (원시 모드·wait_power 없음, recover 없음, 복구 적용 안내), 86 dsp → '?'"
+    return "[85] app_no_fwup(JTAG 안내)·[86] app_no_reply(복구 적용 안내) — 원시 모드·wait_power 없음, recover 없음, 86 dsp → '?'"
 
 
 def s11_cfg_trial(ctx):

@@ -29,7 +29,7 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 | 9 | 멈춘 앱(`--nodsp mute --app-frames no`, dsp=`?`) → '복구 적용' 작업(`recover:true`) → APPLY 에 `recover:1`, 원시 모드·wait_power 뒤 전원 재투입으로 성공 |
 | 10 | 수동 전송 F/R 프레임 400, 다른 출처 Origin·cross-site POST 403 |
 | 11 | 원격 설정 `save`·`reboot` → cfg=trial → 서버 자동 PING 으로 saved |
-| 12 | 살아 있는 구 앱(`--nodsp mute`, dsp=`?`) 일반 적용 → 원시 모드 없이 `app_no_fwup` / 버전 아는 앱이 U 에 침묵(`--app-u noreply --app-frames no`) → `app_no_reply` 뒤 heartbeat dsp `?` — 둘 다 recover 없음, 실패 안내에 '복구 적용으로 다시 배포' |
+| 12 | 살아 있는 구 앱(`--nodsp mute`, dsp=`?`) 일반 적용 → 원시 모드 없이 `app_no_fwup` / 버전 아는 앱이 U 에 침묵(`--app-u noreply --app-frames no`) → `app_no_reply` 뒤 heartbeat dsp `?` — 둘 다 recover 없음, 실패 안내는 구 앱이 JTAG, 침묵한 앱이 '복구 적용으로 다시 배포' |
 
 가짜 브리지 단독 실행과 장애 주입 옵션(`--drop`, `--drop-rx`, `--mute-after-cmd`, `--fail-at`, `--app-u`, `--app-frames`, `--nodsp`,
 `--nopart`, `--legacy`, `--dup-id`, `--events` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.
