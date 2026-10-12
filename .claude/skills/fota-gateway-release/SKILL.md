@@ -32,7 +32,7 @@ CI 의 `Build & test` · `End-to-end` 단계와 같은 것을 로컬에서 먼�
 dotnet build -c Release
 dotnet test -c Release --no-build
 python3 tests/e2e/test_fake_esp.py   # 가짜 브리지 자체 시험 (서버 없이, 약 40초)
-python3 tests/e2e/run_e2e.py         # 빌드한 서버 + 가짜 브리지로 배포 흐름 11개 (약 2분 30초, Python 3.10+)
+python3 tests/e2e/run_e2e.py         # 빌드한 서버 + 가짜 브리지로 배포 흐름 12개 (약 3분, Python 3.10+)
 ```
 
 - `run_e2e.py` 는 임시 데이터 폴더·임의 포트로 서버를 띄운다. `--only 1,3`, `--list`, `--keep`(로그 남기기). 종료 코드 = 실패 시나리오 수. 자세한 것은 `tests/e2e/README.md`.

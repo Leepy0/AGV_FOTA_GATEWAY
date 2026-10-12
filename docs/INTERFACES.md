@@ -17,7 +17,7 @@
 | ACS TCP 소켓 | **미확인** — 기존 ZigBee 게이트웨이 규격 필요 | `Gateway.Server/Services/AcsRelayService.cs` (프레임 그대로 통과한다고 가정), 하향 `F`·`R` 차단·허용 IP `Gateway.Core/Acs/AcsRelayPolicy.cs` |
 | ACS 호기 소속 REST (GET, 응답 형식 **미확정** — 임시 매핑) | 기존 ACS 서버 | `Gateway.Core/Acs/AcsInventoryMapper.cs`, `Gateway.Core/Groups/AcsMerge.cs`, `appsettings AcsInventory.Fields` ([ACS_API.md](ACS_API.md)) |
 | 서버 업데이트 출처 (GitHub 릴리스 매니페스트·API) | GitHub | `Gateway.Core/Update/UpdateFeed.cs` (https 의 github.com · api.github.com 만), 교체 배치 `SelfUpdateScript.cs` |
-| 서버 데이터베이스 (SQLite `data/gateway.db`, 스키마 v2) | 이 저장소 | `Gateway.Server/Data/GatewayDb.cs` (Migrate 에 버전 단계 추가로만 변경) |
+| 서버 데이터베이스 (SQLite `data/gateway.db`, 스키마 v3) | 이 저장소 | `Gateway.Server/Data/GatewayDb.cs` (Migrate 에 버전 단계 추가로만 변경) |
 
 ## 브리지와의 약속
 
@@ -46,12 +46,19 @@
 | 패킷 | 필드 | 비고 |
 |---|---|---|
 | DSP_OTA_START (0x32) | `url` (199자 이하), `ver`, `crc32`, `size`, `job`, `apply` (0 = 스테이징만, 1 = 받은 뒤 바로 적용), `recover` (선택, `apply:1` 과 함께) | 게이트웨이는 늘 `apply:0` 을 보낸다 |
-| DSP_OTA_APPLY (0x34) | `job` (스테이징 때와 같은 번호), `recover` (선택, 1 = 복구 적용) | 게이트웨이는 앱 버전이 `?` 인 호기에만 `recover:1` |
+| DSP_OTA_APPLY (0x34) | `job` (스테이징 때와 같은 번호), `recover` (선택, 1 = 복구 적용) | 게이트웨이는 운용자가 **복구 적용** 을 켠 작업의 APPLY(재전송 포함)에만 `recover:1`. 앱 버전 `?` 만으로는 넣지 않음 |
 | DSP_OTA_RESULT (0x33) | `job`, `stage`, `pct`, `ver`, `err` | `staged`·`done`·`fail` 은 같은 내용으로 약 300ms 간격 3회. 수신 단계 거부(`bad_request`·`url_*`·`busy`·`not_ready`)는 간격 없이 3회 |
 
 `job` 번호: `(유닉스 초 % 10,000,000) × 100 + 호기` (브리지가 u32 로 읽음).
 
-`recover:1` 의 뜻: 앱이 `U000` 에 답하지 않을 때 부트로더로 바로 들어가고, 부트로더가 HELLO 3회에 답하지 않으면 최대 60초 동안 HELLO 를 50ms 간격으로 보내며 메인보드 전원 재투입을 기다린다(`wait_power`). `recover` 가 없으면 앱이 답하지 않을 때 `app_no_reply` 로 끝낸다(앱 버전이 `?` 이면 예외로 부트로더 직행).
+앱이 `U000` 에 2초 안에 답하지 않을 때 브리지 0.5.2 의 판단:
+
+| 앱 상태 | `recover` | 브리지 동작 |
+|---|---|---|
+| 최근 3초 안에 앱 프레임이 옴 (살아 있으나 업데이트 진입 코드 없음) | 상관없음 | `app_no_fwup`. 부트로더로 가지 않음(중계 유지) |
+| 앱이 조용함 | `1` | 부트로더로 바로 감. HELLO 3회에 답이 없으면 최대 60초 동안 HELLO 를 50ms 간격으로 보내며 메인보드 전원 재투입을 기다림(`wait_power`) |
+| 앱이 조용함, 앱 버전 `?` | 없음 | 부트로더로 바로 감. HELLO 3회(약 4.5초)만, 실패하면 `no_bootloader` |
+| 앱이 조용함, 앱 버전을 앎 | 없음 | `app_no_reply`. 앱 버전을 `?` 로 바꿈(중계 유지, 앱이 살아 있으면 재조회로 돌아옴) |
 
 ### 같은 job 의 중복 명령 (브리지 0.5.2)
 
@@ -92,7 +99,8 @@
 | `flash_erase` `flash_write` | download | 브리지 플래시 오류 |
 | `not_staged` `stage_invalid` `job_mismatch` | 적용 시작 | 받아 둔 이미지 없음·깨짐·다른 job |
 | `app_ng_01` … `app_ng_09` | enter | 앱이 진입 거부 (09 = 기타·안전 콜백 없음) |
-| `app_no_reply` | enter·확인 | 앱이 `U000` 에 2초 안에 답하지 않음(복구 적용이 아니면 중계를 끊지 않고 중단) / 적용 뒤 버전 조회에 답하지 않음 **뜻 바뀜** |
+| `app_no_fwup` | enter | 앱이 `U000` 에 답하지 않지만 최근 3초 안에 앱 프레임이 옴 — 업데이트 진입 코드가 없는 구 앱. `recover` 여도 부트로더로 가지 않음 **새로** |
+| `app_no_reply` | enter·확인 | 앱이 `U000` 에 2초 안에 답하지 않고 앱 프레임도 없음(앱 버전을 알고 `recover` 가 없을 때, 중계를 끊지 않고 중단, 앱 버전을 `?` 로) / 적용 뒤 버전 조회에 답하지 않음 **뜻 바뀜** |
 | `uart_busy` | enter | 메인보드 송신 대기열 가득, 또는 115200 전환 실패. 즉시 실패 **뜻 바뀜** |
 | `no_bootloader` `boot_proto` | HELLO | 부트로더 무응답 / 프로토콜 불일치 |
 | `erase` `stage_read` `stage_block` `write_timeout` `write` `program` `verify_block` `write_header` `verify` | 굽기 | 굽기 실패 (지운 뒤면 자동 재시도 2회 뒤 보고) |
@@ -117,7 +125,8 @@
 
 ### 게이트웨이 쪽 처리 (요약)
 
-- START·APPLY·OTA_START 뒤 5초 동안 수신 흔적이 없으면 같은 내용을 최대 3회 다시 보낸다. 재전송 뒤 오는 job 0 의 `fail`·`busy` 는 앞 명령의 중복 처리 결과로 보고 무시한다.
+- START·APPLY·OTA_START 뒤 5초 동안 수신 흔적이 없으면 같은 내용을 최대 3회 다시 보낸다. 적용 중 늦게 온 스테이징 보고(`staged`·`download`)는 수신 흔적으로 보지 않는다.
+- 재전송 뒤 오는 `busy` 는 앞 명령을 처리하는 중에 닿은 것으로 보고 무시한다. 재전송 뒤 job 0 의 `fail`(`not_staged`)은 스테이징 소실로 보고 실패 처리한다. 단 heartbeat 가 이미 이 job 의 적용 완료를 보이면 완료로 본다.
 - 최종 보고가 유실돼도 heartbeat 로 판정한다. 스테이징: `staged.job` = job. 적용: `dsp` 앞 8자 = 이미지 버전, `dsp_st=idle`, `staged=null`. 브리지 OTA: 슬롯 변경·`ota=pending`·fw 변경·`up` 감소.
 - 같은 최종 보고가 3회 와도 한 번만 처리한다.
 - 대기 시간: 스테이징 무보고 3분, 적용 무보고 90초, 브리지 OTA 결과 3분, 재부팅 90초, 확정 PING 1초 간격 최대 20초 (`OtaTimeouts`).
@@ -137,6 +146,7 @@
 
 - 오류 응답은 HTML 이 아니라 **상태 코드 + JSON 문자열 사유**입니다. 400 잘못된 입력·본문 해석 실패, 404 없음, 409 사용 중·번호 충돌, 500 서버 오류.
 - `/api` 의 POST·PUT·DELETE·PATCH 는 브라우저가 **다른 출처**에서 보내면 403 입니다. `Sec-Fetch-Site: cross-site` 이거나 `Origin` 의 scheme·호스트·포트가 요청과 다르면(`Origin: null` 포함) 거부합니다. `Origin`·`Sec-Fetch-Site` 가 없는 요청(curl·스크립트)은 영향이 없습니다.
+- `Host` 헤더가 이 서버의 이름이 아니면 **모든 경로·모든 메서드**가 403 입니다(DNS 리바인딩 방어). 허용: IP 주소(IPv4·IPv6), `localhost`, 이 PC 이름·FQDN, `Gateway.AllowedHostNames`(`"*"` = 검사 안 함). 사유는 `접속 주소(Host) … 가 허용 목록에 없음 — Gateway.AllowedHostNames 에 추가` 입니다. `Host` 가 없는 요청은 허용합니다.
 - 시각은 ISO 8601 입니다. 오프셋이 없으면 서버 지역 시각으로 봅니다. 응답의 시각은 UTC 입니다.
 
 ### 배포 작업
@@ -155,7 +165,7 @@
 ```json
 { "name": "B제품 / 3F / L4 전체", "firmwareId": "…", "targets": [31, 45],
   "scheduledAt": "2026-10-12T22:30:00", "notAfter": "2026-10-12T23:30:00",
-  "stopOnFailure": true, "applyMode": "Approve" }
+  "stopOnFailure": true, "applyMode": "Approve", "recover": false }
 ```
 
 | 필드 | 필수 | 뜻 |
@@ -167,8 +177,9 @@
 | `notAfter` | | 마감 시각. 지나면 남은 호기 건너뜀. 이미 지났거나 `scheduledAt` 보다 앞서면 400 |
 | `stopOnFailure` | | 기본 `true` |
 | `applyMode` | | `Approve`(기본, 메인보드 스테이징 뒤 승인하면 적용) 또는 `Immediate`(바로 적용). 대소문자 무시, 숫자·다른 값은 400. 브리지 작업은 늘 `Immediate` |
+| `recover` | | 기본 `false`. `true` = 메인보드 **복구 적용**(앱이 멈춘·지워진 호기용, 모든 대상 APPLY 에 `recover:1`). 브리지 펌웨어면 400. **AGV 정지 필수** — 부트로더가 바로 안 잡히면 최대 60초 동안 전원 재투입을 기다림 |
 
-400 사유: 본문 없음, `firmwareId` 없음, `targets` 비었거나 1~99 밖, `applyMode` 잘못됨, 시각 형식 오류, 지난 예약·마감, 없는 펌웨어(`펌웨어 없음`), 지우는 중인 펌웨어.
+400 사유: 본문 없음, `firmwareId` 없음, `targets` 비었거나 1~99 밖, `applyMode` 잘못됨, 시각 형식 오류, 지난 예약·마감, 없는 펌웨어(`펌웨어 없음`), 지우는 중인 펌웨어, 브리지 작업에 `recover: true`(`복구 적용은 메인보드 작업만 고를 수 있습니다`).
 
 작업 JSON 의 새 필드:
 
@@ -176,6 +187,7 @@
 |---|---|
 | `state` | `Scheduled` · `Running` · `AwaitingApproval`(적용 대기, **새로**) · `Done` · `Failed` · `Cancelled` |
 | `applyMode` | `Approve` · `Immediate` |
+| `recover` | 복구 적용 작업인지 (`true`·`false`) |
 | `notAfter` | 마감 시각 (없으면 null) |
 | `approvedAt` | 적용 승인 시각. 서버를 다시 켜면 null 로 풀림 |
 | `results[].state` | `Waiting` · `Running` · `Staged`(스테이징됨, **새로**) · `Done` · `Failed` · `Skipped` |
@@ -214,7 +226,7 @@
 | `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` | ACS 위치 보고 |
 | `GET /api/groups` · `/api/groups/list` · `/api/groups/agvs?path=` · `/api/groups/export.csv`, `POST /api/groups/import`, `GET·PUT·DELETE /api/agvs/{n}/group` | 구역 ([ACS_API.md](ACS_API.md)) |
 | `GET /api/acs/inventory/status`, `POST /api/acs/inventory/preview` · `/pull` | ACS 소속 받기 |
-| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 2)·백업 |
+| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 3)·백업 |
 
 ## 메인보드(AGV) OTA 결정 (2026-10-09, 2026-10-10 점검 반영)
 
@@ -224,4 +236,4 @@
 
 - **적용 전 정지 확인은 두 겹**이다(결정 1B). 서버는 전 호기 스테이징 뒤 작업을 적용 대기(`AwaitingApproval`)에 두고, 운용자가 정지를 확인하고 승인하면 한 대씩 APPLY 한다. 메인보드 앱은 `U000` 을 안전 콜백으로 거부할 수 있고, 콜백이 없으면 늘 거부한다.
 - B안에는 확정 절차가 없다. 부트로더는 앱으로 점프할 때마다 부트 카운터를 올리고, 앱은 메인 루프에 들어가면 `fwup_boot_ok()` 로 0 으로 돌린다(자기 호기 `F` 프레임을 처리할 때도 자동). 카운터가 3 을 넘으면 부트로더가 업데이트 모드에 머물러 새 이미지를 기다린다 (`AGV_Wifi_Bridge/dsp/boot/boot_main.c`, `dsp/app/app_fwupdate.c`). 게이트웨이는 관여하지 않는다.
-- 기동 불능 앱 복구(결정 8): 앱 워치독은 필수다. 부트로더는 앱으로 점프하기 전 200ms 동안 HELLO 만 받는 창을 열고, 게이트웨이는 앱 버전이 `?` 인 호기에 `recover:1` 로 적용한다.
+- 기동 불능 앱 복구(결정 8): 앱 워치독은 필수다. 부트로더는 앱으로 점프하기 전 200ms 동안 HELLO 만 받는 창을 열고, 게이트웨이는 운용자가 **복구 적용** 을 켠 작업에서 `recover:1` 로 적용한다(앱 버전 `?` 만으로는 붙이지 않음).

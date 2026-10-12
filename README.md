@@ -18,7 +18,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | [docs/INTERFACES.md](docs/INTERFACES.md) | 접점 규격 출처, 브리지 UDP·JSON 필드와 오류 코드, **REST API** |
 | [docs/ACS_API.md](docs/ACS_API.md) · [docs/RTLS.md](docs/RTLS.md) | ACS 연동 준비(위치 보고·소속 받기·TCP 중계 안전 규칙) · 위치 추정 설계 검토(구현 전) |
 | [docs/REVIEW_2026-10-10.md](docs/REVIEW_2026-10-10.md) | 전체 점검 결과(91건)와 결정 사항. 모두 v0.3.0 · 브리지 v0.5.2 에 반영 |
-| [tests/e2e/README.md](tests/e2e/README.md) | 종단 시험 — 빌드한 서버 + 가짜 브리지로 배포 흐름 11개 시나리오 |
+| [tests/e2e/README.md](tests/e2e/README.md) | 종단 시험 — 빌드한 서버 + 가짜 브리지로 배포 흐름 12개 시나리오 |
 | 브리지 저장소 [FLASH_GUIDE.md](https://github.com/Leepy0/AGV_Wifi_Bridge/blob/main/docs/FLASH_GUIDE.md) · [dsp/README.md](https://github.com/Leepy0/AGV_Wifi_Bridge/blob/main/dsp/README.md) | 브리지 USB 굽기·호기 설정 · 메인보드 부트로더 첫 설치 |
 
 **설치**: Releases 의 zip 을 풀고 `install-service.bat`(관리자) 한 번 → `http://<PC IP>:8080`. 방화벽 규칙과 설치 폴더 권한도 이 배치가 맞춥니다.
@@ -30,7 +30,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | 경로 | 내용 |
 |---|---|
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat·번호 충돌 판정·seq 손실, AGV 프레임(BCC, ACS 화이트리스트, 하향 F·R 차단), `.dspfw` 파서(블록·`app_crc` 검사)·버전 규칙, 메인보드 OTA(B안)·브리지 OTA 클라이언트(재전송·heartbeat 판정), 업데이트 피드·교체 배치 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기(스테이징·적용 대기·승인), 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db`, 스키마 v2 — 펌웨어 목록·작업·소속·최근 위치·마지막 접속), 서버 자체 업데이트, REST API |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기(스테이징·적용 대기·승인), 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db`, 스키마 v3 — 펌웨어 목록·작업·소속·최근 위치·마지막 접속), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` · `tests/Gateway.Server.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`(브리지 기준 이미지 대조), 메인보드·브리지 OTA 단계·재전송·실패, 작업 실행기·DB 마이그레이션, API 검사 |
 | `tests/fake_esp.py` | 가짜 브리지 — 브리지 0.5.2 흉내, 장애 주입 옵션 (`python3 tests/fake_esp.py --help`) |
 | `tests/e2e/` | 종단 시험 `run_e2e.py`, 가짜 브리지 자체 시험 `test_fake_esp.py` ([README](tests/e2e/README.md)) |
@@ -50,10 +50,10 @@ dotnet run --project src/Gateway.Server          # http://localhost:8080
 python3 tests/fake_esp.py --agv 7,12,23 --server 127.0.0.1:50000 --listen 50010 --dsp 1.0.0
 ```
 
-장애 주입: `--drop staged,done,ota_done[:N]`(보고 유실), `--drop-rx START:1`(명령 유실), `--mute-after-cmd 6.5`(서버 재전송 유도), `--fail-at erase[:N]`, `--app-u ng:03`, `--nodsp [mute|boot]`(구 앱 → 복구 적용), `--nopart`, `--legacy`(0.4.x), `--dup-id`(번호 충돌), `--events FILE`.
+장애 주입: `--drop staged,done,ota_done[:N]`(보고 유실), `--drop-rx START:1`(명령 유실), `--mute-after-cmd 6.5`(서버 재전송 유도), `--fail-at erase[:N]`, `--app-u ng:03`, `--nodsp [mute|boot]`(앱 버전 `?`), `--app-frames yes|no`(앱이 살아 있음·침묵), `--nopart`, `--legacy`(0.4.x), `--dup-id`(번호 충돌), `--events FILE`.
 실제 브리지와 다른 점은 파일 머리 주석의 '남은 차이' 에 있습니다.
 
-종단 시험(빌드한 서버를 임시 폴더·임의 포트로 띄워 11개 시나리오, 약 2분 30초, Python 3.10+ 표준 라이브러리만):
+종단 시험(빌드한 서버를 임시 폴더·임의 포트로 띄워 12개 시나리오, 약 3분, Python 3.10+ 표준 라이브러리만):
 
 ```bash
 dotnet build -c Release
@@ -62,11 +62,12 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 ```
 
 REST API (화면과 같은 기능, 스크립트용 — 자세한 본문·응답 코드는 [docs/INTERFACES.md](docs/INTERFACES.md#rest-api)):
-`GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs` (`applyMode`·`notAfter`), `POST /api/jobs/{id}/approve`, `POST /api/jobs/{id}/cancel[?queued=true]`,
+`GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs` (`applyMode`·`notAfter`·`recover`), `POST /api/jobs/{id}/approve`, `POST /api/jobs/{id}/cancel[?queued=true]`,
 `POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일),
 `GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고,
 `GET /api/groups` 구역 트리 · `GET /api/groups/agvs?path=` · `PUT|DELETE /api/agvs/{n}/group` · `POST /api/groups/import` (CSV) · `GET /api/groups/export.csv` · `POST /api/acs/inventory/preview|pull` ACS 소속 받기, `GET /api/health`.
 다른 웹페이지에서 브라우저로 보낸 변경 요청은 403 이고, 오류는 상태 코드와 짧은 사유(JSON 문자열)로 돌려줍니다.
+접속 주소(Host)가 IP·`localhost`·이 PC 이름이 아니면 화면·API 모두 403 입니다(DNS 리바인딩 방어). 사내 DNS 별칭으로 접속하면 `Gateway.AllowedHostNames` 에 그 이름을 넣습니다.
 
 ## 릴리스
 
