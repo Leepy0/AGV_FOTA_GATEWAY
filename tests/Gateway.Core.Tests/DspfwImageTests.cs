@@ -194,4 +194,53 @@ public class DspfwImageTests
         Assert.False(info.VersionValid);
         Assert.True(DspfwImage.Parse(DspfwImage.BuildApp(GoldenCode(), "1.2.3-rc"))!.VersionValid);
     }
+    // ── R3: 브리지 dap_image_check_blocks 와 같은 블록 순서 규칙 (주소 오름차순·겹침 없음) ──
+
+    // 본문을 앱 헤더와 블록(머리 6B + 데이터) 조각들로 나눈다
+    static (byte[] Hdr, List<byte[]> Blocks) Split(byte[] file)
+    {
+        var body = file.AsSpan(DspfwImage.HeaderLength).ToArray();
+        var blocks = new List<byte[]>();
+        for (int pos = Blk0; pos < body.Length;)
+        {
+            int len = 6 + BinaryPrimitives.ReadUInt16LittleEndian(body.AsSpan(pos + 4)) * 2;
+            blocks.Add(body.AsSpan(pos, len).ToArray());
+            pos += len;
+        }
+        return (body[..Blk0], blocks);
+    }
+
+    static byte[] Join(byte[] hdr, IEnumerable<byte[]> blocks) => DspfwImage.Build(hdr.Concat(blocks.SelectMany(b => b)).ToArray(), "1.2.3");
+
+    [Fact]
+    public void Blocks_out_of_address_order_are_rejected_even_with_matching_crcs()
+    {
+        var (hdr, blocks) = Split(DspfwImage.BuildApp(GoldenCode(), "1.2.3"));
+        Assert.True(blocks.Count >= 3);
+        Assert.NotNull(DspfwImage.Parse(Join(hdr, blocks)));                     // 나눠 다시 붙여도 그대로 통과
+        var swapped = new List<byte[]>(blocks);
+        (swapped[0], swapped[1]) = (swapped[1], swapped[0]);                     // 파일 CRC 는 Build 가, app_crc 는 복원 결과가 같아 맞음
+        Assert.Null(DspfwImage.Parse(Join(hdr, swapped)));
+    }
+
+    [Fact]
+    public void Overlapping_blocks_are_rejected_even_with_matching_crcs()
+    {
+        var code = Enumerable.Range(0, 256).Select(i => (ushort)(i * 7)).ToArray();
+        var (hdr, blocks) = Split(DspfwImage.BuildApp(code, "1.2.3"));
+        Assert.Equal(2, blocks.Count);
+        // 첫 블록 끝 워드를 같은 값으로 다시 쓰는 1워드 블록을 뒤에 덧붙임 (복원 결과·app_crc 는 같음)
+        var dup = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(dup, DspfwImage.AppCodeAddr + 127);
+        BinaryPrimitives.WriteUInt16LittleEndian(dup.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(dup.AsSpan(6), code[127]);
+        Assert.Null(DspfwImage.Parse(Join(hdr, new[] { blocks[0], dup, blocks[1] })));    // 직전 블록과 겹침
+        Assert.Null(DspfwImage.Parse(Join(hdr, new[] { blocks[0], blocks[1], dup })));    // 뒤로 되돌아감
+        // 겹치지 않고 바로 이어지는 블록은 통과 (블록 경계 = 직전 끝)
+        var tail = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(tail, DspfwImage.AppCodeAddr + 256);
+        BinaryPrimitives.WriteUInt16LittleEndian(tail.AsSpan(4), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(tail.AsSpan(6), 0xFFFF);             // app_len 밖이라 CRC 에 영향 없음
+        Assert.NotNull(DspfwImage.Parse(Join(hdr, new[] { blocks[0], blocks[1], tail })));
+    }
 }

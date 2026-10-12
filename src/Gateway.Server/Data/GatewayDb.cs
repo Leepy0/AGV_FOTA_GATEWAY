@@ -10,7 +10,7 @@ namespace Gateway.Server.Data;
 /// </summary>
 public sealed class GatewayDb
 {
-    public const int SchemaVersion = 2;
+    public const int SchemaVersion = 3;
     public string Path { get; }
     readonly string _cs;
 
@@ -119,6 +119,14 @@ public sealed class GatewayDb
             AddColumn(c, "jobs", "approved_at", "TEXT");
             AddColumn(c, "job_targets", "stage_job", "INTEGER");
             Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '2')");
+            tx.Commit();
+        }
+        if (ver < 3)
+        {
+            // v3: 메인보드 작업의 '복구 적용' 선택 (운용자가 고른 작업만 APPLY 에 recover:1). 기존 작업은 일반 적용(0)
+            using var tx = c.BeginTransaction();
+            AddColumn(c, "jobs", "recover", "INTEGER NOT NULL DEFAULT 0");
+            Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')");
             tx.Commit();
         }
     }

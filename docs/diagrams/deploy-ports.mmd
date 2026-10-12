@@ -5,13 +5,13 @@ flowchart LR
   subgraph PC["게이트웨이 PC"]
     H["TCP 8080<br/>웹 화면 · 펌웨어 파일<br/>규칙 AGV FOTA Gateway HTTP"]
     U["UDP 50000 · 50001<br/>heartbeat · 결과 · RFID<br/>규칙 AGV FOTA Gateway Bridge UDP"]
-    A["TCP 6000<br/>규칙 직접 추가"]
+    A["TCP 6000 · ACS 중계 Server 모드<br/>규칙 AGV FOTA Gateway ACS TCP"]
   end
   G["github.com<br/>서버 업데이트"]
   S2["ACS 서버<br/>Client 모드 중계 · REST"]
   B -->|"화면"| H
   E -->|"OTA 때 펌웨어 받기"| H
   E -->|"1초마다 heartbeat"| U
-  S1 -.->|"ACS 가 접속"| A
+  S1 -.->|"ACS 가 접속<br/>AllowedRemotes 로 제한"| A
   PC -->|"나가는 HTTPS 443"| G
   PC -.->|"나가는 TCP"| S2

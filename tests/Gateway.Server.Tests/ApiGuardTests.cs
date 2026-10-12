@@ -2,10 +2,11 @@ using System.Net;
 using Gateway.Server.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Gateway.Server.Tests;
 
-/// <summary>/api 공통 검사: 다른 출처 변경 요청 거부(X-03), 수동 전송 거부 조건(결정 2, S-10)</summary>
+/// <summary>/api 공통 검사: 다른 출처 변경 요청 거부(X-03), Host 검사(DNS 리바인딩, R16), 수동 전송 거부 조건(결정 2, S-10)</summary>
 public class ApiGuardTests
 {
     static HttpRequest Req(string method, string host = "192.168.10.5:8080", string? origin = null, string? fetchSite = null, string scheme = "http")
@@ -62,5 +63,72 @@ public class ApiGuardTests
         Assert.Contains("192.168.10.99", r.Value);
         a.ConflictAt = DateTime.UtcNow.AddMinutes(-1);   // 충돌이 지난 일이면 다시 허용
         Assert.Null(ApiGuard.ManualSendRefusal(7, a, 5));
+    }
+
+    static HostGuard Guard(params string[] extra) => new(extra, machineNames: ["GW-PC", "gw-pc", "gw-pc.corp.local"]);
+
+    [Theory]
+    [InlineData("192.168.10.5")]
+    [InlineData("127.0.0.1")]
+    [InlineData("[::1]")]
+    [InlineData("[fe80::1]")]
+    [InlineData("localhost")]
+    [InlineData("LOCALHOST")]
+    [InlineData("gw-pc")]
+    [InlineData("GW-PC")]
+    [InlineData("gw-pc.corp.local")]
+    [InlineData("gw-pc.")]                 // 끝 점
+    [InlineData("fota.factory")]           // Gateway.AllowedHostNames
+    [InlineData("")]                       // Host 없음 (HTTP/1.0 스크립트) — 브라우저 아님
+    public void Host_allowed(string host) => Assert.True(Guard("fota.factory").IsAllowed(host));
+
+    [Theory]
+    [InlineData("evil.example")]
+    [InlineData("gw-pc.evil.example")]
+    [InlineData("localhost.evil.example")]
+    [InlineData("192.168.10.5.nip.io")]
+    [InlineData("corp.local")]
+    public void Host_rejected(string host) => Assert.False(Guard("fota.factory").IsAllowed(host));
+
+    [Fact]
+    public void Host_star_allows_all() => Assert.True(Guard("*").IsAllowed("evil.example"));
+
+    static async Task<(bool passed, int status, string body)> Run(HostGuard g, string host, string path, string method = "GET")
+    {
+        var c = new DefaultHttpContext { RequestServices = new ServiceCollection().BuildServiceProvider() };
+        c.Request.Method = method;
+        c.Request.Host = new HostString(host);
+        c.Request.Path = path;
+        c.Response.Body = new MemoryStream();
+        bool passed = false;
+        await g.Middleware(c, _ => { passed = true; return Task.CompletedTask; });
+        c.Response.Body.Position = 0;
+        return (passed, c.Response.StatusCode, new StreamReader(c.Response.Body).ReadToEnd());
+    }
+
+    [Theory]
+    [InlineData("/api/groups/import", "POST")]
+    [InlineData("/api/db/backup", "GET")]     // 읽기도 막는다 (DB 전체가 같은 출처로 읽히지 않게)
+    [InlineData("/_blazor", "POST")]          // 화면 SignalR
+    [InlineData("/", "GET")]
+    [InlineData("/app.css", "GET")]
+    public async Task Rebound_host_is_403_on_every_path(string path, string method)
+    {
+        var (passed, status, body) = await Run(Guard(), "evil.example:8080", path, method);
+        Assert.False(passed);
+        Assert.Equal(StatusCodes.Status403Forbidden, status);
+        Assert.Contains("evil.example", body);
+        Assert.Contains("AllowedHostNames", body);
+    }
+
+    [Theory]
+    [InlineData("192.168.10.5:8080")]
+    [InlineData("gw-pc:8080")]
+    [InlineData("[::1]:8080")]
+    public async Task Own_host_passes(string host)
+    {
+        var (passed, status, _) = await Run(Guard(), host, "/api/db/backup");
+        Assert.True(passed);
+        Assert.Equal(StatusCodes.Status200OK, status);
     }
 }

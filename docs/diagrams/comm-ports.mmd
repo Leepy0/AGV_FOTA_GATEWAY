@@ -13,8 +13,8 @@ flowchart LR
     R["UDP 50001<br/>RFID 로그 · 선택"]
     H["TCP 8080<br/>화면 · REST API · /fw/ 파일"]
   end
-  ESP -->|"상향 · heartbeat · MAIN_UP · 결과"| U
-  U -->|"하향 · 마지막 송신 주소로"| ESP
+  ESP -->|"상향<br/>heartbeat · MAIN_UP · 결과"| U
+  U -->|"하향 · 호기의 송신 주소로<br/>번호 충돌이면 기존 주소 유지"| ESP
   ESP -->|"RFID 브로드캐스트"| R
   ESP -->|"OTA 때 HTTP GET"| H
   BR["브라우저<br/>PC · 태블릿 · 휴대폰"] -->|"HTTP"| H

@@ -1,19 +1,25 @@
+%%{init: {"sequence": {"mirrorActors": true, "width": 220, "actorMargin": 110}}}%%
 sequenceDiagram
   autonumber
   participant OP as 운용자 화면
   participant GW as 게이트웨이
   participant ESP as 브리지 ESP32
-  OP->>GW: 배포 작업 시작 (브리지 펌웨어)
-  GW->>GW: heartbeat 확인 · ota=pending 이면 PING 으로 먼저 확정
-  GW->>ESP: OTA_START 0x30 · URL http://서버:8080/fw/{id}/agv_wifi_bridge.bin
+  OP->>GW: 배포 작업 (브리지 펌웨어) · 확인창 "AGV 정지 확인"
+  Note over GW,ESP: 호기 차례 — 온라인 · 번호 충돌 확인<br/>ota=pending 이면 PING 으로 먼저 확정 (10초)
+  GW->>ESP: OTA_START 0x30 · URL 서버IP:8080/fw/{id}/agv_wifi_bridge.bin
+  Note over GW,ESP: 5초 안에 결과 · heartbeat 흔적이 없으면<br/>재전송 (최대 3회)
+  Note over GW,ESP: 브리지: URL 호스트가 설정된 server IP 인지 확인<br/>메인보드 굽기 · 스테이징 중이면 거부
   ESP->>GW: HTTP GET 펌웨어
-  ESP-->>GW: OTA_RESULT 0x31 start · progress 10% 단위
-  Note over ESP: 앱 디스크립터의 프로젝트명 검사<br/>agv_wifi_bridge 가 아니면 fail
-  ESP-->>GW: OTA_RESULT done · ver
-  ESP->>ESP: 재부팅 → 새 슬롯 ota_1 · 상태 pending
-  ESP-->>GW: heartbeat fw=새버전 ota=pending
-  GW->>ESP: PING 0x20
-  ESP->>ESP: 새 펌웨어 확정 valid
+  ESP-->>GW: OTA_RESULT 0x31 start · progress 10%
+  Note over GW,ESP: 브리지: 앱 디스크립터의 프로젝트명 검사<br/>agv_wifi_bridge 가 아니면 fail
+  ESP-->>GW: OTA_RESULT done · ver (3회, 300ms 간격)
+  Note over GW,ESP: 브리지 재부팅 → 다른 슬롯 · 상태 pending
+  ESP-->>GW: heartbeat fw=새버전 · part 바뀜 · ota=pending
+  Note over GW,ESP: done 이 유실돼도 heartbeat 재부팅 흔적으로 진행
+  loop valid 까지 1초 간격 · 최대 20초
+    GW->>ESP: PING 0x20
+  end
+  Note over GW,ESP: 브리지: 새 펌웨어 확정 valid
   ESP-->>GW: PONG 0x21 · heartbeat ota=valid
   GW->>OP: 완료 · 이전 → 이후 버전 기록
-  Note over ESP: 180초 안에 서버 통신이 없으면<br/>자동으로 이전 슬롯으로 롤백
+  Note over GW,ESP: 확정 전에 180초가 지나거나 재부팅하면<br/>이전 슬롯으로 롤백<br/>서버는 ota=pending 을 보면<br/>5초마다 자동 PING

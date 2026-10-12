@@ -61,8 +61,14 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullSe
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
+// DNS 리바인딩 방어: Host 가 이 서버의 이름(IP·localhost·PC 이름·FQDN·Gateway.AllowedHostNames)이 아니면 화면·정적 파일·API 모두 403.
+// 설정 화면도 같은 인스턴스로 허용 목록을 보인다
+var hostGuard = new HostGuard(opt.AllowedHostNames);
+builder.Services.AddSingleton(hostGuard);
+
 var app = builder.Build();
 
+app.Use(hostGuard.Middleware);
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -127,10 +133,11 @@ api.MapGet("/jobs", (JobService jobs) => jobs.List());
 api.MapGet("/jobs/{id}", (string id, JobService jobs) => jobs.Get(id) is { } j ? Results.Ok(j) : Results.NotFound());
 api.MapPost("/jobs", (JobCreateRequest? r, JobService jobs) =>
 {
-    // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용)
+    // 오프셋 없는 시각은 서버 지역 시각. applyMode: Approve(기본, 메인보드 스테이징 후 승인하면 적용) | Immediate(바로 적용).
+    // recover: 메인보드 복구 적용 (앱이 응답하지 않는 호기용 — 부트로더가 바로 안 잡히면 최대 60초 전원 재투입 대기, AGV 정지 필수)
     if (r is null) return Results.BadRequest("본문(JSON)이 없습니다");
     if (JobApi.Check(r, out var mode) is { } bad) return Results.BadRequest(bad);
-    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId!, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime())); }
+    try { return Results.Ok(jobs.Create(r.Name ?? "", r.FirmwareId!, r.Targets, r.ScheduledAt?.ToUniversalTime(), r.StopOnFailure ?? true, mode, r.NotAfter?.ToUniversalTime(), r.Recover ?? false)); }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
 // queued=true: 이 작업이 끝나면 곧바로 이어서 시작될 대기 작업도 함께 취소
@@ -141,7 +148,8 @@ api.MapPost("/jobs/{id}/approve", (string id, JobService jobs) =>
     try { return jobs.Approve(id) ? Results.Ok() : Results.NotFound(); }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
-api.MapDelete("/jobs/{id}", (string id, JobService jobs) => jobs.Delete(id) ? Results.Ok() : Results.Conflict());
+api.MapDelete("/jobs/{id}", (string id, JobService jobs) =>
+    jobs.Delete(id) ? Results.Ok() : jobs.Get(id) is null ? Results.NotFound("없는 작업") : Results.Conflict("끝나지 않은 작업은 지울 수 없음 — 먼저 취소"));
 api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService link, AgvRegistry reg) =>
 {
     if (ApiGuard.ManualSendRefusal(agv, reg.Get(agv), opt.OfflineAfterSec) is { } no) return no;
@@ -159,7 +167,7 @@ api.MapPost("/agvs/{agv:int}/cfg", (int agv, SendRequest r, BridgeUdpService lin
     if (ApiGuard.ManualSendRefusal(agv, reg.Get(agv), opt.OfflineAfterSec) is { } no) return no;
     if (string.IsNullOrWhiteSpace(r.Data)) return Results.BadRequest("data 가 비어 있습니다");
     var cmd = r.Data.Trim();
-    if (System.Text.Encoding.UTF8.GetByteCount(cmd) > BridgePacket.PayloadMax) return Results.BadRequest($"명령이 {BridgePacket.PayloadMax}바이트를 넘습니다");
+    if (ApiGuard.CfgCommandProblem(cmd) is { } tooLong) return Results.BadRequest(tooLong);
     return link.SendCfg(agv, cmd) ? Results.Ok() : Results.NotFound("호기 endpoint 없음");
 });
 api.MapGet("/update", (UpdateService u) => new { current = u.CurrentText, u.Channel, u.Commit, stage = u.Stage.ToString(), u.Message, latest = u.Latest?.Tag, sha256 = u.Latest?.Sha256, u.LastCheck, manifest = u.ManifestUrl, old = u.OldVersionText });
@@ -233,13 +241,15 @@ app.Lifetime.ApplicationStarted.Register(() =>
         if (Uri.TryCreate(a.Replace("*", "localhost").Replace("+", "localhost"), UriKind.Absolute, out var u) && u.Scheme == "http")
             app.Services.GetRequiredService<JobService>().HttpPort = u.Port;
     app.Logger.LogInformation("AGV FOTA Gateway 시작: {Urls} / 데이터 {Dir}", string.Join(", ", addrs), dataDir);
+    app.Logger.LogInformation("접속 주소(Host) 허용: {Hosts}", hostGuard.Describe());
     // 브리지 0.5.2 는 URL 호스트가 자기 server IP 와 같아야 받는다 — 호스트명으로 적었으면 미리 알림 (설정 화면에도 표시)
     if (opt.PublicBaseUrlProblem() is { } urlProblem) app.Logger.LogWarning("{Problem}", urlProblem);
 });
 
 app.Run();
 
-record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, DateTime? ScheduledAt, bool? StopOnFailure, string? ApplyMode, DateTime? NotAfter);
+record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, DateTime? ScheduledAt, bool? StopOnFailure, string? ApplyMode, DateTime? NotAfter,
+                        bool? Recover = null);
 record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, string? Process, string? Route, string? Name, string? Note);
 record SendRequest(string? Data);
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
@@ -314,6 +324,13 @@ static class ApiGuard
         return false;
     }
 
+    /// <summary>설정 명령(CFG_CMD) 길이 검사 — REST·통신 로그 화면 공용. UTF-8 기준 패킷 payload 한도를 넘으면 사유, 아니면 null</summary>
+    internal static string? CfgCommandProblem(string cmd)
+    {
+        var n = System.Text.Encoding.UTF8.GetByteCount(cmd);
+        return n > BridgePacket.PayloadMax ? $"명령이 {BridgePacket.PayloadMax}바이트를 넘습니다 ({n}바이트)" : null;
+    }
+
     internal static async Task Middleware(HttpContext ctx, RequestDelegate next)
     {
         // 화면용 상태 코드 페이지(HTML 재실행)를 끈다 — API 는 상태 코드와 짧은 사유만
@@ -335,7 +352,7 @@ static class ApiGuard
         }
     }
 
-    static Task Write(HttpContext ctx, int status, string message)
+    internal static Task Write(HttpContext ctx, int status, string message)
     {
         ctx.Response.Clear();
         ctx.Response.StatusCode = status;
@@ -349,5 +366,74 @@ static class ApiGuard
         if (a is not null && a.InConflict(offlineAfterSec))
             return Results.Conflict($"{agv:D2} 호기 번호를 쓰는 장치가 둘입니다 ({a.EndPoint} / {a.ConflictEndPoint}) — 충돌이 풀릴 때까지 수동 전송을 받지 않습니다");
         return null;
+    }
+}
+
+/// <summary>
+/// DNS 리바인딩 방어 (X-03). 공격자 이름을 게이트웨이 IP 로 다시 묶으면 Origin·Host 가 둘 다 그 이름이라 출처 검사(ApiGuard.IsCrossSite)를 통과하므로,
+/// Host 헤더 자체가 이 서버의 이름인지 본다 — IP 리터럴(IPv4·IPv6), localhost, PC 이름·FQDN, Gateway.AllowedHostNames ("*" = 검사 안 함).
+/// 화면(SignalR)·정적 파일·/fw·/api 모든 경로·모든 메서드에 적용한다. Host 가 없는 요청(HTTP/1.0 스크립트)은 브라우저가 아니므로 허용.
+/// </summary>
+sealed class HostGuard
+{
+    readonly HashSet<string> _names = new(StringComparer.OrdinalIgnoreCase) { "localhost" };
+    readonly bool _any;
+    long _warnedAt = -60_000;
+
+    public HostGuard(IEnumerable<string>? extra, IEnumerable<string>? machineNames = null)
+    {
+        foreach (var n in (machineNames ?? MachineNames()).Concat(extra ?? []))
+        {
+            var t = Normalize(n);
+            if (t == "*") _any = true;
+            else if (t.Length > 0) _names.Add(t);
+        }
+    }
+
+    /// <summary>이 PC 의 이름들 — NetBIOS 이름, 호스트 이름, 도메인이 있으면 FQDN</summary>
+    static IEnumerable<string> MachineNames()
+    {
+        var list = new List<string> { Environment.MachineName };
+        try { list.Add(System.Net.Dns.GetHostName()); } catch { }
+        try
+        {
+            var p = System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties();
+            list.Add(p.HostName);
+            if (!string.IsNullOrWhiteSpace(p.DomainName)) list.Add($"{p.HostName}.{p.DomainName}");
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>소문자, 끝 점 제거 ("gw-pc." == "gw-pc")</summary>
+    static string Normalize(string? h) => (h ?? "").Trim().TrimEnd('.').ToLowerInvariant();
+
+    /// <summary>host = Host 헤더의 이름 부분 (포트 제외, IPv6 는 대괄호 포함 가능)</summary>
+    public bool IsAllowed(string? host)
+    {
+        var h = Normalize(host);
+        if (_any || h.Length == 0) return true;
+        if (h.StartsWith('[') && h.EndsWith(']')) h = h[1..^1];
+        // 브라우저는 IP 꼴 주소를 DNS 로 풀지 않으므로 리바인딩 대상이 아니다
+        if (System.Net.IPAddress.TryParse(h, out _)) return true;
+        return _names.Contains(h);
+    }
+
+    public string Describe() => _any ? "전체 (Gateway.AllowedHostNames 에 \"*\")" : "IP 주소, " + string.Join(", ", _names);
+
+    public async Task Middleware(HttpContext ctx, RequestDelegate next)
+    {
+        var host = ctx.Request.Host.Host;
+        if (IsAllowed(host)) { await next(ctx); return; }
+        var why = $"접속 주소(Host) {host} 가 허용 목록에 없음 — Gateway.AllowedHostNames 에 추가";
+        // 사내 이름으로 접속하는 PC 가 있으면 운용자가 원인을 찾을 수 있게 로그 (1분에 한 번)
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _warnedAt);
+        if (now - last >= 60_000 && Interlocked.CompareExchange(ref _warnedAt, now, last) == last)
+            ctx.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("HostGuard").LogWarning("{Why} ({Remote} {Path})", why, ctx.Connection.RemoteIpAddress, ctx.Request.Path);
+        if (ctx.Request.Path.StartsWithSegments("/api")) { await ApiGuard.Write(ctx, StatusCodes.Status403Forbidden, why); return; }
+        ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+        ctx.Response.ContentType = "text/plain; charset=utf-8";
+        await ctx.Response.WriteAsync(why);
     }
 }

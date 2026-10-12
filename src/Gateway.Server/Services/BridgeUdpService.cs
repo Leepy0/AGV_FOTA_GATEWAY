@@ -275,6 +275,13 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
             Trace?.Invoke($"[{agv:D2}] 호기 번호 충돌 중 ({a.EndPoint} / {a.ConflictEndPoint}) — {BridgePacket.TypeName(type)} 송신 거부");
             return false;
         }
+        // 패킷 한도를 넘는 payload 는 예외(BridgePacket.Build) 대신 거부 — 호출 경로(화면·REST)가 검사를 빠뜨려도 처리기 밖으로 예외가 나가지 않게
+        if (payload.Length > BridgePacket.PayloadMax)
+        {
+            _log.LogWarning("[{Agv:D2}] {Type} payload {Len}B > {Max}B — 송신 안 함", agv, BridgePacket.TypeName(type), payload.Length, BridgePacket.PayloadMax);
+            Trace?.Invoke($"[{agv:D2}] {BridgePacket.TypeName(type)} payload {payload.Length}B 가 {BridgePacket.PayloadMax}B 를 넘어 송신 안 함");
+            return false;
+        }
         var seq = _downSeq.AddOrUpdate(agv, 1, (_, s) => (ushort)(s + 1));
         var pkt = BridgePacket.Build(type, agv, seq, payload);
         try { _udp.Send(pkt, pkt.Length, ep); } catch (SocketException e) { _log.LogWarning("udp tx {Agv}: {Msg}", agv, e.Message); return false; }

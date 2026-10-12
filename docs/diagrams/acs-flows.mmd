@@ -1,10 +1,12 @@
 flowchart TB
   subgraph R["① TCP 중계"]
     direction LR
-    M1["메인보드 프레임<br/>MAIN_UP · AcsRelayService"] --> F{"종류<br/>E · A ?"}
+    M1["메인보드 프레임<br/>MAIN_UP · AcsRelayService"] --> F{{"E · A 이고<br/>STX · ETX · BCC 맞음?"}}
     F -- 예 --> A1["ACS 로 그대로"]
-    F -- "아니오<br/>W · N · F/R · 신규" --> X["보내지 않음<br/>통신 로그만"]
-    A2["ACS 지령 프레임"] --> D1["호기 번호로 골라<br/>MAIN_DOWN"]
+    F -- "아니오<br/>W · N · F · R · 잘린 조각" --> X["보내지 않음<br/>통신 로그만"]
+    A2["ACS 지령 프레임<br/>Server 모드는 허용 IP 만"] --> G{{"종류 F · R ?"}}
+    G -- 아니오 --> D1["호기 번호로 골라<br/>MAIN_DOWN"]
+    G -- 예 --> X2["버림 · 경고<br/>(10초에 한 번)"]
   end
   subgraph P["② 위치 보고 REST"]
     direction LR

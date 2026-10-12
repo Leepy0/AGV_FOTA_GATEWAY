@@ -1,21 +1,30 @@
+%%{init: {"sequence": {"mirrorActors": true, "width": 170, "actorMargin": 60}}}%%
 sequenceDiagram
   participant RF as RFID 리더
   participant APP as 메인보드 앱
   participant ESP as 브리지
   participant GW as 게이트웨이
   participant ACS as ACS
+  participant X as 같은 번호 다른 장치
   loop 1초마다
     ESP-->>GW: STATUS 0x10 · heartbeat JSON
   end
-  Note over GW: 마지막 패킷 뒤 5초 지나면 오프라인
+  Note over GW: 마지막 패킷 뒤<br/>5초 지나면 오프라인
+  opt cfg=trial · ota=pending
+    GW->>ESP: 자동 PING 0x20<br/>호기당 5초에 한 번
+    Note over APP,ESP: 원격 설정 · 새 펌웨어 확정
+  end
   RF->>ESP: 태그 데이터 (무수신 5ms 로 구분)
   ESP->>APP: 그대로 바이패스 · Wi-Fi 와 무관
   ESP-->>GW: RFID 0x03 · UDP 50001 브로드캐스트
   Note over GW: 통신 로그에만 기록
   APP->>ESP: 프레임 STX … ETX
-  Note over APP,ESP: R 프레임은 브리지가 소비 · 나머지는 그대로 올림
+  Note over APP,ESP: R 프레임은 브리지가 소비<br/>나머지는 그대로 올림
   ESP->>GW: MAIN_UP 0x01
-  GW->>ACS: E · A 프레임만 TCP 로 (중계 켜짐일 때)
+  GW->>ACS: STX · ETX · BCC 가 맞는 E · A 프레임만 (중계 켜짐일 때)
   ACS->>GW: 지령 프레임
+  Note over GW,ACS: F · R 종류는 버림<br/>(메인보드로 넘기지 않음)
   GW->>ESP: MAIN_DOWN 0x02 · 프레임의 호기 번호로
   ESP->>APP: 프레임 단위로 송신
+  X-->>GW: 같은 호기 번호 · 다른 IP:port
+  Note over GW,X: 번호 충돌 — 기존 주소로 계속 중계<br/>새 주소 패킷은 버리고 경고 (10초에 한 번)<br/>충돌 중에는 OTA · 메인보드 · CFG 명령 거부

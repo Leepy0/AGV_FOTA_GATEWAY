@@ -16,18 +16,23 @@ erDiagram
     text id PK
     text name
     text firmware_id
-    text state "Scheduled | Running | Done | Failed | Cancelled"
+    text state "Scheduled | Running | AwaitingApproval | Done | Failed | Cancelled"
     text scheduled_at
     int stop_on_failure
+    text apply_mode "Approve | Immediate (v2)"
+    text not_after "마감 시각 (v2)"
+    text approved_at "적용 승인 시각 (v2)"
+    int recover "복구 적용 0 · 1 (v3)"
   }
   job_targets {
     text job_id PK
     int agv PK
-    text state
+    text state "Waiting | Running | Staged | Done | Failed | Skipped"
     int percent
     text version_before
     text version_after
     text log
+    int stage_job "스테이징 작업 번호 (v2)"
   }
   agv_groups {
     int agv PK

@@ -1,22 +1,30 @@
-flowchart LR
-  subgraph D["④ 기록 끝 · 확인 실패"]
-    direction TB
-    D1["app_no_reply · ver_mismatch"]
+flowchart TB
+  subgraph A["① 앱 그대로 동작"]
+    direction LR
+    A1["스테이징 실패<br/>http_* · url_* · ver_invalid<br/>image_* · crc_mismatch · flash_*"] --> RA["원인 해결 뒤<br/>새 작업"]
+    A2["굽기 전 거부<br/>app_ng_xx · not_staged · job_mismatch<br/>stage_invalid · esp_ota_busy · boot_proto"] --> RA
+    A3["U 무응답 · 원시 모드 안 감<br/>app_no_fwup : 3초 안 앱 프레임 (구 앱)<br/>app_no_reply : 앱 침묵 · 버전 앎 → dsp ?"] --> RA3["app_no_fwup : JTAG 로 부트로더 · 새 앱<br/>app_no_reply : 앱이 멈춘 호기면<br/>복구 적용으로 다시 배포"]
   end
-  subgraph C["③ 앱 지워짐"]
-    direction TB
-    C1["erase · stage_read · stage_block<br/>write_timeout · program · verify_block<br/>write · write_header · verify"]
+  subgraph E["② 앱 침묵 · 부트로더 무응답"]
+    direction LR
+    E1["no_bootloader<br/>복구 적용: wait_power 60초 뒤<br/>일반 적용 (dsp ?): HELLO 3회 뒤"] --> RE["복구 적용으로 다시 배포<br/>wait_power 가 뜨면<br/>60초 안에 메인보드 전원 껐다 켜기"]
   end
   subgraph B["② 부트로더에서 대기"]
-    direction TB
-    B1["no_bootloader · uart_busy<br/>앱이 UOK 로 리셋한 뒤 무응답"]
+    direction LR
+    B1["no_bootloader · uart_busy<br/>앱이 UOK 로 리셋한 뒤 끊김"] --> RB["60초 안에 첫 패킷이 없으면<br/>앱으로 자동 복귀<br/>또는 새 작업"]
   end
-  subgraph A["① 앱 그대로 동작"]
-    direction TB
-    A1["스테이징 실패<br/>http_* · flash_* · image_crc · crc_mismatch"]
-    A2["진입 전 거부<br/>not_staged · stage_invalid · esp_ota_busy<br/>job_mismatch · app_ng_xx · boot_proto"]
+  subgraph C["③ 앱 지워짐"]
+    direction LR
+    C1["erase · write* · program · verify*<br/>stage_read · stage_block<br/>HELLO 부터 자동 재시도 2회도 실패"] --> RC["부트로더가 기다림 · 버전 ?<br/>새 작업 (일반 적용도<br/>HELLO 로 부트로더에 바로)"]
   end
-  A --> RA["원인 해결 뒤<br/>작업 다시 실행"]
-  B --> RB["작업 다시 실행<br/>또는 전원 재투입<br/>10분 뒤 앱 자동 복귀"]
-  C --> RC["작업 다시 실행<br/>부트로더가 기다림 · 버전 ?"]
-  D --> RD["앱 지원 코드 · 버전 8자 확인<br/>정상 이미지 다시 적용"]
+  subgraph D["④ 기록 끝 · 확인 실패"]
+    direction LR
+    D1["app_no_reply · ver_mismatch<br/>새 앱이 응답 없음 · 버전 다름"] --> RD["앱 지원 코드 · 워치독 · 버전 확인<br/>정상 이미지로 새 작업<br/>앱이 멈춘 채면 복구 적용<br/>(wait_power 때 전원 재투입)"]
+  end
+  A ~~~ E ~~~ B ~~~ C ~~~ D
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#0f172a
+  classDef wait fill:#fef3c7,stroke:#d97706,color:#0f172a
+  classDef bad fill:#fee2e2,stroke:#dc2626,color:#0f172a
+  class RA,RA3 ok
+  class RB wait
+  class RC,RD,RE bad
