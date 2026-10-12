@@ -392,6 +392,7 @@ public class DspOtaClientTests
     [InlineData("ver_invalid")] [InlineData("image_bad")] [InlineData("no_bootloader")] [InlineData("esp_ota_busy")]
     [InlineData("mainboard_programming")] [InlineData("mainboard_staging")] [InlineData("bad_url")] [InlineData("no_mem")]
     [InlineData("http_status")] [InlineData("perform ESP_FAIL")] [InlineData("busy")] [InlineData("app_no_fwup")]
+    [InlineData("not_staged")] [InlineData("job_mismatch")] [InlineData("write")] [InlineData("write_timeout")] [InlineData("program")] [InlineData("verify_block")]
     public void Every_bridge_error_code_has_a_korean_hint(string err) => Assert.NotNull(BridgeErrors.Hint(err));
 
     [Fact]

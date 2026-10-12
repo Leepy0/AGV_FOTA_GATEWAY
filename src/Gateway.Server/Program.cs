@@ -148,7 +148,8 @@ api.MapPost("/jobs/{id}/approve", (string id, JobService jobs) =>
     try { return jobs.Approve(id) ? Results.Ok() : Results.NotFound(); }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
 });
-api.MapDelete("/jobs/{id}", (string id, JobService jobs) => jobs.Delete(id) ? Results.Ok() : Results.Conflict());
+api.MapDelete("/jobs/{id}", (string id, JobService jobs) =>
+    jobs.Delete(id) ? Results.Ok() : jobs.Get(id) is null ? Results.NotFound("없는 작업") : Results.Conflict("끝나지 않은 작업은 지울 수 없음 — 먼저 취소"));
 api.MapPost("/agvs/{agv:int}/send", (int agv, SendRequest r, BridgeUdpService link, AgvRegistry reg) =>
 {
     if (ApiGuard.ManualSendRefusal(agv, reg.Get(agv), opt.OfflineAfterSec) is { } no) return no;

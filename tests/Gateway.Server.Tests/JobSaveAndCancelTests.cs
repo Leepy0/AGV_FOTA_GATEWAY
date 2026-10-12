@@ -82,6 +82,26 @@ public class JobSaveAndCancelTests
     }
 
     [Fact]
+    public void Jobs_json_is_kept_until_every_migrated_job_is_saved()
+    {
+        // S-05: 이전한 작업을 DB 에 못 쓴 채 원본 이름을 바꾸면, 재시도 전에 서비스가 멈출 때 옛 작업 기록이 사라진다
+        using var k = new JobTestKit();
+        var json = Path.Combine(k.Dir, "jobs.json");
+        var old = new[] { new Job { Id = "old1", Name = "옛 작업", FirmwareId = "f", Kind = FirmwareKind.Dsp, FirmwareVersion = "1.0.0",
+                                    Targets = [7], State = JobState.Done, CreatedAt = DateTime.UtcNow.AddDays(-1) } };
+        File.WriteAllText(json, System.Text.Json.JsonSerializer.Serialize(old));
+        Sql(k, "CREATE TRIGGER no_insert BEFORE INSERT ON jobs BEGIN SELECT RAISE(FAIL, 'database is locked'); END");
+        k.Restart();
+        Assert.True(File.Exists(json));
+        Assert.False(File.Exists(json + ".migrated"));
+        Sql(k, "DROP TRIGGER no_insert");
+        k.Restart();   // 다음 기동: DB 에 없는 작업을 다시 옮기고 그때 원본 이름을 바꾼다
+        Assert.False(File.Exists(json));
+        Assert.True(File.Exists(json + ".migrated"));
+        Assert.Equal(JobState.Done, k.Restart().Get("old1")?.State);
+    }
+
+    [Fact]
     public void Failed_delete_is_retried_so_record_does_not_come_back()
     {
         using var k = new JobTestKit();

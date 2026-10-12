@@ -530,7 +530,9 @@ def s7_deadline_input(ctx):
         if st != 400:
             wrong.append(f"{name} → {st} {str(resp)[:80]}")
     check(not wrong, "400 이 아님: " + "; ".join(wrong))
-    return f"[71] Done·[72] Skipped(마감), 작업 {j['state']}, 잘못된 입력 {len(bad) + 2}종 모두 400"
+    st, resp = ctx.api.call("DELETE", "/api/jobs/no-such-job")
+    check(st == 404, f"없는 작업 삭제 → {st} (기대 404) {resp}")
+    return f"[71] Done·[72] Skipped(마감), 작업 {j['state']}, 잘못된 입력 {len(bad) + 2}종 모두 400, 없는 작업 삭제 404"
 
 
 def s8_upload_reject(ctx):

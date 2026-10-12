@@ -210,11 +210,14 @@ public sealed class JobService : BackgroundService
         {
             var old = JsonSerializer.Deserialize<List<Job>>(File.ReadAllText(path), Json) ?? new();
             int n = 0;
+            bool allSaved = true;
             foreach (var j in old.Where(j => !_jobs.Any(x => x.Id == j.Id)))
             {
                 j.ApplyMode = ApplyMode.Immediate;   // jobs.json 시절 작업은 스테이징 직후 바로 적용이었다
-                _jobs.Add(j); Write(Snap(j)); n++;
+                _jobs.Add(j); allSaved &= Write(Snap(j)); n++;
             }
+            // 한 건이라도 DB 에 못 썼으면 원본을 남긴다 — 다음 기동 때 DB 에 없는 작업만 다시 옮긴다 (재시도로 이미 써졌으면 건너뜀)
+            if (!allSaved) { _log.LogWarning("jobs.json 이전: 일부를 DB 에 쓰지 못함 (원본 보존, 다시 시도 중·다음 기동 때 다시 이전)"); return; }
             File.Move(path, path + ".migrated", true);
             if (n > 0) _log.LogInformation("jobs.json → SQLite: {N}건 이전", n);
         }
@@ -826,7 +829,7 @@ public sealed class JobService : BackgroundService
         catch (DspOtaException e) when (e.Message.Contains("not_staged") || e.Message.Contains("job_mismatch"))
         {
             r.Committed = false;
-            throw new InvalidOperationException(e.Message + " — 브리지의 스테이징이 없어졌거나 바뀜. 다시 배포하세요");
+            throw new InvalidOperationException(e.Message);   // 안내(새 작업으로 다시 배포)는 BridgeErrors 가 붙였다
         }
         r.VersionAfter = ver;
         if (!DspVersion.Matches(ver, img.Version)) throw new InvalidOperationException($"적용 후 앱 버전 {ver} 이 이미지 {img.Version} 과 다름");

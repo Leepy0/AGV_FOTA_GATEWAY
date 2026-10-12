@@ -113,12 +113,12 @@
                     <option value="now">지금 바로</option>
                     <option value="at">예약</option>
                 </select>
-                @if (when == "at") { <input type="datetime-local" @bind="at" @bind:format="yyyy-MM-ddTHH:mm" /> }
+                @if (when == "at") { <input type="datetime-local" step="60" @bind="at" @bind:format="@DtFormat" /> }
             </label>
             <p class="muted small">앞 작업이 있으면 끝난 뒤 시작합니다. 예약 시각(지금 바로는 만든 시각)에서 @(JobService.StaleScheduleMinutes)분 넘게 시작하지 못하면(서버 중단·앞 작업 지연) 자동 취소됩니다.</p>
             <div class="field">
                 <label class="inline"><input type="checkbox" @bind="useNotAfter" /> 마감 시각</label>
-                @if (useNotAfter) { <input type="datetime-local" class="dt" @bind="notAfter" @bind:format="yyyy-MM-ddTHH:mm" /> <span class="muted small">이 시각이 지나면 남은 호기는 시작하지 않고 건너뜁니다 (적용 단계 포함)</span> }
+                @if (useNotAfter) { <input type="datetime-local" step="60" class="dt" @bind="notAfter" @bind:format="@DtFormat" /> <span class="muted small">이 시각이 지나면 남은 호기는 시작하지 않고 건너뜁니다 (적용 단계 포함)</span> }
             </div>
             <label><input type="checkbox" @bind="stopOnFailure" /> 한 대라도 실패하면 나머지 중단</label>
             <div class="banner warn">호기는 한 대씩 순차로 진행됩니다. <b>AGV 정지 상태</b>에서만 적용하세요 — 메인보드는 굽는 20~30초 동안 ACS 응답이 끊기고, 브리지는 재부팅으로 수 초간 끊깁니다. 시작 전에 대상 수·상태를 확인창에서 다시 묻습니다.</div>
@@ -189,7 +189,10 @@
     readonly string[] casc = new string[AgvGroup.Levels];
 
     string fwId = "", name = "", extraTargets = "", when = "now";
-    DateTime at = DateTime.Now.AddMinutes(10), notAfter = DateTime.Now.AddHours(2);
+    // Blazor 는 datetime-local 값을 초까지 붙여 보낸다("…T22:30" → "…T22:30:00") — 분까지만 읽는 형식이면 해석에 실패해 바꾼 값이 기본값으로 되돌아간다
+    const string DtFormat = "yyyy-MM-ddTHH:mm:ss";
+    static DateTime ToMinute(DateTime d) => new(d.Year, d.Month, d.Day, d.Hour, d.Minute, 0, d.Kind);
+    DateTime at = ToMinute(DateTime.Now.AddMinutes(10)), notAfter = ToMinute(DateTime.Now.AddHours(2));
     ApplyMode applyMode = ApplyMode.Approve;
     bool stopOnFailure = true, useNotAfter, recover, err, warn, busy;
     string? msg, listMsg, open;   // open: null = 실행 중·적용 대기 작업 자동, "" = 모두 접음
@@ -214,8 +217,8 @@
             foreach (var id in Groups.AgvsUnder(Group)) targets.Add(id);
             if (Group.Length > 0 && targets.Count > 0) name = $"{Group} 전체";
         }
-        at = DateTime.Now.AddMinutes(10);
-        notAfter = DateTime.Now.AddHours(2);
+        at = ToMinute(DateTime.Now.AddMinutes(10));
+        notAfter = ToMinute(DateTime.Now.AddHours(2));
     }
 
     IEnumerable<int> AllAgvIds() => Reg.Snapshot().Select(a => a.Id).Union(Groups.Snapshot().Select(g => g.Agv)).OrderBy(x => x);
