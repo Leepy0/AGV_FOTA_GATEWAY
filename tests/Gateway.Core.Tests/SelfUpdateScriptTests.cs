@@ -65,6 +65,21 @@ public class SelfUpdateScriptTests
     }
 
     [Fact]
+    public void Old_rollback_point_is_replaced_only_after_new_exe_is_in_place()
+    {
+        // R13: .old 를 먼저 지우면 이름 바꾸기·복사가 실패했을 때 되돌릴 지점이 사라진다
+        var t = SelfUpdateScript.Text;
+        int prev = t.IndexOf("ren \"%EXE%\" AgvFotaGateway.exe.prev", StringComparison.Ordinal);
+        int copy = t.IndexOf("xcopy ", StringComparison.Ordinal);
+        int check = t.IndexOf("if exist \"%EXE%\" goto keep_old", StringComparison.Ordinal);
+        int delOld = t.IndexOf("del /f /q \"%EXE%.old\"", StringComparison.Ordinal);
+        int keep = t.IndexOf("ren \"%EXE%.prev\" AgvFotaGateway.exe.old", StringComparison.Ordinal);
+        Assert.True(prev > 0 && copy > prev && check > copy && delOld > check && keep > delOld, $"{prev} {copy} {check} {delOld} {keep}");
+        Assert.Equal(1, t.Split("del /f /q \"%EXE%.old\"").Length - 1);
+        Assert.Contains("ren \"%EXE%.prev\" AgvFotaGateway.exe >>", t);   // 복사 실패 시 원래 exe 복구
+    }
+
+    [Fact]
     public void Arguments_order_and_sanitizing()
     {
         var a = SelfUpdateScript.Arguments("apply", 1234, @"C:\AgvFotaGateway\", @"C:\AgvFotaGateway\data\update\v0.3.1\AgvFotaGateway", "AgvFotaGateway", true,

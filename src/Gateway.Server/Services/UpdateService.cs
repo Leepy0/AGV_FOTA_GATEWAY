@@ -3,13 +3,16 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using Gateway.Core.Update;
 using Gateway.Server.Options;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Options;
+using Microsoft.Win32;
 
 namespace Gateway.Server.Services;
 
@@ -21,7 +24,8 @@ public enum UpdateStage { Idle, Checking, UpToDate, Available, Downloading, Read
 ///    (사내망은 api.github.com 이 막히고 github.com 만 열림)
 ///  - 받기: 프로그램이 직접 받고(.partial) SHA-256 이 맞을 때만 채택
 ///  - 출처: https 의 github.com · api.github.com 만 (서명 검증 없음 — 출처를 TLS 로 보증)
-///  - 교체: 실행 중인 exe 는 덮어쓸 수 없으므로 서비스를 멈춘 뒤 현재 exe → .old, 새 파일 복사, 다시 시작 (apply-update.bat)
+///  - 교체: 실행 중인 exe 는 덮어쓸 수 없으므로 서비스를 멈춘 뒤 현재 exe → .prev, 새 파일 복사, 성공하면 .prev → .old, 다시 시작 (apply-update.bat).
+///    배치가 시작됐다는 표시(run-started.txt)를 5초 안에 확인한 뒤에만 서버를 멈춘다 (못 보면 멈추지 않고 오류로 돌아감)
 ///    다시 띄운 뒤 60초 안에 /api/health 가 새 버전을 돌려주지 않으면 배치가 이전 exe 로 자동 되돌림
 ///  - 되돌리기: .old 가 있으면 한 세대 되돌림
 ///  - 채널: release(정식) · dev(main 테스트, 정식만 받음) · local(로컬 빌드, 교체 안 함)
@@ -63,11 +67,18 @@ public sealed class UpdateService : BackgroundService
     public string ReleasesPage => $"{BaseUrl}/releases";
     /// <summary>받기 단추를 켤지: 확인된 새 버전이 있고 받는 중·적용 중이 아님 (받기 실패 뒤에도 다시 받을 수 있게)</summary>
     public bool CanDownload => Latest is { } l && UpdateFeed.IsNewer(l.Version, Current) && Stage is UpdateStage.Available or UpdateStage.Error or UpdateStage.Ready && StagedTag != l.Tag;
+    /// <summary>
+    /// 서비스로 등록된 이 exe 가 서비스 관리자(SCM) 밖에서 돌고 있으면 안내 문구 (v0.2.x 의 자체 업데이트가 남긴 상태 등), 아니면 null.
+    /// LocalSystem 으로 돌고 있으면 다음 업데이트·되돌리기가 svc 모드로 sc start 해서 서비스로 되돌아간다
+    /// </summary>
+    public string? OutsideScmWarning { get; }
+    /// <summary>배치를 svc 모드(sc stop/start)로 돌릴지</summary>
+    readonly bool _runAsService;
     public event Action? Changed;
 
     static string ExePath => Path.Combine(AppContext.BaseDirectory, "AgvFotaGateway.exe");
     static string OldPath => ExePath + ".old";
-    /// <summary>자동 되돌림된 버전 (자동 적용에서 제외, 화면에서는 적용 가능)</summary>
+    /// <summary>교체 실패·자동 되돌림·수동 되돌리기한 버전 (자동 적용에서 제외, 화면에서는 적용 가능)</summary>
     string SkipAutoPath => Path.Combine(_dir, "skip-auto.txt");
 
     public UpdateService(IOptions<UpdateOptions> opt, IOptions<GatewayOptions> gw, JobService jobs, AcsRelayService acs, IServer server,
@@ -87,7 +98,34 @@ public sealed class UpdateService : BackgroundService
         _http = new HttpClient(new HttpClientHandler { UseProxy = true, DefaultProxyCredentials = CredentialCache.DefaultCredentials, AutomaticDecompression = DecompressionMethods.All })
         { Timeout = TimeSpan.FromMinutes(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("AgvFotaGateway/" + CurrentText);
+
+        _runAsService = WindowsServiceHelpers.IsWindowsService();
+        if (OperatingSystem.IsWindows() && !_runAsService && ServiceUsesThisExe())
+        {
+            bool system = IsLocalSystem();
+            // 0.2.x 배치는 서비스를 일반 SYSTEM 프로세스로 다시 띄웠다 — 그대로 console 모드로 두면 업데이트마다 SCM 밖에 머문다
+            _runAsService = system;
+            OutsideScmWarning = $"Windows 서비스 '{_opt.ServiceName}' 로 등록된 exe 가 서비스 관리자(SCM) 밖에서 실행 중입니다 — 멈춰도 자동 재시작되지 않습니다. "
+                              + $"관리자 명령 창에서 taskkill /f /im AgvFotaGateway.exe 후 sc start {_opt.ServiceName} 로 서비스로 되돌리세요"
+                              + (system ? " (다음 서버 업데이트·되돌리기도 서비스로 다시 시작합니다)." : ".");
+            _log.LogWarning("SCM 밖에서 실행 중: {Msg}", OutsideScmWarning);
+        }
     }
+
+    /// <summary>레지스트리의 서비스 등록(ImagePath)이 지금 실행 중인 exe 를 가리키는지</summary>
+    [SupportedOSPlatform("windows")]
+    bool ServiceUsesThisExe()
+    {
+        try
+        {
+            var image = Registry.GetValue($@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\{_opt.ServiceName}", "ImagePath", null) as string;
+            return SelfUpdateScript.SameExe(image, Environment.ProcessPath ?? ExePath);
+        }
+        catch (Exception e) { _log.LogDebug("service ImagePath: {Msg}", e.Message); return false; }
+    }
+
+    [SupportedOSPlatform("windows")]
+    static bool IsLocalSystem() { try { using var id = WindowsIdentity.GetCurrent(); return id.IsSystem; } catch { return false; } }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -102,7 +140,7 @@ public sealed class UpdateService : BackgroundService
                 var info = await CheckAsync(ct);
                 if (info is not null && _opt.AutoApply && CanSelfUpdate)
                 {
-                    if (ReadSkipAuto() == info.Tag) Add($"{info.Tag} 은(는) 이전에 되돌린 버전(기동 확인 실패 또는 수동 되돌리기) — 자동 적용하지 않음 (화면에서 적용 가능)");
+                    if (ReadSkipAuto() == info.Tag) Add($"{info.Tag} 은(는) 이전에 실패했거나 되돌린 버전(교체 실패·기동 확인 실패·수동 되돌리기) — 자동 적용하지 않음 (화면에서 적용 가능)");
                     else
                     {
                         if (Stage == UpdateStage.Available) await DownloadAsync(ct);
@@ -272,18 +310,19 @@ public sealed class UpdateService : BackgroundService
     }
 
     // ───── 교체 · 되돌리기 (Windows, 배치) ─────
-    public Task ApplyAsync()
+    public async Task ApplyAsync()
     {
+        string tag, dir;
         lock (_gate)
         {
-            if (Stage != UpdateStage.Ready || !HasStaged) return Task.CompletedTask;
-            if (!CanSelfUpdate) { Set(UpdateStage.Ready, Channel == "local" ? "로컬 빌드는 자동 교체하지 않음 (bin 폴더)" : "자동 교체는 Windows 에서만"); return Task.CompletedTask; }
-            if (!HoldJobs()) { Set(UpdateStage.Ready, "배포 작업이 실행 중 — 끝난 뒤 적용하세요"); return Task.CompletedTask; }
-            var tag = StagedTag!;
-            if (!RunBatch("apply", StagedDir!, tag, UpdateFeed.ParseVersion(tag)?.ToString(3), $"{tag} 적용 중 — 서비스가 재시작됩니다 (약 10초)"))
-                _jobs.HoldNewJobs = false;
+            if (Stage != UpdateStage.Ready || !HasStaged) return;
+            if (!CanSelfUpdate) { Set(UpdateStage.Ready, Channel == "local" ? "로컬 빌드는 자동 교체하지 않음 (bin 폴더)" : "자동 교체는 Windows 에서만"); return; }
+            if (!HoldJobs()) { Set(UpdateStage.Ready, "배포 작업이 실행 중 — 끝난 뒤 적용하세요"); return; }
+            tag = StagedTag!; dir = StagedDir!;
+            Stage = UpdateStage.Applying;   // 배치 시작 확인 동안 확인·받기·되돌리기가 끼어들지 않게
         }
-        return Task.CompletedTask;
+        if (!await RunBatchAsync("apply", dir, tag, UpdateFeed.ParseVersion(tag)?.ToString(3), $"{tag} 적용 중 — 서비스가 재시작됩니다 (약 10초)", UpdateStage.Ready))
+            _jobs.HoldNewJobs = false;
     }
 
     /// <summary>.old 버전 문자열 (되돌릴 수 있으면), 없으면 null</summary>
@@ -297,19 +336,21 @@ public sealed class UpdateService : BackgroundService
         }
     }
 
-    public Task RollbackAsync()
+    public async Task RollbackAsync()
     {
+        string old; UpdateStage prev;
         lock (_gate)
         {
-            if (Stage == UpdateStage.Applying || OldVersionText is not { } old) return Task.CompletedTask;
-            if (!CanSelfUpdate) { Add("되돌리기는 Windows 정식/테스트 빌드에서만"); return Task.CompletedTask; }
-            if (!HoldJobs()) { Add("배포 작업이 실행 중 — 끝난 뒤 되돌리세요"); return Task.CompletedTask; }
-            if (!RunBatch("rollback", "", old, UpdateFeed.ParseVersion(old)?.ToString(3), $"{old} 로 되돌리는 중 — 서비스가 재시작됩니다"))
-                _jobs.HoldNewJobs = false;
-            else
-                try { File.WriteAllText(SkipAutoPath, "v" + CurrentText); } catch { }   // 되돌린 버전을 AutoApply 가 곧바로 다시 적용하지 않게
+            if (Stage is UpdateStage.Applying or UpdateStage.Checking or UpdateStage.Downloading || OldVersionText is not { } o) return;
+            if (!CanSelfUpdate) { Add("되돌리기는 Windows 정식/테스트 빌드에서만"); return; }
+            if (!HoldJobs()) { Add("배포 작업이 실행 중 — 끝난 뒤 되돌리세요"); return; }
+            old = o; prev = Stage;
+            Stage = UpdateStage.Applying;
         }
-        return Task.CompletedTask;
+        if (!await RunBatchAsync("rollback", "", old, UpdateFeed.ParseVersion(old)?.ToString(3), $"{old} 로 되돌리는 중 — 서비스가 재시작됩니다", prev))
+            _jobs.HoldNewJobs = false;
+        else
+            try { File.WriteAllText(SkipAutoPath, "v" + CurrentText); } catch { }   // 되돌린 버전을 AutoApply 가 곧바로 다시 적용하지 않게
     }
 
     /// <summary>
@@ -324,21 +365,33 @@ public sealed class UpdateService : BackgroundService
         return false;
     }
 
-    bool RunBatch(string mode, string stageDir, string tag, string? expectedVersion, string msg)
+    /// <summary>배치가 시작됐다는 표시를 이 시간 안에 못 보면 서버를 멈추지 않는다</summary>
+    static readonly TimeSpan BatchStartTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// 배치를 띄우고, 배치가 시작했다는 표시(run-started.txt)를 확인한 뒤에만 서버를 멈춘다.
+    /// 못 띄웠거나 표시가 없으면 멈추지 않고 이전 단계(prev)로 돌아가 false (호출한 쪽이 HoldNewJobs 해제)
+    /// </summary>
+    async Task<bool> RunBatchAsync(string mode, string stageDir, string tag, string? expectedVersion, string msg, UpdateStage prev)
     {
+        var pending = Path.Combine(_dir, "pending.txt");
         try
         {
             Directory.CreateDirectory(_dir);
             var bat = Path.Combine(_dir, SelfUpdateScript.FileName);
             File.WriteAllText(bat, SelfUpdateScript.Text.ReplaceLineEndings("\r\n"), System.Text.Encoding.ASCII);   // cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 스크립트는 ASCII 만
             File.WriteAllText(Path.Combine(_dir, "exclude.txt"), "appsettings.json\r\n");
-            File.WriteAllText(Path.Combine(_dir, "pending.txt"), $"{mode} {tag}");
+            File.WriteAllText(pending, $"{mode} {tag}");
             var health = SelfUpdateScript.HealthUrl(_server.Features.Get<IServerAddressesFeature>()?.Addresses ?? []);
             var args = SelfUpdateScript.Arguments(mode, Environment.ProcessId, AppContext.BaseDirectory, stageDir, _opt.ServiceName,
-                                                  WindowsServiceHelpers.IsWindowsService(), health, expectedVersion);
-            var psi = new ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{bat}\" {args}")
+                                                  _runAsService, health, expectedVersion);
+            SelfUpdateScript.PrepareStart(_dir);
+            var psi = new ProcessStartInfo("cmd.exe", SelfUpdateScript.LaunchArguments(bat, args))
             { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = _dir };
-            Process.Start(psi);
+            using (Process.Start(psi)) { }
+            Set(UpdateStage.Applying, "교체 배치 시작 확인 중…");
+            if (!await SelfUpdateScript.WaitStartedAsync(_dir, BatchStartTimeout))
+                throw new InvalidOperationException($"교체 배치가 {BatchStartTimeout.TotalSeconds:0}초 안에 시작되지 않음 — 서버는 그대로 실행합니다 ({SelfUpdateScript.FileName}, apply.log 확인)");
             Set(UpdateStage.Applying, msg);
             _log.LogWarning("update {Mode}: {Tag} ({Args})", mode, tag, args);
             _ = Task.Delay(1500).ContinueWith(_ => _life.StopApplication());
@@ -346,8 +399,8 @@ public sealed class UpdateService : BackgroundService
         }
         catch (Exception e)
         {
-            if (HasStaged) Set(UpdateStage.Ready, "적용 실패: " + e.Message);
-            else Add("적용 실패: " + e.Message);
+            TryDelete(pending);   // 실행되지 않은 결과를 다음 기동 때 잘못 보고하지 않게
+            Set(HasStaged ? UpdateStage.Ready : prev is UpdateStage.Applying ? UpdateStage.Idle : prev, (mode == "apply" ? "적용 실패: " : "되돌리기 실패: ") + e.Message);
             return false;
         }
     }
@@ -378,11 +431,12 @@ public sealed class UpdateService : BackgroundService
             });
             if (ver is null) return;
             var stage = Path.Combine(_dir, "v" + ver.ToString(3));
-            if (p[0] == "apply-reverted")
+            if (SelfUpdateScript.SkipsAutoApply(p[0]))
             {
-                // 기동하지 못한 버전은 자동 적용에서 빼고 받아 둔 파일도 지운다 (AutoApply 가 같은 버전을 반복 적용하지 않게)
+                // 교체·기동에 실패한 버전은 자동 적용에서 뺀다 (AutoApply 가 CheckIntervalMin 마다 같은 실패·재시작을 되풀이하지 않게).
+                // 교체 실패(apply-failed)는 받아 둔 파일을 남겨 원인을 고친 뒤 화면에서 다시 적용할 수 있게 한다
                 File.WriteAllText(SkipAutoPath, "v" + ver.ToString(3));
-                if (Directory.Exists(stage)) Directory.Delete(stage, true);
+                if (p[0] != "apply-failed" && Directory.Exists(stage)) Directory.Delete(stage, true);
             }
             else if (p[0] == "apply" && ok)
             {
