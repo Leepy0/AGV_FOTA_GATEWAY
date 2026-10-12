@@ -11,7 +11,7 @@
 | 브리지 `dsp_st=nopart` (dspfw 파티션 없음 → `no_partition` 거부) | `AGV_Wifi_Bridge/main/dsp_ota.c` | `JobService` 가 작업 시작 전에 거부, 호기 현황 ⚠ 표시 |
 | **메인보드 OTA B안** DSP_OTA_START(0x32) → DSP_OTA_RESULT(0x33) / DSP_OTA_APPLY(0x34) | `AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md`, `main/dsp_ota.c` | `Gateway.Core/Fota/DspOtaClient.cs` (재전송, heartbeat 판정, 오류 안내 `BridgeErrors`) |
 | 브리지 자체 OTA OTA_START(0x30) → OTA_RESULT(0x31) | `AGV_Wifi_Bridge/main/ota.c` | `Gateway.Core/Fota/EspOtaClient.cs` |
-| `.dspfw` 이미지 파일 (헤더 32B + 앱 헤더 + 블록) | `AGV_Wifi_Bridge/tools/dsp_pack.py`, `dsp/common/dsp_image.c` | `Gateway.Core/Fota/DspfwImage.cs` (블록·`app_crc` 까지 검사), `DspVersion.cs` (1~8자) |
+| `.dspfw` 이미지 파일 (헤더 32B + 앱 헤더 + 블록) | `AGV_Wifi_Bridge/tools/dsp_pack.py`, `dsp/common/dsp_image.c` | `Gateway.Core/Fota/DspfwImage.cs` (블록 주소 오름차순·겹침 없음·`app_crc` 까지 검사 — 브리지 `dap_image_check_blocks`·`dsp_pack.py unpack` 과 같은 규칙), `DspVersion.cs` (1~8자) |
 | 브리지 프레임 제한: ETX(0x03) 프레이밍, 256B | `AGV_Wifi_Bridge/main/uart_bridge.h` | `AgvFrame.BridgeFrameMax` |
 | AGV↔ACS 프레임 (STX, BCC, ETX, 종류/PAN/MSG/AGV) | AGV 통신 프로토콜 레퍼런스 | `Gateway.Core/Agv/AgvFrame.cs` |
 | ACS TCP 소켓 | **미확인** — 기존 ZigBee 게이트웨이 규격 필요 | `Gateway.Server/Services/AcsRelayService.cs` (프레임 그대로 통과한다고 가정), 하향 `F`·`R` 차단·허용 IP `Gateway.Core/Acs/AcsRelayPolicy.cs` |
@@ -38,6 +38,8 @@
 | `mac` | heartbeat 에도 들어감(`fw` 바로 뒤, STA MAC, INFO 와 같은 소문자 `xx:xx:xx:xx:xx:xx`). 게이트웨이는 번호 충돌 판정에 쓴다 |
 | `hb_ms` (설정) | 0(끔, 디버그용) 또는 100~2000ms 만. 범위 밖은 `set`·설정 페이지가 거부, 예전 저장값은 부팅 때 기본값 1000 으로 |
 | `dsp` · `dspb` · `dsp_build` · `staged.ver` | JSON 이스케이프해서 보냄 |
+| `dspb` | 메인보드 부트로더 버전(앱의 버전 응답·부트로더 HELLO 응답에서). 0.5.2 의 `dsp/boot` 는 `1.1.0`, 0.5.1 이전 소스는 `1.0.0`. 아직 모르면 `?`, 앱이 알려 주지 않으면 `-`. 앱 버전이 `?` 로 바뀌어도 마지막 값을 유지 |
+| `dsp` | `U000`·`V000` 에 앱이 답하지 않으면(`app_no_reply`, 버전 조회 무응답) `?` 로 바뀜. `?` 인 동안 60초마다 다시 물어 앱이 살아 있으면 돌아옴 |
 
 게이트웨이는 INFO 를 받으면 직전 상태에 INFO 의 키만 덮어쓰고, heartbeat 를 받으면 전체를 새 값으로 하되 heartbeat 에 없는 `mac`·`ip` 는 직전 값을 남긴다.
 
@@ -97,7 +99,7 @@
 | `image_bad` | download·적용 시작 | 블록 구조 결함 또는 복원 CRC32 ≠ `app_crc`. 지우기 전에 거부 **새로** |
 | `crc_mismatch` | download | 서버 `crc32` 와 다름 |
 | `flash_erase` `flash_write` | download | 브리지 플래시 오류 |
-| `not_staged` `stage_invalid` `job_mismatch` | 적용 시작 | 받아 둔 이미지 없음·깨짐·다른 job |
+| `not_staged` `stage_invalid` `job_mismatch` | 적용 시작 | 받아 둔 이미지 없음·깨짐·다른 job. 게이트웨이 안내는 `not_staged`·`job_mismatch` 가 '새 작업으로 다시 배포' |
 | `app_ng_01` … `app_ng_09` | enter | 앱이 진입 거부 (09 = 기타·안전 콜백 없음) |
 | `app_no_fwup` | enter | 앱이 `U000` 에 답하지 않지만 최근 3초 안에 앱 프레임이 옴 — 업데이트 진입 코드가 없는 구 앱. `recover` 여도 부트로더로 가지 않음 **새로** |
 | `app_no_reply` | enter·확인 | 앱이 `U000` 에 2초 안에 답하지 않고 앱 프레임도 없음(앱 버전을 알고 `recover` 가 없을 때, 중계를 끊지 않고 중단, 앱 버전을 `?` 로) / 적용 뒤 버전 조회에 답하지 않음 **뜻 바뀜** |
@@ -116,7 +118,7 @@
 
 | 코드 | 뜻 |
 |---|---|
-| `bad_url` **새로** | URL 형식 오류 또는 256자 이상 |
+| `bad_url` **새로** | URL 형식 오류 또는 256자 이상 (게이트웨이 안내: `http://` 로 시작하고 255자 이하) |
 | `url_host` **새로** | URL 호스트가 server IP 가 아님 |
 | `mainboard_programming` · `mainboard_staging` **새로** | 메인보드를 굽거나 이미지를 받는 중 |
 | `no_mem` **새로** | 메모리 부족으로 시작 못 함 |
@@ -144,7 +146,7 @@
 
 ### 공통
 
-- 오류 응답은 HTML 이 아니라 **상태 코드 + JSON 문자열 사유**입니다. 400 잘못된 입력·본문 해석 실패, 404 없음, 409 사용 중·번호 충돌, 500 서버 오류.
+- 오류 응답은 HTML 이 아니라 **상태 코드 + JSON 문자열 사유**입니다. 400 잘못된 입력·본문 해석 실패, 404 없음, 409 사용 중(끝나지 않은 작업이 쓰는 펌웨어·끝나지 않은 작업 삭제)·번호 충돌, 500 서버 오류.
 - `/api` 의 POST·PUT·DELETE·PATCH 는 브라우저가 **다른 출처**에서 보내면 403 입니다. `Sec-Fetch-Site: cross-site` 이거나 `Origin` 의 scheme·호스트·포트가 요청과 다르면(`Origin: null` 포함) 거부합니다. `Origin`·`Sec-Fetch-Site` 가 없는 요청(curl·스크립트)은 영향이 없습니다.
 - `Host` 헤더가 이 서버의 이름이 아니면 **모든 경로·모든 메서드**가 403 입니다(DNS 리바인딩 방어). 허용: IP 주소(IPv4·IPv6), `localhost`, 이 PC 이름·FQDN, `Gateway.AllowedHostNames`(`"*"` = 검사 안 함). 사유는 `접속 주소(Host) … 가 허용 목록에 없음 — Gateway.AllowedHostNames 에 추가` 입니다. `Host` 가 없는 요청은 허용합니다.
 - 시각은 ISO 8601 입니다. 오프셋이 없으면 서버 지역 시각으로 봅니다. 응답의 시각은 UTC 입니다.
@@ -157,8 +159,8 @@
 | `GET /api/jobs/{id}` | 작업 하나 | 200 / 404 |
 | `POST /api/jobs` | 작업 만들기 (아래 본문) | 200 작업 JSON / 400 |
 | `POST /api/jobs/{id}/approve` | 적용 대기 작업의 적용 승인. **부르기 전에 대상 AGV 정지를 확인** | 200 / 400 적용 대기가 아님·마감 지남 / 404 |
-| `POST /api/jobs/{id}/cancel` | 취소. `?queued=true` 면 이 작업이 끝나자마자 이어서 시작될 대기 작업도 함께 취소 | 200 / 404 |
-| `DELETE /api/jobs/{id}` | 끝난 작업 기록 삭제 | 200 / 404 없는 작업 / 409 끝나지 않은 작업 (먼저 취소) |
+| `POST /api/jobs/{id}/cancel` | 취소. `?queued=true` 면 이 작업이 끝나자마자 이어서 시작될 대기 작업도 함께 취소 | 200 / 404 없는 작업·이미 끝난 작업 |
+| `DELETE /api/jobs/{id}` | 끝난 작업 기록 삭제 | 200 / 404 `없는 작업` / 409 `끝나지 않은 작업은 지울 수 없음 — 먼저 취소` |
 
 `POST /api/jobs` 본문:
 

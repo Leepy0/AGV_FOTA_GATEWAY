@@ -60,6 +60,7 @@ CI 순서: 버전·채널 결정 → `dotnet build`·`dotnet test` → 종단 �
 5. **검증**: Actions 초록(`actions_list` → `list_workflow_runs`, 종단 시험 단계 포함), Release 자산 3개(`get_release_by_tag`): zip, `.sha256`, `AgvFotaGateway.json` 의 `version`·`sha256`.
    공개 저장소면 `curl -sL https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` 에 새 버전이 보이는지.
    설치된 서버의 **서버 업데이트** 화면에서 "지금 확인" 이 새 버전을 보이는지.
+   **Windows 실기 확인(교체 배치를 바꾼 릴리스, 특히 v0.3.0 첫 릴리스)**: 서비스 모드와 콘솔(`start.bat`) 모드에서 각각 적용 → 되돌리기 → 자동 되돌림(새 버전이 응답하지 않게 한 빌드)을 1회씩 돌린다. `data\update\run-started.txt` 가 생겼는지, `data\update\apply.log` 의 단계(`healthy: …` 또는 `… auto rollback` → `restored previous exe`), 설치 폴더의 `.old`·`.bad`와 `services.msc` 의 **실행 중** 을 확인한다. 0.3.0 의 배치는 아직 실기로 확인하지 않았다.
 6. **비공개 주의**: 저장소가 비공개인 동안은 github.com 매니페스트 주소가 404 → 서버는 "정식 릴리스가 없거나 접근할 수 없음" 을 보인다.
    해결은 저장소 공개 전환이다(사내 서버로 자산을 복사하는 방식은 막혀 있음). api.github.com 이 열린 망이면 `Update.GitHubToken`(Contents: Read)으로 API 폴백 확인은 되지만 받기까지는 확인 필요. 그 전에는 수동 업데이트(아래 4절)로 안내한다. 처음 릴리스할 때 한 줄로 알린다.
 
@@ -80,11 +81,11 @@ CI 순서: 버전·채널 결정 → `dotnet build`·`dotnet test` → 종단 �
 
 ## 4. 업데이트 적용
 
-설치된 서버는 시작 3초 뒤와 6시간마다 매니페스트로 새 릴리스를 확인한다. 화면 **서버 업데이트** → 지금 확인 → 받기(SHA-256 검증) → 적용(확인창, 새 배포 작업 보류, 현재 exe 는 `.old`, 서비스 재시작 약 10초).
-배치는 서비스를 멈추고 파일을 바꾼 뒤(`appsettings.json` 제외) 서비스를 시작하고, 2초마다 최대 60초 `/api/health` 를 확인해 새 버전이 응답하지 않으면 `.bad` 로 두고 `.old` 를 복원한다(그 버전은 자동 적용 제외, `data\update\skip-auto.txt`).
+설치된 서버는 시작 3초 뒤와 6시간마다 매니페스트로 새 릴리스를 확인한다. 화면 **서버 업데이트** → 지금 확인 → 받기(SHA-256 검증) → 적용(확인창, 새 배포 작업 보류, 서비스 재시작 약 10초).
+서버는 배치가 첫 줄에서 `run-ticket.txt` 를 `run-started.txt` 로 바꾼 것을 5초 안에 확인한 뒤에만 멈춘다(못 보면 오류, 서버는 계속 실행). 배치는 서비스를 멈추고 현재 exe 를 `.prev` 로 비켜 둔 채 파일을 바꾼 뒤(`appsettings.json` 제외) `.prev` 를 `.old` 로 바꾸고(복사 실패면 `.prev` 를 되살리고 `apply-failed`) 서비스를 시작한다. 2초마다 최대 60초 `/api/health` 를 확인해 새 버전이 응답하지 않으면 `.bad` 로 두고 `.old`(`.prev` 가 남아 있으면 그것)를 복원한다. 자동 되돌림·교체 실패 버전은 자동 적용 제외(`data\update\skip-auto.txt`).
 `Update.AutoApply=true` 면 배포 작업이 없을 때 자동 적용하되, ACS 중계가 연결돼 있으면 미루고 화면에서 적용하게 한다. 잘못 배포했으면 "이전 버전으로 되돌리기". 적용 기록 `data\update\apply.log`.
 
-- **v0.2.x → v0.3.0 첫 업데이트**: 교체 배치는 실행 중인 옛 버전이 만들므로 I-01 문제(서비스로 재시작 안 됨)가 한 번 남는다. 수동 업데이트를 권하고, 화면에서 적용했다면 `services.msc` 를 확인해 **중지됨** 이면 `taskkill /f /im AgvFotaGateway.exe` → `sc start AgvFotaGateway`. 끝나면 `install-service.bat` 을 한 번 다시 실행(폴더 권한·ACS 방화벽 반영).
+- **v0.2.x → v0.3.0 첫 업데이트**: 교체 배치는 실행 중인 옛 버전이 만들므로 I-01 문제(서비스로 재시작 안 됨)가 한 번 남는다. 0.3.0 은 SCM 밖에서 돌면 **서버 업데이트** 화면에 빨간 띠를 띄운다. 수동 업데이트를 권하고, 화면에서 적용했다면 `services.msc` 를 확인해 **중지됨** 이면 `taskkill /f /im AgvFotaGateway.exe` → `sc start AgvFotaGateway`. 끝나면 `install-service.bat` 을 한 번 다시 실행(폴더 권한·ACS 방화벽 반영).
 
 수동 업데이트(`docs/DEPLOY.md` 9-4): 배포 작업이 없는지 확인 → 관리자 권한으로 `net stop AgvFotaGateway`(실행 중 exe 는 잠겨 있어 덮어쓸 수 없음) →
 `AgvFotaGateway.exe` 를 `AgvFotaGateway.exe.old` 로 이름 바꿈 → zip 안 `AgvFotaGateway\` 의 파일을 설치 폴더로 복사(`appsettings.json` 은 빼고, `data\` 는 zip 에 없음) →

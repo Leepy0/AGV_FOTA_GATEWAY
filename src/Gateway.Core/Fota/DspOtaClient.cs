@@ -39,7 +39,7 @@ public static class BridgeErrors
             "ver_mismatch" => "구운 뒤 메인보드 앱이 보고한 버전이 이미지와 다름",
             "not_staged" => "브리지에 받아 둔(스테이징) 이미지가 없음 (브리지 재굽기·스테이징 중 재부팅 등) — 새 작업으로 다시 배포",
             "job_mismatch" => "브리지에 받아 둔 이미지가 다른 작업의 것 (다른 작업이 덮어씀) — 새 작업으로 다시 배포",
-            "erase" or "verify" or "write" or "write_timeout" or "program" or "verify_block" or "write_header" or "stage_read" => "메인보드 굽기 실패 — 다시 적용 (앱이 지워졌으면 부트로더가 업데이트 모드에서 기다림)",
+            "erase" or "verify" or "write" or "write_timeout" or "program" or "verify_block" or "write_header" or "stage_read" => "메인보드 굽기 실패 — 새 작업으로 다시 배포 (앱이 지워졌으면 부트로더가 업데이트 모드에서 기다림)",
             _ when e.StartsWith("http_") || e.StartsWith("begin") || e.StartsWith("perform") => "브리지가 서버에서 파일을 받지 못함 — 서버 HTTP 포트·방화벽·PublicBaseUrl 확인",
             _ when e.StartsWith("flash_") => "브리지 플래시 쓰기 오류 — 다시 시도, 반복되면 브리지 점검",
             _ when e.StartsWith("finish") || e.StartsWith("project mismatch") => "브리지 이미지 검증 실패 — build/agv_wifi_bridge.bin 을 올렸는지 확인",

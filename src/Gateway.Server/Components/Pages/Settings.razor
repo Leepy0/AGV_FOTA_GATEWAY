@@ -97,7 +97,7 @@
 
 <section class="card">
     <h2>REST API</h2>
-    <p class="muted small">화면과 같은 서비스를 쓰는 스크립트용 API 입니다. <code>GET /api/agvs</code> 호기 · <code>GET /api/firmware</code> · <code>POST /api/firmware</code>(multipart kind/version/notes/file) · <code>GET|POST /api/jobs</code> · <code>POST /api/jobs/{id}/cancel</code> · <code>POST /api/agvs/{n}/send|info|cfg</code> · <code>GET /api/positions</code> · <code>GET /api/update</code> · <code>GET /api/health</code>. 변경 요청(POST·PUT·DELETE)은 다른 출처의 웹페이지에서 브라우저로 보내면 거부합니다(403). 접속 주소(Host)가 IP·localhost·이 PC 이름·Gateway.AllowedHostNames 가 아니면 모든 요청을 거부합니다(403). 잘못된 입력은 400 과 짧은 사유를 돌려줍니다. 자세한 것은 <code>docs/INTERFACES.md</code>.</p>
+    <p class="muted small">화면과 같은 서비스를 쓰는 스크립트용 API 입니다. <code>GET /api/agvs</code> 호기 · <code>GET /api/firmware</code> · <code>POST /api/firmware</code>(multipart kind/version/notes/file) · <code>GET|POST /api/jobs</code> · <code>POST /api/jobs/{id}/approve|cancel</code> · <code>DELETE /api/jobs/{id}</code> · <code>DELETE /api/firmware/{id}</code> · <code>POST /api/agvs/{n}/send|info|cfg</code> · <code>GET /api/positions</code> · <code>GET /api/update</code> · <code>GET /api/health</code>. 변경 요청(POST·PUT·DELETE)은 다른 출처의 웹페이지에서 브라우저로 보내면 거부합니다(403). 접속 주소(Host)가 IP·localhost·이 PC 이름·Gateway.AllowedHostNames 가 아니면 모든 요청을 거부합니다(403). 잘못된 입력은 400 과 짧은 사유를 돌려줍니다. 자세한 것은 <code>docs/INTERFACES.md</code>.</p>
 </section>
 
 @code {

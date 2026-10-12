@@ -50,6 +50,8 @@ dotnet run --project src/Gateway.Server          # http://localhost:8080
 python3 tests/fake_esp.py --agv 7,12,23 --server 127.0.0.1:50000 --listen 50010 --dsp 1.0.0
 ```
 
+`--dspb` 는 메인보드 부트로더 버전입니다(기본 `1.0.0` = 옛 부트로더, 0.5.2 부트로더처럼 보이려면 `--dspb 1.1.0`).
+
 장애 주입: `--drop staged,done,ota_done[:N]`(보고 유실), `--drop-rx START:1`(명령 유실), `--mute-after-cmd 6.5`(서버 재전송 유도), `--fail-at erase[:N]`, `--app-u ng:03`, `--nodsp [mute|boot]`(앱 버전 `?`), `--app-frames yes|no`(앱이 살아 있음·침묵), `--nopart`, `--legacy`(0.4.x), `--dup-id`(번호 충돌), `--events FILE`.
 실제 브리지와 다른 점은 파일 머리 주석의 '남은 차이' 에 있습니다.
 
@@ -62,7 +64,7 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 ```
 
 REST API (화면과 같은 기능, 스크립트용 — 자세한 본문·응답 코드는 [docs/INTERFACES.md](docs/INTERFACES.md#rest-api)):
-`GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs` (`applyMode`·`notAfter`·`recover`), `POST /api/jobs/{id}/approve`, `POST /api/jobs/{id}/cancel[?queued=true]`,
+`GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs` (`applyMode`·`notAfter`·`recover`), `POST /api/jobs/{id}/approve`, `POST /api/jobs/{id}/cancel[?queued=true]`, `DELETE /api/jobs/{id}` (끝난 작업만, 없는 작업 404·끝나지 않은 작업 409),
 `POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일),
 `GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고,
 `GET /api/groups` 구역 트리 · `GET /api/groups/agvs?path=` · `PUT|DELETE /api/agvs/{n}/group` · `POST /api/groups/import` (CSV) · `GET /api/groups/export.csv` · `POST /api/acs/inventory/preview|pull` ACS 소속 받기, `GET /api/health`.
@@ -80,7 +82,8 @@ REST API (화면과 같은 기능, 스크립트용 — 자세한 본문·응답 
 ## 아직 정해지지 않은 것
 
 - **ACS 소켓 규격**: 기존 ZigBee 게이트웨이가 ACS 와 주고받는 TCP 규격(접속 방향, 프레임 구분, 호기 매핑). 지금은 프레임이 그대로 흐른다고 가정한 뼈대이며 `Acs.Enabled=false`. ACS 로는 온전한 E·A 프레임만 넘기고, 하향 F·R 은 버립니다.
-- **메인보드 OTA 실기 검증**: 브리지 0.5.2 와 부트로더·앱은 실기 검증 전. 서버 쪽은 가짜 브리지 종단 시험, 브리지·부트로더는 호스트 시험으로만 확인.
+- **메인보드 OTA 실기 검증**: 브리지 0.5.2 와 부트로더(1.1.0)·앱은 실기 검증 전. 서버 쪽은 가짜 브리지 종단 시험, 브리지·부트로더는 호스트 시험으로만 확인. 부트로더 1.1.0 은 현장 설치 전에 JTAG 로 굽는다.
+- **서버 자체 업데이트 실기 확인**: 교체 배치(적용·되돌리기·60초 자동 되돌림)는 Windows 실기에서 아직 돌려 보지 않음. 릴리스 전에 1회 확인.
 - **로그인·권한**: 사내망 전제로 없음. 필요하면 ASP.NET Core 인증을 붙인다.
 - **AGV 정지 확인 자동화**: 지금은 운용자가 적용 대기에서 정지를 확인하고 승인(메인보드 앱도 주행 중이면 거부). ACS 중계가 붙으면 마지막 W/E 패킷으로 판단 가능.
 - **ACS REST 스키마 2건**: 위치 보고(보내기)와 호기 소속(받기). 임시 형식으로 틀만 있음 (`docs/ACS_API.md`).
