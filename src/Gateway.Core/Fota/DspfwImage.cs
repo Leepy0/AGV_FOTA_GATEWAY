@@ -67,7 +67,7 @@ public static class DspfwImage
 
     /// <summary>
     /// 파일 헤더·길이·본문 CRC, 앱 헤더(magic·형식 버전·hdr_crc16·app_len 범위), 블록(nw 1~128, 주소가 앱 영역 안,
-    /// 마지막 블록이 파일 끝과 정확히 맞음), 블록으로 복원한 코드(빈 곳 0xFFFF)의 CRC32 == app_crc 가 모두 맞으면 정보, 아니면 null.
+    /// 주소 오름차순·겹침 없음, 마지막 블록이 파일 끝과 정확히 맞음), 블록으로 복원한 코드(빈 곳 0xFFFF)의 CRC32 == app_crc 가 모두 맞으면 정보, 아니면 null.
     /// 버전 규칙(DspVersion)은 검사하지 않고 VersionValid 로 알려 준다 — 거부는 업로드 쪽에서.
     /// </summary>
     public static DspfwInfo? Parse(ReadOnlySpan<byte> file)
@@ -97,6 +97,7 @@ public static class DspfwImage
         var flat = new ushort[appLen];
         Array.Fill(flat, (ushort)0xFFFF);
         int pos = HeaderLength + AppHeaderWords * 2;
+        uint next = AppCodeAddr;                // 직전 블록 끝 — 브리지는 CRC 를 흘려 계산하므로 주소 오름차순·겹침 없음만 받는다
         while (pos < file.Length)
         {
             if (pos + 6 > file.Length) return null;
@@ -104,13 +105,14 @@ public static class DspfwImage
             int nw = BinaryPrimitives.ReadUInt16LittleEndian(file[(pos + 4)..]);
             pos += 6;
             if (nw == 0 || nw > BlockWords || pos + nw * 2 > file.Length) return null;
-            if (addr < AppCodeAddr || (ulong)addr + (uint)nw > AppEnd) return null;
+            if (addr < AppCodeAddr || (ulong)addr + (uint)nw > AppEnd || addr < next) return null;   // dsp_app_proto.c dap_image_check_blocks
             for (int i = 0; i < nw; i++)
             {
                 ulong off = addr + (ulong)i - AppCodeAddr;
                 if (off < appLen) flat[off] = BinaryPrimitives.ReadUInt16LittleEndian(file[(pos + i * 2)..]);
             }
             pos += nw * 2;
+            next = addr + (uint)nw;
         }
         if (Crc32Words(flat) != appCrc) return null;
         return new DspfwInfo(ver, crc, file.Length);
