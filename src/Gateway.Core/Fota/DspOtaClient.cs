@@ -19,7 +19,8 @@ public static class BridgeErrors
         return e switch
         {
             _ when e.StartsWith("app_ng") => "메인보드 앱이 업데이트 진입을 거부 — AGV 가 정지 상태인지 확인",
-            "app_no_reply" => "메인보드 앱이 응답하지 않음 — 정지 확인 후 다시 (앱이 멈춘 호기는 복구 적용 필요)",
+            "app_no_reply" => "메인보드 앱이 응답하지 않음 — 정지 확인 후 다시 (앱이 멈춘 호기면 복구 적용으로 다시 배포)",
+            "app_no_fwup" => "메인보드 앱은 동작하나 업데이트 진입을 지원하지 않음(구 앱) — JTAG 로 부트로더와 새 앱을 설치해야 함",
             "uart_busy" => "브리지 → 메인보드 송신 대기열이 가득 참 — 잠시 뒤 다시",
             "url_host" => "URL 호스트가 브리지에 설정된 서버 IP 와 다름 — PublicBaseUrl 은 브리지 server IP 와 같은 IPv4 여야 함 (비우면 자동)",
             "url_too_long" => "URL 이 브리지 한도를 넘음 — 펌웨어 파일명을 줄여 다시 올리기",
@@ -27,7 +28,7 @@ public static class BridgeErrors
             "bad_request" => "브리지가 명령 JSON 을 읽지 못함 — 서버·브리지 버전 확인",
             "ver_invalid" => "메인보드 버전 형식 오류 (1~8자 영문·숫자·._-) — dsp_pack.py --ver 확인",
             "image_bad" or "image_crc" or "stage_invalid" or "crc_mismatch" or "stage_block" => "이미지 검증 실패 — dsp_pack.py 로 다시 만들어 올리기",
-            "no_bootloader" => "부트로더 응답 없음 — 메인보드 전원·배선 확인 (복구 적용이면 안내에 따라 메인보드 전원을 껐다 켜기)",
+            "no_bootloader" => "부트로더 응답 없음 — 메인보드 전원·배선 확인 (앱이 멈춘 호기면 복구 적용으로 다시 배포, 복구 적용 중이면 안내에 따라 메인보드 전원을 껐다 켜기)",
             "boot_proto" => "부트로더 프로토콜 버전이 맞지 않음 — 부트로더 갱신 필요 (메인보드 앱은 그대로)",
             "esp_ota_busy" => "브리지 자체 업데이트(OTA) 진행 중이라 메인보드 적용 거부 — 브리지 OTA 가 끝난 뒤 다시",
             "mainboard_programming" => "브리지가 메인보드를 굽는 중이라 브리지 OTA 거부 — 메인보드 적용이 끝난 뒤 다시",
@@ -140,8 +141,8 @@ public sealed class DspOtaClient : IDisposable
     /// <summary>
     /// 같은 job 의 보고와 heartbeat 를 함께 본다. "fail" 이면 예외, 목표 단계면 반환. 이 job 의 보고·진행 표시가 idle 만큼 끊기면 시간 초과
     /// (복구 적용의 wait_power·retry 보고도 보고이므로 받을 때마다 대기 시한이 늘어난다).
-    /// 수신 흔적이 Resend 동안 없으면 resend() 로 다시 보낸다(최대 MaxResends). 재전송 뒤에는 job 0 의 fail(not_staged 등)과 busy 를
-    /// 앞서 보낸 명령이 처리 중인 흔적으로 보고 무시한다.
+    /// 수신 흔적이 Resend 동안 없으면 resend() 로 다시 보낸다(최대 MaxResends). 적용 대기 중 늦게 온 스테이징 보고(staged·download)는
+    /// 수신 흔적이 아니다. 재전송 뒤의 busy 는 앞서 보낸 명령이 처리 중인 흔적으로 보고 무시하고, job 0 의 fail(not_staged)은 실패로 본다.
     /// </summary>
     async Task<DspOtaResult> WaitAsync(long job, string target, TimeSpan idle, Func<bool> resend, string? expected,
                                        Action<DspOtaResult>? progress, CancellationToken ct)
@@ -166,6 +167,8 @@ public sealed class DspOtaClient : IDisposable
             {
                 var r = DspOtaResult.Parse(js);
                 if (r is null || (r.Job != 0 && job != 0 && r.Job != job)) continue;      // 다른 job — 대기 시계도 그대로
+                // 스테이징 쪽 보고가 늦게 도착 (최종 보고 반복·재전송한 START) — APPLY 가 닿은 흔적이 아니다 (재전송을 막지 않게 수신 흔적보다 먼저)
+                if (apply && r.Stage is "staged" or "download") continue;
                 lastActivity = DateTime.UtcNow;
                 received = true;
                 if (r.Job == job && job != 0)
@@ -179,8 +182,11 @@ public sealed class DspOtaClient : IDisposable
                     if (js == _lastJs) continue;
                     _lastJs = js;
                 }
-                if (apply && r.Stage is "staged" or "download") continue;               // 스테이징 쪽 보고가 늦게 도착 (반복 보고·재전송한 START)
-                if (r.Stage == "fail" && resends > 0 && (r.Job == 0 || r.Err == "busy")) continue;  // 재전송한 명령의 중복 처리 결과
+                if (r.Stage == "fail" && resends > 0 && r.Err == "busy") continue;      // 재전송한 명령이 앞선 명령 처리 중에 닿음
+                // 재전송 뒤 job 0 실패(not_staged): 브리지 0.5.2 는 이미 끝난 같은 job 의 APPLY 에 최근 결과(done)를 다시 보내므로
+                // 실제 스테이징 소실이다. 단 heartbeat 가 이미 이 job 의 완료를 보이면(최근 결과 보관 시간이 지난 경우 등) 완료로 본다
+                if (apply && r.Stage == "fail" && resends > 0 && r.Job == 0 && sawJob && HeartbeatDone(_status(_agv), expected) is { } hb)
+                    return Done(hb);
                 progress?.Invoke(r);
                 if (r.Stage == "fail") throw new DspOtaException(BridgeErrors.WithHint($"브리지 보고 실패: {r.Err}{(r.Ver.Length > 0 ? $" (ver {r.Ver})" : "")}", r.Err));
                 if (r.Stage == target) return r;
@@ -203,8 +209,7 @@ public sealed class DspOtaClient : IDisposable
                     if (apply) sawJob = true;
                     lastActivity = DateTime.UtcNow;
                 }
-                if (apply && sawJob && st.DspState == "idle" && st.StagedJob is null && DspVersion.Matches(st.Dsp, expected))
-                    return Done(new DspOtaResult(job, "done", 100, st.Dsp, ""));
+                if (apply && sawJob && HeartbeatDone(st, expected) is { } hb) return Done(hb);
             }
 
             var now = DateTime.UtcNow;
@@ -221,5 +226,8 @@ public sealed class DspOtaClient : IDisposable
         }
 
         DspOtaResult Done(DspOtaResult r) { progress?.Invoke(r); return r; }
+        DspOtaResult? HeartbeatDone(BridgeStatus? st, string? exp) =>
+            st is not null && st.DspState == "idle" && st.StagedJob is null && DspVersion.Matches(st.Dsp, exp)
+                ? new DspOtaResult(job, "done", 100, st.Dsp, "") : null;
     }
 }

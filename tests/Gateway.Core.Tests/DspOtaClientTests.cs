@@ -6,7 +6,8 @@ namespace Gateway.Core.Tests;
 
 /// <summary>
 /// 가짜 브리지(B안): START 에 download→staged, APPLY 에 start→enter→erase→progress→verify→done 을 보고하고 heartbeat(dsp·dsp_st·staged)를 갱신.
-/// 실제 브리지처럼 스테이징이 없을 때 APPLY 는 job 0 으로 start·fail(not_staged) 를 보고한다. 유실·반복 보고를 흉내 낼 수 있다.
+/// 실제 브리지처럼 스테이징이 없을 때 APPLY 는 job 0 으로 start·fail(not_staged) 를 보고하고, 브리지 0.5.2 처럼 이미 적용한 job 의
+/// APPLY 에는 최근 결과(done)를 다시 보고한다(Replay=false 면 구 브리지). 유실·반복 보고를 흉내 낼 수 있다.
 /// </summary>
 sealed class FakeEspLink : IAgvLink
 {
@@ -19,6 +20,10 @@ sealed class FakeEspLink : IAgvLink
     public Func<string, bool>? DropReport;  // true 면 그 보고(단계 이름)를 유실
     public int Repeat = 1;             // 최종 보고(staged/done/fail) 반복 횟수 (브리지 0.5.2 는 3)
     public BridgeStatus? Frozen;       // null 이 아니면 heartbeat 가 이 값에 멈춤 (heartbeat 지연)
+    public bool Replay = true;         // 이미 적용한 job 의 중복 APPLY 에 최근 결과 재보고 (dsp_ota.c replay_recent)
+    public Action<int>? OnApply;       // APPLY 를 받을 때마다 (n번째, 유실 포함) — 시험이 상태를 바꾸는 데 씀
+    long _recentJob; string _recentVer = "";
+    int _applies;
     public List<string> Sent = new();
 
     public void Inject(string js) { foreach (var s in _subs.ToArray()) s.DspOtaResults.Writer.TryWrite(js); }
@@ -50,9 +55,11 @@ sealed class FakeEspLink : IAgvLink
     public bool SendDspOtaApply(int agv, string json)
     {
         Sent.Add(json);
+        OnApply?.Invoke(++_applies);
         if (Silent || Drop()) return true;
         using var d = JsonDocument.Parse(json);
         long job = d.RootElement.GetProperty("job").GetInt64();
+        if (Replay && job != 0 && job == _recentJob) { Report(job, "done", 100, _recentVer); return true; }
         if (StagedJob != 0 && job != 0 && job != StagedJob) { Report(job, "fail", ver: StagedVer, err: "job_mismatch"); return true; }
         Report(StagedJob, "start", 0, StagedVer);
         if (StagedJob == 0) { Report(0, "fail", err: "not_staged"); return true; }
@@ -66,6 +73,7 @@ sealed class FakeEspLink : IAgvLink
         DspVersion = StagedVer.Length > 8 ? StagedVer[..8] : StagedVer;     // 앱 R 응답의 버전 칸은 8자
         long j = StagedJob;
         StagedJob = 0; StagedVer = "";                                        // stage_clear
+        _recentJob = j; _recentVer = DspVersion;
         Report(j, "done", 100, DspVersion);
         return true;
     }
@@ -256,9 +264,9 @@ public class DspOtaClientTests
     }
 
     [Fact]
-    public async Task Resent_apply_duplicate_not_staged_is_ignored()
+    public async Task Resent_apply_after_lost_reports_gets_replayed_done()
     {
-        // 첫 APPLY 는 처리됐지만 보고가 모두 유실되고 heartbeat 도 늦음 → 재전송한 APPLY 에 브리지가 job 0 not_staged → 무시하고 heartbeat 로 완료
+        // 첫 APPLY 는 처리됐지만 보고가 모두 유실되고 heartbeat 도 늦음 → 재전송한 APPLY 에 브리지 0.5.2 가 최근 결과(done)를 다시 보고
         var link = new FakeEspLink();
         using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast);
         await c.StageAsync("http://x/f", Img("2.0.0"), 15);
@@ -266,12 +274,62 @@ public class DspOtaClientTests
         var orig = link.Sent.Count;
         var got = new List<DspOtaResult>();
         link.DropReport = _ => link.Sent.Count - orig == 1;          // 첫 APPLY 의 보고만 유실
-        var task = c.ApplyAsync(15, got.Add);
-        while (link.Sent.Count - orig < 2) await Task.Delay(5);      // 재전송 대기
-        await Task.Delay(50);
-        link.Frozen = null;
-        Assert.Equal("2.0.0", await task);
+        Assert.Equal("2.0.0", await c.ApplyAsync(15, got.Add));
+        Assert.Equal(2, link.Sent.Count - orig);
         Assert.DoesNotContain(got, r => r.Stage == "fail");
+    }
+
+    // ── R9: 재전송 뒤 job 0 not_staged 는 실제 스테이징 소실 ──
+
+    [Fact]
+    public async Task Resent_apply_to_lost_staging_fails_fast_with_not_staged()
+    {
+        // 승인 대기 중 스테이징이 지워짐 → 첫 APPLY 유실 → 재전송에 브리지가 job 0 으로 start·fail(not_staged) ×3
+        var link = new FakeEspLink { Repeat = 3 };
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast with { DspApplyIdle = TimeSpan.FromSeconds(30) });
+        await c.StageAsync("http://x/f", Img("2.0.0"), 24);
+        link.StagedJob = 0; link.StagedVer = "";
+        link.DropCommands = 1;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<DspOtaException>(() => c.ApplyAsync(24));
+        Assert.Contains("not_staged", ex.Message);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"적용 대기 시한까지 기다림 ({sw.Elapsed})");
+        Assert.Equal(3, link.Sent.Count);
+    }
+
+    [Fact]
+    public async Task Resent_apply_not_staged_after_heartbeat_shows_done_is_done()
+    {
+        // 구 브리지(최근 결과 재보고 없음): 첫 APPLY 는 처리됐으나 보고 유실 → 재전송에 job 0 not_staged. 그 사이 heartbeat 가 완료를 보이면 완료
+        var link = new FakeEspLink { Replay = false };
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast);
+        await c.StageAsync("http://x/f", Img("2.0.0"), 25);
+        link.Frozen = link.Status();
+        var orig = link.Sent.Count;
+        link.DropReport = _ => link.Sent.Count - orig == 1;
+        link.OnApply = n => { if (n == 2) link.Frozen = null; };      // 재전송 시점에 heartbeat 가 따라잡음
+        Assert.Equal("2.0.0", await c.ApplyAsync(25));
+    }
+
+    // ── R0: 바로 적용 — 늦게 온 staged 반복 보고가 APPLY 재전송을 막지 않음 ──
+
+    [Fact]
+    public async Task Late_staged_repeats_do_not_block_resending_a_lost_apply()
+    {
+        var link = new FakeEspLink();
+        using (var stager = new DspOtaClient(link, _ => link.Status(), 7, Fast))
+            await stager.StageAsync("http://x/f", Img("2.0.0"), 26);
+        using var c = new DspOtaClient(link, _ => link.Status(), 7, Fast with { DspApplyIdle = TimeSpan.FromSeconds(30) });
+        link.DropCommands = 1;                                        // 첫 APPLY 유실
+        var stages = new List<string>();
+        var apply = c.ApplyAsync(26, r => { lock (stages) stages.Add(r.Stage); });
+        link.Inject("""{"job":26,"stage":"staged","pct":100,"ver":"2.0.0"}""");   // 브리지 최종 보고 반복의 2·3회째
+        link.Inject("""{"job":26,"stage":"staged","pct":100,"ver":"2.0.0"}""");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal("2.0.0", await apply.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"재전송 없이 오래 기다림 ({sw.Elapsed})");
+        Assert.Equal(3, link.Sent.Count);                             // START + APPLY + 재전송
+        lock (stages) { Assert.DoesNotContain("staged", stages); Assert.Equal("resend", stages[0]); }
     }
 
     [Fact]
@@ -333,8 +391,16 @@ public class DspOtaClientTests
     [InlineData("app_ng_03")] [InlineData("app_no_reply")] [InlineData("uart_busy")] [InlineData("url_host")] [InlineData("url_too_long")]
     [InlineData("ver_invalid")] [InlineData("image_bad")] [InlineData("no_bootloader")] [InlineData("esp_ota_busy")]
     [InlineData("mainboard_programming")] [InlineData("mainboard_staging")] [InlineData("bad_url")] [InlineData("no_mem")]
-    [InlineData("http_status")] [InlineData("perform ESP_FAIL")] [InlineData("busy")]
+    [InlineData("http_status")] [InlineData("perform ESP_FAIL")] [InlineData("busy")] [InlineData("app_no_fwup")]
     public void Every_bridge_error_code_has_a_korean_hint(string err) => Assert.NotNull(BridgeErrors.Hint(err));
+
+    [Fact]
+    public void Stuck_app_hints_point_to_recover_apply_and_old_app_to_jtag()
+    {
+        Assert.Contains("복구 적용", BridgeErrors.Hint("app_no_reply"));
+        Assert.Contains("복구 적용", BridgeErrors.Hint("no_bootloader"));
+        Assert.Contains("JTAG", BridgeErrors.Hint("app_no_fwup"));
+    }
 
     [Fact]
     public async Task Fail_report_message_carries_the_hint()
