@@ -9,10 +9,15 @@ setlocal
 cd /d "%~dp0"
 net session >nul 2>&1 || (echo 관리자 권한으로 실행하세요 ^(우클릭 - 관리자 권한으로 실행^) & pause & exit /b 1)
 
-set NAME=AgvFotaGateway
-set EXE=%~dp0AgvFotaGateway.exe
-if not exist "%EXE%" (echo AgvFotaGateway.exe 가 이 폴더에 없습니다: %~dp0 & pause & exit /b 1)
-echo %~dp0 | findstr /I /C:"Program Files" >nul && (
+set "NAME=AgvFotaGateway"
+set "EXE=%~dp0AgvFotaGateway.exe"
+:: 괄호 블록 ( ) 안에는 경로를 따옴표 없이 펼치지 않는다 - "Program Files (x86)" 같은 경로의 ) 가 블록을 닫아 구문 오류로 끝남
+if exist "%EXE%" goto exe_ok
+echo AgvFotaGateway.exe 가 이 폴더에 없습니다: "%~dp0"
+pause
+exit /b 1
+:exe_ok
+echo "%~dp0" | findstr /I /C:"Program Files" >nul && (
   echo [경고] Program Files 아래에서는 서비스가 data 폴더와 업데이트 파일을 쓰지 못할 수 있습니다.
   echo        C:\AgvFotaGateway 같은 일반 폴더에 풀어서 설치하는 것을 권장합니다. 계속하려면 아무 키나 누르세요.
   pause >nul
@@ -62,6 +67,9 @@ netsh advfirewall firewall add rule name="AGV FOTA Gateway HTTP" dir=in action=a
 netsh advfirewall firewall add rule name="AGV FOTA Gateway Bridge UDP" dir=in action=allow protocol=UDP localport=%UDPPORTS% >nul
 if not "%ACSPORT%"=="0" netsh advfirewall firewall add rule name="AGV FOTA Gateway ACS TCP" dir=in action=allow protocol=TCP localport=%ACSPORT% >nul
 
+:: 여기서는 서비스가 멈춰 있으므로 도는 AgvFotaGateway.exe 는 서비스 밖 프로세스 (v0.2.x 자체 업데이트가 일반 프로세스로 띄운 것, 콘솔 실행).
+:: 포트를 잡고 있으면 sc start 가 실패하므로 끈다
+taskkill /F /IM AgvFotaGateway.exe >nul 2>&1 && (echo 서비스 밖에서 실행 중이던 AgvFotaGateway.exe 를 종료했습니다 & timeout /t 2 /nobreak >nul)
 sc start %NAME%
 set /a N=0
 :waitrun
