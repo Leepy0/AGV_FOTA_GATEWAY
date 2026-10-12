@@ -13,7 +13,7 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 ```
 
 시나리오마다 `PASS`/`FAIL` 과 요약을 출력하고, 실패하면 작업 기록·서버 로그·가짜 브리지 로그 끝부분을 붙입니다.
-종료 코드는 실패한 시나리오 수입니다. 서버는 `Gateway:OfflineAfterSec`(기본 5초)×2 동안 작업을 시작하지 않으므로
+종료 코드는 실패한 시나리오 수입니다. CI(`.github/workflows/build.yml`)도 빌드·단위 시험 뒤 두 스크립트를 돌립니다. 서버는 `Gateway:OfflineAfterSec`(기본 5초)×2 동안 작업을 시작하지 않으므로
 첫 시나리오는 10초쯤 기다렸다가 시작합니다.
 
 | 번호 | 시나리오 |
