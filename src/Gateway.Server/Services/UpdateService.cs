@@ -400,6 +400,7 @@ public sealed class UpdateService : BackgroundService
         catch (Exception e)
         {
             TryDelete(pending);   // 실행되지 않은 결과를 다음 기동 때 잘못 보고하지 않게
+            TryDelete(Path.Combine(_dir, SelfUpdateScript.TicketFile));   // 못 띄웠거나 거둬들이지 못한 표 — 나중에 뜬 배치가 집지 않게
             Set(HasStaged ? UpdateStage.Ready : prev is UpdateStage.Applying ? UpdateStage.Idle : prev, (mode == "apply" ? "적용 실패: " : "되돌리기 실패: ") + e.Message);
             return false;
         }

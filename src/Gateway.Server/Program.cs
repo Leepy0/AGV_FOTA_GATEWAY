@@ -61,10 +61,13 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullSe
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
+// DNS 리바인딩 방어: Host 가 이 서버의 이름(IP·localhost·PC 이름·FQDN·Gateway.AllowedHostNames)이 아니면 화면·정적 파일·API 모두 403.
+// 설정 화면도 같은 인스턴스로 허용 목록을 보인다
+var hostGuard = new HostGuard(opt.AllowedHostNames);
+builder.Services.AddSingleton(hostGuard);
+
 var app = builder.Build();
 
-// DNS 리바인딩 방어: Host 가 이 서버의 이름(IP·localhost·PC 이름·FQDN·Gateway:AllowedHostNames)이 아니면 화면·정적 파일·API 모두 403
-var hostGuard = new HostGuard(opt.AllowedHostNames);
 app.Use(hostGuard.Middleware);
 if (!app.Environment.IsDevelopment())
 {
@@ -365,7 +368,7 @@ static class ApiGuard
 
 /// <summary>
 /// DNS 리바인딩 방어 (X-03). 공격자 이름을 게이트웨이 IP 로 다시 묶으면 Origin·Host 가 둘 다 그 이름이라 출처 검사(ApiGuard.IsCrossSite)를 통과하므로,
-/// Host 헤더 자체가 이 서버의 이름인지 본다 — IP 리터럴(IPv4·IPv6), localhost, PC 이름·FQDN, Gateway:AllowedHostNames ("*" = 검사 안 함).
+/// Host 헤더 자체가 이 서버의 이름인지 본다 — IP 리터럴(IPv4·IPv6), localhost, PC 이름·FQDN, Gateway.AllowedHostNames ("*" = 검사 안 함).
 /// 화면(SignalR)·정적 파일·/fw·/api 모든 경로·모든 메서드에 적용한다. Host 가 없는 요청(HTTP/1.0 스크립트)은 브라우저가 아니므로 허용.
 /// </summary>
 sealed class HostGuard
@@ -413,13 +416,13 @@ sealed class HostGuard
         return _names.Contains(h);
     }
 
-    public string Describe() => _any ? "전체 (Gateway:AllowedHostNames 에 \"*\")" : "IP 주소, " + string.Join(", ", _names);
+    public string Describe() => _any ? "전체 (Gateway.AllowedHostNames 에 \"*\")" : "IP 주소, " + string.Join(", ", _names);
 
     public async Task Middleware(HttpContext ctx, RequestDelegate next)
     {
         var host = ctx.Request.Host.Host;
         if (IsAllowed(host)) { await next(ctx); return; }
-        var why = $"접속 주소(Host) {host} 가 허용 목록에 없음 — Gateway:AllowedHostNames 에 추가";
+        var why = $"접속 주소(Host) {host} 가 허용 목록에 없음 — Gateway.AllowedHostNames 에 추가";
         // 사내 이름으로 접속하는 PC 가 있으면 운용자가 원인을 찾을 수 있게 로그 (1분에 한 번)
         var now = Environment.TickCount64;
         var last = Interlocked.Read(ref _warnedAt);

@@ -80,6 +80,17 @@ public class SelfUpdateScriptTests
     }
 
     [Fact]
+    public void Auto_revert_prefers_prev_when_it_was_not_turned_into_old()
+    {
+        // .prev → .old 이름 바꾸기가 실패하면 .old 는 그보다 앞 버전이다 — 자동 되돌림은 직전에 돌던 .prev 로
+        var t = SelfUpdateScript.Text;
+        int rev = t.IndexOf(":revert", StringComparison.Ordinal);
+        int old = t.IndexOf("set \"PREV=%EXE%.old\"", rev, StringComparison.Ordinal);
+        int prev = t.IndexOf("if /i not \"%MODE%\"==\"rollback\" if exist \"%EXE%.prev\" set \"PREV=%EXE%.prev\"", rev, StringComparison.Ordinal);
+        Assert.True(rev > 0 && old > rev && prev > old, $"{rev} {old} {prev}");
+    }
+
+    [Fact]
     public void Arguments_order_and_sanitizing()
     {
         var a = SelfUpdateScript.Arguments("apply", 1234, @"C:\AgvFotaGateway\", @"C:\AgvFotaGateway\data\update\v0.3.1\AgvFotaGateway", "AgvFotaGateway", true,

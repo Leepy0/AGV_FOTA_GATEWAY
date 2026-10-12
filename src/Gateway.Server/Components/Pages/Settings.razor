@@ -14,6 +14,7 @@
 @inject IOptions<AcsInventoryOptions> InvOpt
 @inject AgvGroupStore Groups
 @inject Gateway.Server.Data.GatewayDb Db
+@inject HostGuard Hosts
 @implements IDisposable
 
 <PageTitle>설정 · AGV FOTA</PageTitle>
@@ -34,7 +35,7 @@
         <dt>오프라인 판정</dt><dd>heartbeat @(Gw.Value.OfflineAfterSec)초 없음</dd>
         <dt>OTA 파일 주소</dt><dd>@(string.IsNullOrEmpty(Gw.Value.PublicBaseUrl) ? "자동 (호기 쪽 NIC 의 IP + HTTP 포트)" : Gw.Value.PublicBaseUrl) <span class="muted">— 브리지가 펌웨어를 받아 가는 주소. NIC 이 여러 개라 잘못 잡히면 PublicBaseUrl 로 고정 (브리지에 설정된 server IP 와 같은 IPv4 로: http://IPv4:포트 — 소문자 http, 앞자리 0 없이, 경로 없이)</span>
             @if (Gw.Value.PublicBaseUrlProblem() is { } urlProblem) { <div class="msg warn" role="alert">⚠ @urlProblem</div> }</dd>
-        <dt>접속 이름</dt><dd>@(new HostGuard(Gw.Value.AllowedHostNames).Describe()) <span class="muted">— 이 밖의 이름(Host)으로 화면·API 에 접속하면 403 (DNS 리바인딩 방어). 사내 DNS 별칭으로 접속하면 Gateway.AllowedHostNames 에 추가</span></dd>
+        <dt>접속 이름</dt><dd>@Hosts.Describe() <span class="muted">— 이 밖의 이름(Host)으로 화면·API 에 접속하면 403 (DNS 리바인딩 방어). 사내 DNS 별칭으로 접속하면 Gateway.AllowedHostNames 에 추가</span></dd>
         <dt>실행 환경</dt><dd>@Environment.OSVersion · .NET @Environment.Version · @(Environment.UserInteractive ? "콘솔" : "서비스") · 시작 @System.Diagnostics.Process.GetCurrentProcess().StartTime.ToString("MM-dd HH:mm")</dd>
     </dl>
 </section>

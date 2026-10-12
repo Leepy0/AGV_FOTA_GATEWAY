@@ -68,7 +68,7 @@ public static partial class SelfUpdateScript
         {
             try { File.Move(ticket, ticket + ".void", true); return false; }   // 이름 바꾸기는 원자적 — 배치와 둘 중 하나만 성공
             catch (FileNotFoundException) { return File.Exists(started); }
-            catch (IOException) { await Task.Delay(100, ct); }                 // 배치가 바꾸는 중 (잠김) — 다시
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { await Task.Delay(100, ct); }   // 배치가 바꾸는 중 (잠김) — 다시
         }
         return File.Exists(started);
     }
@@ -216,7 +216,8 @@ public static partial class SelfUpdateScript
         :revert
         set "PREV=%EXE%.old"
         if /i "%MODE%"=="rollback" set "PREV=%EXE%.rollback"
-        if /i not "%MODE%"=="rollback" if not exist "%PREV%" if exist "%EXE%.prev" set "PREV=%EXE%.prev"
+        rem .prev is left only when :keep_old could not turn it into .old - then it is the exe that ran before this apply
+        if /i not "%MODE%"=="rollback" if exist "%EXE%.prev" set "PREV=%EXE%.prev"
         if not exist "%PREV%" (>>"%LOG%" echo [%date% %time%] no previous exe to restore& exit /b 1)
         if exist "%EXE%.bad" del /f /q "%EXE%.bad"
         ren "%EXE%" AgvFotaGateway.exe.bad >>"%LOG%" 2>&1

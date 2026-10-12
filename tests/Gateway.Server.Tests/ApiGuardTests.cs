@@ -78,7 +78,7 @@ public class ApiGuardTests
     [InlineData("GW-PC")]
     [InlineData("gw-pc.corp.local")]
     [InlineData("gw-pc.")]                 // 끝 점
-    [InlineData("fota.factory")]           // Gateway:AllowedHostNames
+    [InlineData("fota.factory")]           // Gateway.AllowedHostNames
     [InlineData("")]                       // Host 없음 (HTTP/1.0 스크립트) — 브라우저 아님
     public void Host_allowed(string host) => Assert.True(Guard("fota.factory").IsAllowed(host));
 
