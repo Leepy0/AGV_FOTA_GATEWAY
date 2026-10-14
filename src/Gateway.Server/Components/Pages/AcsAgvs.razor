@@ -14,7 +14,7 @@
 @if (error.Length > 0) { <div class="banner err">@error</div> }
 <div class="stats">
     <span class="stat"><b>@Inventory.Snapshot.Count</b> ACS AGV</span>
-    <span class="stat ok"><b>@Inventory.Snapshot.Count(Inventory.IsConnectedForUi)</b> 연결됨</span>
+    <span class="stat ok"><b>@Inventory.Snapshot.Count(a => Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결됨</span>
     <span class="stat bad"><b>@Inventory.Snapshot.Count(a => !Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결 끊김</span>
 </div>
 <div class="table-wrap">
