@@ -8,7 +8,7 @@ namespace Gateway.Server.Services;
 
 public sealed record AcsMapAgv(string Ip, string Name, string AgvCode, DateTimeOffset UpdatedAt);
 
-/// <summary>Reads the ACS map inventory and matches agvOpCtrl IP addresses to the gateway UDP source addresses.</summary>
+/// <summary>Reads the ACS map inventory and matches agvOpcUrl IP addresses to the gateway UDP source addresses.</summary>
 public sealed class AcsMapInventoryService : BackgroundService
 {
     readonly AcsMapInventoryOptions _opt;
@@ -70,14 +70,14 @@ public sealed class AcsMapInventoryService : BackgroundService
             foreach (var row in doc.RootElement.EnumerateArray())
             {
                 if (row.ValueKind != JsonValueKind.Object) continue;
-                var ip = GetString(row, "agvOpCtrl").Trim();
+                var ip = GetString(row, "agvOpcUrl").Trim();
                 var name = GetString(row, "agvName").Trim();
                 var code = GetString(row, "agvCode").Trim();
                 if (!IPAddress.TryParse(ip, out _)) continue;
                 parsed.Add(new AcsMapAgv(ip, name, code, DateTimeOffset.UtcNow));
             }
         }
-        if (parsed.Count == 0) { SetResult("agv-info에서 유효한 agvOpCtrl IP를 찾지 못함 — 기존 목록 유지"); return; }
+        if (parsed.Count == 0) { SetResult("agv-info에서 유효한 agvOpcUrl IP를 찾지 못함 — 기존 목록 유지"); return; }
         var duplicates = parsed.GroupBy(x => x.Ip, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key).ToArray();
         lock (_lock)
         {
