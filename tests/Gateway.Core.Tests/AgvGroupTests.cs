@@ -249,16 +249,16 @@ public class AgvGroupTests
         const string json = """
             [
               {
-                "agvCode": "DA_GWANGJU_AC_250318_A006",
-                "agvName": "1F_EC_Final Material_FMR099",
+                "agvCode": "VEHICLE_CODE_X",
+                "agvName": "Vehicle name X",
                 "agvSn": "",
                 "agvType": "AMR",
                 "almEquipId": "1F_EC_Final Material_FMR099",
-                "businessUnit": "DA",
+                "businessUnit": "UNIT_X",
                 "process": "Main",
-                "product": "AC",
+                "product": "PRODUCT_X",
                 "agvAffiliationList": [
-                  { "areaCode": "B_FL1", "subareaCode": "B_FL1+SGAC1F_ACS02", "aid": 99, "isMain": false }
+                  { "areaCode": "AREA_X", "subareaCode": "SUBAREA_X", "aid": 7, "isMain": false }
                 ]
               }
             ]
@@ -278,9 +278,9 @@ public class AgvGroupTests
 
         Assert.Null(r.RejectReason);
         Assert.Single(r.Items);
-        Assert.Equal(99, r.Items[0].Agv);
+        Assert.Equal(7, r.Items[0].Agv);
         Assert.Equal("1F_EC_Final Material_FMR099", r.Items[0].Name);
-        Assert.Equal(new AgvGroup("DA", "B_FL1", "B_FL1+SGAC1F_ACS02", "Main", "AC"), r.Items[0].Group);
+        Assert.Equal(new AgvGroup("UNIT_X", "AREA_X", "SUBAREA_X", "Main", "PRODUCT_X"), r.Items[0].Group);
     }
 
 
