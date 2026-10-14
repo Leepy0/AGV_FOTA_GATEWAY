@@ -16,7 +16,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | [docs/SYSTEM_FLOW.md](docs/SYSTEM_FLOW.md) | **전체 흐름** — 구성 요소, 통신, 번호 충돌, 브리지·메인보드 OTA 순서, 배포 작업(승인 흐름), 구역, 서버 업데이트, 데이터, 화면 안내, 0.3.0 에서 달라진 점 |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | **설치·운영 가이드** — 도입 순서, 서버 설치, 브리지 연결, 펌웨어·구역·배포, 설정, 백업, 업데이트, 문제 해결 |
 | [docs/INTERFACES.md](docs/INTERFACES.md) | 접점 규격 출처, 브리지 UDP·JSON 필드와 오류 코드, **REST API** |
-| [docs/ACS_API.md](docs/ACS_API.md) · [docs/RTLS.md](docs/RTLS.md) | ACS 연동 준비(위치 보고·소속 받기·TCP 중계 안전 규칙) · 위치 추정 설계 검토(구현 전) |
+| [docs/ACS_API.md](docs/ACS_API.md) · [docs/ACS_MAP_API_SCHEMA.md](docs/ACS_MAP_API_SCHEMA.md) · [docs/RTLS.md](docs/RTLS.md) | ACS 연동 준비(위치 보고·소속 받기·TCP 중계 안전 규칙) · DevTools에서 확인한 ACS Map API 스키마 · 위치 추정 설계 검토(구현 전) |
 | [docs/REVIEW_2026-10-10.md](docs/REVIEW_2026-10-10.md) | 전체 점검 결과(91건)와 결정 사항. 모두 v0.3.0 · 브리지 v0.5.2 에 반영 |
 | [tests/e2e/README.md](tests/e2e/README.md) | 종단 시험 — 빌드한 서버 + 가짜 브리지로 배포 흐름 12개 시나리오 |
 | 브리지 저장소 [FLASH_GUIDE.md](https://github.com/Leepy0/AGV_Wifi_Bridge/blob/main/docs/FLASH_GUIDE.md) · [dsp/README.md](https://github.com/Leepy0/AGV_Wifi_Bridge/blob/main/dsp/README.md) | 브리지 USB 굽기·호기 설정 · 메인보드 부트로더 첫 설치 |
