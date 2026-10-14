@@ -242,6 +242,48 @@ public class AgvGroupTests
         Assert.Contains("찾지 못함", r.RejectReason);
     }
 
+
+    [Fact]
+    public void Inventory_mapper_parses_observed_acs_map_agv_info_schema_with_affiliation_array()
+    {
+        const string json = """
+            [
+              {
+                "agvCode": "DA_GWANGJU_AC_250318_A006",
+                "agvName": "1F_EC_Final Material_FMR099",
+                "agvSn": "",
+                "agvType": "AMR",
+                "almEquipId": "1F_EC_Final Material_FMR099",
+                "businessUnit": "DA",
+                "process": "Main",
+                "product": "AC",
+                "agvAffiliationList": [
+                  { "areaCode": "B_FL1", "subareaCode": "B_FL1+SGAC1F_ACS02", "aid": 99, "isMain": false }
+                ]
+              }
+            ]
+            """;
+        var map = new AcsInventoryFieldMap
+        {
+            Agv = "almEquipId",
+            Name = "agvName",
+            ProductFamily = "businessUnit",
+            Floor = "agvAffiliationList[0].areaCode",
+            Line = "agvAffiliationList[0].subareaCode",
+            Process = "process",
+            Route = "product"
+        };
+
+        var r = AcsInventoryMapper.Parse(json, map, Now);
+
+        Assert.Null(r.RejectReason);
+        Assert.Single(r.Items);
+        Assert.Equal(99, r.Items[0].Agv);
+        Assert.Equal("1F_EC_Final Material_FMR099", r.Items[0].Name);
+        Assert.Equal(new AgvGroup("DA", "B_FL1", "B_FL1+SGAC1F_ACS02", "Main", "AC"), r.Items[0].Group);
+    }
+
+
     static Dictionary<int, AgvAssignment> Acs(params int[] agvs) =>
         agvs.ToDictionary(n => n, n => new AgvAssignment { Agv = n, Group = new AgvGroup("A"), Source = "acs" });
 
