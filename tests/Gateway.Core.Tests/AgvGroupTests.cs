@@ -253,7 +253,7 @@ public class AgvGroupTests
                 "agvName": "Vehicle name X",
                 "agvSn": "",
                 "agvType": "AMR",
-                "almEquipId": "1F_EC_Final Material_FMR099",
+                "almEquipId": "Vehicle name X",
                 "businessUnit": "UNIT_X",
                 "process": "Main",
                 "product": "PRODUCT_X",
@@ -279,7 +279,7 @@ public class AgvGroupTests
         Assert.Null(r.RejectReason);
         Assert.Single(r.Items);
         Assert.Equal(7, r.Items[0].Agv);
-        Assert.Equal("1F_EC_Final Material_FMR099", r.Items[0].Name);
+        Assert.Equal("Vehicle name X", r.Items[0].Name);
         Assert.Equal(new AgvGroup("UNIT_X", "AREA_X", "SUBAREA_X", "Main", "PRODUCT_X"), r.Items[0].Group);
     }
 
