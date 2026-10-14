@@ -265,7 +265,7 @@ public class AgvGroupTests
             """;
         var map = new AcsInventoryFieldMap
         {
-            Agv = "almEquipId",
+            Agv = "agvAffiliationList[0].aid",
             Name = "agvName",
             ProductFamily = "businessUnit",
             Floor = "agvAffiliationList[0].areaCode",
