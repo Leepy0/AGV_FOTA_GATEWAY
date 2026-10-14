@@ -5,31 +5,81 @@
 
 <PageTitle>ACS AGV 연결 현황 · AGV FOTA</PageTitle>
 <h1>ACS AGV 연결 현황</h1>
-<p class="muted">전체 목록은 ACS map API의 agv-info 기준입니다. 연결 여부는 agvOpcUrl IP와 게이트웨이가 최근 수신한 브리지 UDP 출처 IP를 비교합니다. 주행 상태는 아직 표시하지 않습니다.</p>
+<p class="muted">agv-info에서 agvType=TAPE인 AGV만 표시합니다. 신규 TAPE API의 agvid와 agv-info의 AGV 코드/ID를 기준으로 병합합니다. 연결 여부는 agvOpcUrl IP와 최근 UDP 출처 IP를 비교합니다.</p>
 <div class="banner @(Inventory.Enabled ? "info" : "")">
-    @(Inventory.Enabled ? $"ACS 목록 동기화: {Inventory.LastResult}" : "ACS 목록 동기화가 꺼져 있습니다. 설정에서 AcsMapInventory.Enabled=true 및 API 주소·인증을 지정하세요.")
+    @(Inventory.Enabled ? $"ACS 목록 동기화: {Inventory.LastResult}" : "ACS 목록 동기화가 꺼져 있습니다. AcsMapInventory.Enabled=true 및 API 주소·인증을 지정하세요.")
     · 마지막 성공 @(Inventory.LastOk?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
     <button @onclick="Refresh" disabled="@busy">지금 새로고침</button>
 </div>
 @if (error.Length > 0) { <div class="banner err">@error</div> }
-<div class="stats">
-    <span class="stat"><b>@Inventory.Snapshot.Count</b> ACS AGV</span>
-    <span class="stat ok"><b>@Inventory.Snapshot.Count(a => Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결됨</span>
-    <span class="stat bad"><b>@Inventory.Snapshot.Count(a => !Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결 끊김</span>
+
+<div class="filters">
+    <label>ACS KEY <input @bind="acsKeyFilter" @bind:event="oninput" placeholder="전체" /></label>
+    <label>Area <input @bind="areaFilter" @bind:event="oninput" placeholder="전체" /></label>
+    <label>Product <select @bind="productFilter"><option value="">전체 제품군</option>@foreach (var p in Products) { <option value="@p">@p</option> }</select></label>
+    <label>상태 <select @bind="statusFilter"><option value="">전체 상태</option>@foreach (var s in Statuses) { <option value="@s">@s</option> }</select></label>
+    <label>검색 <input @bind="textFilter" @bind:event="oninput" placeholder="AGV ID / 이름 / IP" /></label>
+    <button @onclick="ClearFilters">필터 초기화</button>
 </div>
-<div class="table-wrap">
-<table class="grid">
-<thead><tr><th>AGV 이름</th><th>agvCode</th><th>IP (agvOpcUrl)</th><th>게이트웨이 연결</th></tr></thead>
-<tbody>
-@foreach (var agv in Inventory.Snapshot)
+
+<div class="stats">
+    <span class="stat"><b>@Filtered.Count</b> TAPE AGV</span>
+    <span class="stat ok"><b>@Filtered.Count(a => Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결됨</span>
+    <span class="stat bad"><b>@Filtered.Count(a => !Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결 끊김</span>
+</div>
+
+@if (Filtered.Count == 0)
 {
-    var online = Inventory.IsConnected(agv, GatewayOptions.Value.OfflineAfterSec);
-    <tr><td>@(agv.Name.Length == 0 ? "(이름 없음)" : agv.Name)</td><td>@agv.AgvCode</td><td class="mono">@agv.Ip</td><td><span class="dot @(online ? "ok" : "bad")"></span>@(online ? "연결됨" : "연결 끊김")</td></tr>
+    <p class="muted">조건에 맞는 AGV가 없습니다.</p>
 }
-</tbody></table></div>
+else
+{
+    @foreach (var group in Filtered.GroupBy(a => string.IsNullOrWhiteSpace(a.Product) ? "(제품 미분류)" : a.Product).OrderBy(g => g.Key))
+    {
+        <h2>@group.Key <small class="muted">(@group.Count()대)</small></h2>
+        <div class="table-wrap">
+        <table class="grid">
+        <thead><tr><th>AGV 이름</th><th>AGV ID / agvCode</th><th>ACS KEY</th><th>Area</th><th>제품군</th><th>상태</th><th>배터리</th><th>IP</th><th>게이트웨이 연결</th></tr></thead>
+        <tbody>
+        @foreach (var agv in group)
+        {
+            var online = Inventory.IsConnected(agv, GatewayOptions.Value.OfflineAfterSec);
+            <tr>
+                <td>@(agv.Name.Length == 0 ? "(이름 없음)" : agv.Name)</td>
+                <td class="mono">@(agv.AgvId.Length == 0 ? agv.AgvCode : agv.AgvId)</td>
+                <td>@(agv.AcsKey.Length == 0 ? "-" : agv.AcsKey)</td>
+                <td>@(agv.Area.Length == 0 ? "-" : agv.Area)</td>
+                <td>@(agv.Product.Length == 0 ? "-" : agv.Product)</td>
+                <td>@agv.StatusLabel <small class="muted">(@(agv.StatusCode.Length == 0 ? "-" : agv.StatusCode))</small></td>
+                <td>@(agv.BatteryPercent.HasValue ? $"{agv.BatteryPercent.Value:0.#}%" : "-")</td>
+                <td class="mono">@(agv.Ip.Length == 0 ? "-" : agv.Ip)</td>
+                <td><span class="dot @(online ? "ok" : "bad")"></span>@(online ? "연결됨" : "연결 끊김")</td>
+            </tr>
+        }
+        </tbody></table></div>
+    }
+}
+
 @code {
     bool busy;
     string error = "";
+    string acsKeyFilter = "";
+    string areaFilter = "";
+    string productFilter = "";
+    string statusFilter = "";
+    string textFilter = "";
+
+    List<AcsMapAgv> Filtered => Inventory.Snapshot.Where(a =>
+        Has(a.AcsKey, acsKeyFilter) &&
+        Has(a.Area, areaFilter) &&
+        (productFilter.Length == 0 || a.Product.Equals(productFilter, StringComparison.OrdinalIgnoreCase)) &&
+        (statusFilter.Length == 0 || a.StatusLabel.Equals(statusFilter, StringComparison.OrdinalIgnoreCase)) &&
+        (textFilter.Length == 0 || Has(a.Name, textFilter) || Has(a.AgvId, textFilter) || Has(a.AgvCode, textFilter) || Has(a.Ip, textFilter)))
+        .ToList();
+    IEnumerable<string> Products => Inventory.Snapshot.Select(a => string.IsNullOrWhiteSpace(a.Product) ? "(제품 미분류)" : a.Product).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
+    IEnumerable<string> Statuses => Inventory.Snapshot.Select(a => a.StatusLabel).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
+    static bool Has(string value, string filter) => filter.Length == 0 || value.Contains(filter, StringComparison.OrdinalIgnoreCase);
+
     protected override void OnInitialized() => Inventory.Changed += OnChanged;
     async Task Refresh()
     {
@@ -38,6 +88,7 @@
         catch (Exception e) { error = e.Message; }
         finally { busy = false; }
     }
+    void ClearFilters() { acsKeyFilter = areaFilter = productFilter = statusFilter = textFilter = ""; }
     void OnChanged() => _ = InvokeAsync(StateHasChanged);
     public void Dispose() => Inventory.Changed -= OnChanged;
 }
