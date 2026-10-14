@@ -11,7 +11,7 @@ namespace Gateway.Core.Acs;
 //  구조가 더 다르면(호기별이 아니라 구역별 목록 등) 이 파일의 Parse 만 고친다.
 // ══════════════════════════════════════════════════════════════════════════════════════
 
-/// <summary>ACS 응답 필드 이름 매핑 (임시 기본값 — 월요일 스키마로 교체)</summary>
+/// <summary>ACS 응답 필드 이름 매핑. 점 경로와 배열 인덱스(예: agvAffiliationList[0].areaCode)를 지원한다.</summary>
 public sealed class AcsInventoryFieldMap
 {
     /// <summary>호기 목록이 들어 있는 속성 경로. 비우면 자동: 최상위 배열, 또는 agvs/items/data/result/list</summary>
@@ -95,17 +95,33 @@ public static class AcsInventoryMapper
         return arrays.Count == 1 ? arrays[0].Value : null;
     }
 
-    /// <summary>"a.b.c" 경로로 값 찾기 (대소문자 무시)</summary>
+    /// <summary>"a.b[0].c" 경로로 값 찾기 (속성 대소문자 무시, 배열 인덱스 지원)</summary>
     static JsonElement? Get(JsonElement e, string path)
     {
-        foreach (var part in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var rawPart in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
         {
-            if (e.ValueKind != JsonValueKind.Object) return null;
-            JsonElement? next = null;
-            foreach (var p in e.EnumerateObject())
-                if (p.Name.Equals(part, StringComparison.OrdinalIgnoreCase)) { next = p.Value; break; }
-            if (next is null) return null;
-            e = next.Value;
+            var bracket = rawPart.IndexOf('[');
+            var property = bracket < 0 ? rawPart : rawPart[..bracket];
+            if (property.Length > 0)
+            {
+                if (e.ValueKind != JsonValueKind.Object) return null;
+                JsonElement? next = null;
+                foreach (var p in e.EnumerateObject())
+                    if (p.Name.Equals(property, StringComparison.OrdinalIgnoreCase)) { next = p.Value; break; }
+                if (next is null) return null;
+                e = next.Value;
+            }
+
+            var pos = bracket;
+            while (pos >= 0)
+            {
+                var close = rawPart.IndexOf(']', pos + 1);
+                if (close < 0 || !int.TryParse(rawPart.AsSpan(pos + 1, close - pos - 1), out var index) || index < 0)
+                    return null;
+                if (e.ValueKind != JsonValueKind.Array || index >= e.GetArrayLength()) return null;
+                e = e[index];
+                pos = rawPart.IndexOf('[', close + 1);
+            }
         }
         return e;
     }

@@ -1,0 +1,43 @@
+@page "/acs-agvs"
+@implements IDisposable
+@inject AcsMapInventoryService Inventory
+@inject IOptions<GatewayOptions> GatewayOptions
+
+<PageTitle>ACS AGV 연결 현황 · AGV FOTA</PageTitle>
+<h1>ACS AGV 연결 현황</h1>
+<p class="muted">전체 목록은 ACS map API의 agv-info 기준입니다. 연결 여부는 agvOpCtrl IP와 게이트웨이가 최근 수신한 브리지 UDP 출처 IP를 비교합니다. 주행 상태는 아직 표시하지 않습니다.</p>
+<div class="banner @(Inventory.Enabled ? "info" : "")">
+    @(Inventory.Enabled ? $"ACS 목록 동기화: {Inventory.LastResult}" : "ACS 목록 동기화가 꺼져 있습니다. 설정에서 AcsMapInventory.Enabled=true 및 API 주소·인증을 지정하세요.")
+    · 마지막 성공 @(Inventory.LastOk?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+    <button @onclick="Refresh" disabled="@busy">지금 새로고침</button>
+</div>
+@if (error.Length > 0) { <div class="banner err">@error</div> }
+<div class="stats">
+    <span class="stat"><b>@Inventory.Snapshot.Count</b> ACS AGV</span>
+    <span class="stat ok"><b>@Inventory.Snapshot.Count(a => Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결됨</span>
+    <span class="stat bad"><b>@Inventory.Snapshot.Count(a => !Inventory.IsConnected(a, GatewayOptions.Value.OfflineAfterSec))</b> 연결 끊김</span>
+</div>
+<div class="table-wrap">
+<table class="grid">
+<thead><tr><th>AGV 이름</th><th>agvCode</th><th>IP (agvOpCtrl)</th><th>게이트웨이 연결</th></tr></thead>
+<tbody>
+@foreach (var agv in Inventory.Snapshot)
+{
+    var online = Inventory.IsConnected(agv, GatewayOptions.Value.OfflineAfterSec);
+    <tr><td>@(agv.Name.Length == 0 ? "(이름 없음)" : agv.Name)</td><td>@agv.AgvCode</td><td class="mono">@agv.Ip</td><td><span class="dot @(online ? "ok" : "bad")"></span>@(online ? "연결됨" : "연결 끊김")</td></tr>
+}
+</tbody></table></div>
+@code {
+    bool busy;
+    string error = "";
+    protected override void OnInitialized() => Inventory.Changed += OnChanged;
+    async Task Refresh()
+    {
+        busy = true; error = "";
+        try { await Inventory.RefreshAsync(); error = Inventory.LastResult.Contains("실패") || Inventory.LastResult.Contains("찾지 못함") ? Inventory.LastResult : ""; }
+        catch (Exception e) { error = e.Message; }
+        finally { busy = false; }
+    }
+    void OnChanged() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Inventory.Changed -= OnChanged;
+}

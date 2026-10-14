@@ -242,6 +242,48 @@ public class AgvGroupTests
         Assert.Contains("찾지 못함", r.RejectReason);
     }
 
+
+    [Fact]
+    public void Inventory_mapper_parses_observed_acs_map_agv_info_schema_with_affiliation_array()
+    {
+        const string json = """
+            [
+              {
+                "agvCode": "VEHICLE_CODE_X",
+                "agvName": "Vehicle name X",
+                "agvSn": "",
+                "agvType": "AMR",
+                "almEquipId": "Vehicle name X",
+                "businessUnit": "UNIT_X",
+                "process": "Main",
+                "product": "PRODUCT_X",
+                "agvAffiliationList": [
+                  { "areaCode": "AREA_X", "subareaCode": "SUBAREA_X", "aid": 7, "isMain": false }
+                ]
+              }
+            ]
+            """;
+        var map = new AcsInventoryFieldMap
+        {
+            Agv = "agvAffiliationList[0].aid",
+            Name = "agvName",
+            ProductFamily = "businessUnit",
+            Floor = "agvAffiliationList[0].areaCode",
+            Line = "agvAffiliationList[0].subareaCode",
+            Process = "process",
+            Route = "product"
+        };
+
+        var r = AcsInventoryMapper.Parse(json, map, Now);
+
+        Assert.Null(r.RejectReason);
+        Assert.Single(r.Items);
+        Assert.Equal(7, r.Items[0].Agv);
+        Assert.Equal("Vehicle name X", r.Items[0].Name);
+        Assert.Equal(new AgvGroup("UNIT_X", "AREA_X", "SUBAREA_X", "Main", "PRODUCT_X"), r.Items[0].Group);
+    }
+
+
     static Dictionary<int, AgvAssignment> Acs(params int[] agvs) =>
         agvs.ToDictionary(n => n, n => new AgvAssignment { Agv = n, Group = new AgvGroup("A"), Source = "acs" });
 

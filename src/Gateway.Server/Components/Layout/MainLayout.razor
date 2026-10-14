@@ -13,6 +13,7 @@
         <div class="brand">AGV FOTA<br /><small>Gateway</small></div>
         <NavLink href="" Match="NavLinkMatch.All">호기 현황 <span class="nav-badge">@online/@total</span></NavLink>
         <NavLink href="groups">구역</NavLink>
+        <NavLink href="acs-agvs">ACS AGV 연결</NavLink>
         <NavLink href="firmware">펌웨어</NavLink>
         <NavLink href="jobs">배포 작업 @(running > 0 ? $"⟳ {running}" : scheduled > 0 ? $"({scheduled} 예약)" : "")@if (awaiting > 0) { <span class="nav-badge warn" title="스테이징을 마치고 'AGV 정지 확인 → 적용 시작' 승인을 기다리는 작업">적용 대기 @awaiting</span> }</NavLink>
         <NavLink href="trace">통신 로그</NavLink>

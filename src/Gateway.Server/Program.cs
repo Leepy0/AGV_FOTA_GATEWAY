@@ -24,6 +24,7 @@ builder.Services.Configure<GatewayOptions>(builder.Configuration.GetSection(Gate
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.Section));
 builder.Services.Configure<AcsApiOptions>(builder.Configuration.GetSection(AcsApiOptions.Section));
 builder.Services.Configure<AcsInventoryOptions>(builder.Configuration.GetSection(AcsInventoryOptions.Section));
+builder.Services.Configure<AcsMapInventoryOptions>(builder.Configuration.GetSection(AcsMapInventoryOptions.Section));
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 64L * 1024 * 1024);
 builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = 64L * 1024 * 1024);
 // REST 요청 본문·인자 해석 실패를 예외로 받아 /api 미들웨어가 400 + 사유로 돌려준다 (기본은 빈 400 → HTML 오류 페이지)
@@ -58,6 +59,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsPositionPushSer
 builder.Services.AddSingleton(sp => new AgvGroupStore(dataDir, sp.GetRequiredService<GatewayDb>()));
 builder.Services.AddSingleton<AcsInventoryPullService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullService>());
+builder.Services.AddSingleton<AcsMapInventoryService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsMapInventoryService>());
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
