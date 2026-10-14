@@ -6,9 +6,12 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Server.Services;
 
-public sealed record AcsMapAgv(string Ip, string Name, string AgvCode, DateTimeOffset UpdatedAt);
+public sealed record AcsMapAgv(
+    string Ip, string Name, string AgvCode, string AgvId, string AcsKey,
+    string Area, string Product, string AgvType, string StatusCode,
+    string StatusLabel, decimal? BatteryPercent, DateTimeOffset UpdatedAt);
 
-/// <summary>Reads the ACS map inventory and matches agvOpcUrl IP addresses to the gateway UDP source addresses.</summary>
+/// <summary>Combines ACS map agv-info with the tape AGV status API.</summary>
 public sealed class AcsMapInventoryService : BackgroundService
 {
     readonly AcsMapInventoryOptions _opt;
@@ -50,10 +53,14 @@ public sealed class AcsMapInventoryService : BackgroundService
         var codes = new HashSet<string>(StringComparer.Ordinal);
         using (var doc = JsonDocument.Parse(subareas.Body))
         {
-            if (doc.RootElement.ValueKind != JsonValueKind.Array) { SetResult("subareas 응답이 배열이 아님"); return; }
-            foreach (var row in doc.RootElement.EnumerateArray())
-                if (row.ValueKind == JsonValueKind.Object && row.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(code.GetString()))
-                    codes.Add(code.GetString()!);
+            var root = UnwrapArray(doc.RootElement);
+            if (root.ValueKind != JsonValueKind.Array) { SetResult("subareas 응답이 배열이 아님"); return; }
+            foreach (var row in root.EnumerateArray())
+                if (row.ValueKind == JsonValueKind.Object)
+                {
+                    var code = First(row, "code", "subareaCode", "areaCode");
+                    if (!string.IsNullOrWhiteSpace(code)) codes.Add(code);
+                }
         }
         if (codes.Count == 0) { SetResult("subareas 목록이 비어 있음 — 기존 목록 유지"); return; }
 
@@ -63,38 +70,107 @@ public sealed class AcsMapInventoryService : BackgroundService
         var response = await _http.GetAsync(Settings(path), ct);
         if (!response.Ok) { SetResult("agv-info 조회 실패: " + response); return; }
 
-        var parsed = new List<AcsMapAgv>();
+        var mapRows = new List<JsonElement>();
         using (var doc = JsonDocument.Parse(response.Body))
         {
-            if (doc.RootElement.ValueKind != JsonValueKind.Array) { SetResult("agv-info 응답이 배열이 아님 — 기존 목록 유지"); return; }
-            foreach (var row in doc.RootElement.EnumerateArray())
-            {
-                if (row.ValueKind != JsonValueKind.Object) continue;
-                var ip = GetString(row, "agvOpcUrl").Trim();
-                var name = GetString(row, "agvName").Trim();
-                var code = GetString(row, "agvCode").Trim();
-                if (!IPAddress.TryParse(ip, out _)) continue;
-                parsed.Add(new AcsMapAgv(ip, name, code, DateTimeOffset.UtcNow));
-            }
+            var root = UnwrapArray(doc.RootElement);
+            if (root.ValueKind != JsonValueKind.Array) { SetResult("agv-info 응답이 배열이 아님 — 기존 목록 유지"); return; }
+            mapRows.AddRange(root.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object).Select(x => x.Clone()));
         }
-        if (parsed.Count == 0) { SetResult("agv-info에서 유효한 agvOpcUrl IP를 찾지 못함 — 기존 목록 유지"); return; }
-        var duplicates = parsed.GroupBy(x => x.Ip, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key).ToArray();
+
+        // The second API provides live tape/status fields. Its path may include query parameters.
+        var tapeResponse = await _http.GetAsync(Settings(_opt.TapePath), ct);
+        if (!tapeResponse.Ok) { SetResult("TAPE 상태 API 조회 실패: " + tapeResponse); return; }
+        var tapeRows = new List<JsonElement>();
+        using (var doc = JsonDocument.Parse(tapeResponse.Body))
+        {
+            var root = UnwrapArray(doc.RootElement);
+            if (root.ValueKind != JsonValueKind.Array) { SetResult("TAPE 상태 API 응답이 배열이 아님 — 기존 목록 유지"); return; }
+            tapeRows.AddRange(root.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Object).Select(x => x.Clone()));
+        }
+
+        var tapeById = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in tapeRows)
+        {
+            var id = First(row, _opt.TapeAgvIdField, "agvid", "agvId", "agvCode", "agvdode", "agvcode");
+            if (!string.IsNullOrWhiteSpace(id)) tapeById[id] = row;
+        }
+
+        var parsed = new List<AcsMapAgv>();
+        foreach (var row in mapRows)
+        {
+            var type = First(row, "agvType");
+            if (!type.Equals("TAPE", StringComparison.OrdinalIgnoreCase)) continue;
+            var code = First(row, "agvCode", "agvdode", "agvcode");
+            var id = First(row, "agvId", "agvid", "agvCode", "agvdode", "agvcode");
+            tapeById.TryGetValue(id, out var live);
+            var hasLive = live.ValueKind == JsonValueKind.Object;
+            var ip = First(row, "agvOpcUrl").Trim();
+            if (!IPAddress.TryParse(ip, out _)) ip = "";
+            var status = hasLive ? First(live, _opt.TapeStatusField, "status") : "";
+            var batteryText = hasLive ? First(live, _opt.TapeBatteryField, "battery", "battery_level", "batteryLevel") : "";
+            decimal? battery = decimal.TryParse(batteryText, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var b) ? Math.Clamp(b, 0m, 100m) : null;
+            parsed.Add(new AcsMapAgv(
+                ip, First(row, "agvName", "agvCode"), code, id,
+                hasLive ? First(live, "ACS_KEY", "acsKey", "acs_key") : "",
+                hasLive ? First(live, "area", "areaCode") : First(row, "areaCode"),
+                hasLive ? First(live, "product", "productFamily", "product_name") : "",
+                type, status, ResolveStatus(status), battery, DateTimeOffset.UtcNow));
+        }
+
+        var duplicates = parsed.Where(x => x.AgvId.Length > 0).GroupBy(x => x.AgvId, StringComparer.OrdinalIgnoreCase).Count(g => g.Count() > 1);
         lock (_lock)
         {
-            _items = parsed.GroupBy(x => x.Ip, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).OrderBy(x => x.Name).ThenBy(x => x.Ip).ToArray();
+            _items = parsed.GroupBy(x => x.AgvId.Length > 0 ? x.AgvId : x.AgvCode, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First()).OrderBy(x => x.Product).ThenBy(x => x.Name).ThenBy(x => x.AgvId).ToArray();
             _lastOk = DateTimeOffset.UtcNow;
-            _lastResult = $"정상 · {_items.Count}대" + (duplicates.Length > 0 ? $" · 중복 IP {duplicates.Length}개" : "");
+            _lastResult = $"정상 · TAPE {_items.Count}대 · 상태 데이터 {tapeById.Count}건" + (duplicates > 0 ? $" · 중복 ID {duplicates}개" : "");
         }
         try { Changed?.Invoke(); } catch { }
     }
 
-    static string GetString(JsonElement row, string name) =>
-        row.TryGetProperty(name, out var v) ? v.ValueKind switch
+    string ResolveStatus(string code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return "상태 미수신";
+        foreach (var pair in _opt.StatusLabels)
+            if (string.Equals(pair.Key, code, StringComparison.OrdinalIgnoreCase)) return pair.Value;
+        return $"미등록 상태 ({code})";
+    }
+
+    static JsonElement UnwrapArray(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Array) return root;
+        if (root.ValueKind == JsonValueKind.Object)
+            foreach (var name in new[] { "data", "items", "result", "list" })
+                if (root.TryGetProperty(name, out var value))
+                {
+                    if (value.ValueKind == JsonValueKind.Array) return value;
+                    if (value.ValueKind == JsonValueKind.Object)
+                        foreach (var nested in new[] { "data", "items", "list" })
+                            if (value.TryGetProperty(nested, out var arr) && arr.ValueKind == JsonValueKind.Array) return arr;
+                }
+        return root;
+    }
+
+    static string First(JsonElement row, params string[] names)
+    {
+        foreach (var name in names)
         {
-            JsonValueKind.String => v.GetString() ?? "",
-            JsonValueKind.Number => v.GetRawText(),
-            _ => ""
-        } : "";
+            if (row.ValueKind != JsonValueKind.Object) return "";
+            foreach (var prop in row.EnumerateObject())
+                if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return prop.Value.ValueKind switch
+                    {
+                        JsonValueKind.String => prop.Value.GetString() ?? "",
+                        JsonValueKind.Number => prop.Value.GetRawText(),
+                        JsonValueKind.True => "true",
+                        JsonValueKind.False => "false",
+                        _ => ""
+                    };
+        }
+        return "";
+    }
 
     void SetResult(string value)
     {
@@ -104,6 +180,7 @@ public sealed class AcsMapInventoryService : BackgroundService
 
     public bool IsConnected(AcsMapAgv agv, int offlineAfterSec)
     {
+        if (string.IsNullOrWhiteSpace(agv.Ip)) return false;
         var state = _registry.Snapshot();
         return state.Any(s => s.EndPoint is not null
             && IPAddress.TryParse(agv.Ip, out var expected)
