@@ -122,12 +122,18 @@
 
 @code {
     System.Threading.Timer? timer;
+    string settingsJson = "";
+    string settingsMessage = "";
+    string settingsToken = "";
+    bool settingsAuthorized;
+    bool settingsError;
+    bool settingsBusy;
     // ACS 중계·위치 보고·소속 받기 상태가 연 시점 값에 멈추지 않게 3초마다 다시 그린다
     protected override void OnInitialized() { settingsJson = SettingsEditor.ReadMasked(); timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 3000, 3000); }
     void AuthorizeSettings() { settingsAuthorized = SettingsEditor.ValidateEditToken(settingsToken); settingsMessage = settingsAuthorized ? "쓰기 권한을 확인했습니다." : "관리자 토큰이 올바르지 않습니다."; settingsError = !settingsAuthorized; }
     void LoadSettings() { try { settingsJson = SettingsEditor.ReadMasked(); settingsMessage = "현재 파일을 다시 읽었습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; } }
     void SaveSettings() { settingsBusy = true; try { SettingsEditor.Save(settingsJson, settingsToken); settingsJson = SettingsEditor.ReadMasked(); settingsMessage = "설정을 저장했습니다. 실행 중인 서비스에는 아직 적용되지 않았습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; } finally { settingsBusy = false; } }
-    async Task SaveAndApply() { if (!await JS.ConfirmAsync("설정을 저장하고 서버 서비스를 재시작합니다. 재시작 중 ACS 중계와 AGV 통신이 잠시 중단됩니다. 진행할까요?")) return; settingsBusy = true; try { SettingsEditor.Save(settingsJson); SettingsEditor.RequestRestart(settingsToken); settingsMessage = "설정 저장 완료. 서비스 재시작을 요청했습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; settingsBusy = false; } }
+    async Task SaveAndApply() { if (!await JS.ConfirmAsync("설정을 저장하고 서버 서비스를 재시작합니다. 재시작 중 ACS 중계와 AGV 통신이 잠시 중단됩니다. 진행할까요?")) return; settingsBusy = true; try { SettingsEditor.Save(settingsJson, settingsToken); SettingsEditor.RequestRestart(settingsToken); settingsMessage = "설정 저장 완료. 서비스 재시작을 요청했습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; settingsBusy = false; } }
     public void Dispose() => timer?.Dispose();
 
     static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
