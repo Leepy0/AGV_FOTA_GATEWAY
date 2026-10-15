@@ -175,6 +175,9 @@ public static partial class SelfUpdateScript
         :swap_files
         timeout /t 1 /nobreak >nul
         if /i "%MODE%"=="rollback" goto swap_rollback
+        rem Merge new defaults before replacing the executable; existing operator values win.
+        powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0merge-settings.ps1" "%APP%\appsettings.json" "%STAGE%\appsettings.json" >>"%LOG%" 2>&1
+        if errorlevel 1 (>>"%LOG%" echo [%date% %time%] appsettings merge failed, update aborted& >"%PENDING%" echo apply-failed %WANT%& goto start_only)
         rem the current exe waits as .prev; the existing .old (rollback point) is replaced only after the new exe is in place
         if exist "%EXE%.prev" del /f /q "%EXE%.prev"
         ren "%EXE%" AgvFotaGateway.exe.prev >>"%LOG%" 2>&1
