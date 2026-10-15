@@ -4,7 +4,10 @@ public sealed class AcsMapInventoryOptions
 {
     public const string Section = "AcsMapInventory";
     public bool Enabled { get; set; } = false;
+    // Shared endpoint for subareas and agv-info (same port).
     public string BaseUrl { get; set; } = "http://127.0.0.1:8000";
+    // Tape status endpoint may use a different port on the same ACS host.
+    public string TapeBaseUrl { get; set; } = "";
     public string SubareasPath { get; set; } = "/v1/map/subareas";
     public string AgvInfoPath { get; set; } = "/v1/map/agv-info";
     // Tape API shown in ACS browser network capture; override site/area in deployment config as needed.
