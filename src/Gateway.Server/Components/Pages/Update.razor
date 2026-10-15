@@ -61,10 +61,26 @@
 
 @code {
     bool busy;
+    IBrowserFile? uploadFile;
+    string uploadMessage = "";
+    bool uploadError;
+    string uploadToken = "";
+    bool uploadAuthorized;
     protected override void OnInitialized() => Upd.Changed += OnChanged;
     void OnChanged() => InvokeAsync(StateHasChanged);
     public void Dispose() => Upd.Changed -= OnChanged;
-    void AuthorizeUpload() { uploadAuthorized = SettingsEditor.ValidateEditToken(uploadToken); uploadMessage = uploadAuthorized ? "쓰기 권한을 확인했습니다." : "관리자 토큰이 올바르지 않습니다."; uploadError = !uploadAuthorized; }\n    void SelectUpload(InputFileChangeEventArgs e) { uploadFile = e.File; uploadMessage = ""; uploadError = false; }\n    async Task Upload()\n    {\n        if (uploadFile is null) return;\n        if (!SettingsEditor.ValidateEditToken(uploadToken)) { uploadAuthorized = false; uploadMessage = "관리자 토큰이 올바르지 않습니다."; uploadError = true; return; }\n        busy = true; uploadMessage = ""; uploadError = false;\n        try { await using var stream = uploadFile.OpenReadStream(64L * 1024 * 1024); await Upd.StageUploadedAsync(stream, uploadFile.Name, uploadFile.Size); uploadMessage = Upd.Message; uploadFile = null; }\n        catch (Exception e) { uploadMessage = e.Message; uploadError = true; }\n        finally { busy = false; }\n    }\n    async Task Check() { busy = true; try { await Upd.CheckAsync(); } finally { busy = false; } }
+    void AuthorizeUpload() { uploadAuthorized = SettingsEditor.ValidateEditToken(uploadToken); uploadMessage = uploadAuthorized ? "쓰기 권한을 확인했습니다." : "관리자 토큰이 올바르지 않습니다."; uploadError = !uploadAuthorized; }
+    void SelectUpload(InputFileChangeEventArgs e) { uploadFile = e.File; uploadMessage = ""; uploadError = false; }
+    async Task Upload()
+    {
+        if (uploadFile is null) return;
+        if (!SettingsEditor.ValidateEditToken(uploadToken)) { uploadAuthorized = false; uploadMessage = "관리자 토큰이 올바르지 않습니다."; uploadError = true; return; }
+        busy = true; uploadMessage = ""; uploadError = false;
+        try { await using var stream = uploadFile.OpenReadStream(64L * 1024 * 1024); await Upd.StageUploadedAsync(stream, uploadFile.Name, uploadFile.Size); uploadMessage = Upd.Message; uploadFile = null; }
+        catch (Exception e) { uploadMessage = e.Message; uploadError = true; }
+        finally { busy = false; }
+    }
+    async Task Check() { busy = true; try { await Upd.CheckAsync(); } finally { busy = false; } }
     async Task Download() { busy = true; try { await Upd.DownloadAsync(); } finally { busy = false; } }
     async Task Apply()
     {
