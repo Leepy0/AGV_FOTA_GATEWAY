@@ -61,7 +61,8 @@ builder.Services.AddSingleton<AcsInventoryPullService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullService>());
 builder.Services.AddSingleton<AcsMapInventoryService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsMapInventoryService>());
-builder.Services.AddSingleton<AppSettingsEditorService>();\nbuilder.Services.AddSingleton<UpdateService>();
+builder.Services.AddSingleton<AppSettingsEditorService>();
+builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
 // DNS 리바인딩 방어: Host 가 이 서버의 이름(IP·localhost·PC 이름·FQDN·Gateway.AllowedHostNames)이 아니면 화면·정적 파일·API 모두 403.
