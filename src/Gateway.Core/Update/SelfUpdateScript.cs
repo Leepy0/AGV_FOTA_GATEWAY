@@ -118,18 +118,22 @@ public static partial class SelfUpdateScript
         param([string]$Target, [string]$Defaults)
         $ErrorActionPreference = 'Stop'
         if (-not (Test-Path -LiteralPath $Defaults)) { exit 0 }
-        $new = Get-Content -Raw -LiteralPath $Defaults | ConvertFrom-Json -AsHashtable
+        $new = Get-Content -Raw -LiteralPath $Defaults | ConvertFrom-Json
         if (-not (Test-Path -LiteralPath $Target)) {
           $new | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 -LiteralPath ($Target + '.new')
           Move-Item -Force -LiteralPath ($Target + '.new') -Destination $Target
           exit 0
         }
-        $old = Get-Content -Raw -LiteralPath $Target | ConvertFrom-Json -AsHashtable
+        $old = Get-Content -Raw -LiteralPath $Target | ConvertFrom-Json
         function Merge-Defaults($existing, $defaults) {
-          foreach ($key in $defaults.Keys) {
-            if (-not $existing.ContainsKey($key)) { $existing[$key] = $defaults[$key]; continue }
-            if ($existing[$key] -is [System.Collections.IDictionary] -and $defaults[$key] -is [System.Collections.IDictionary]) {
-              Merge-Defaults $existing[$key] $defaults[$key]
+          foreach ($property in $defaults.PSObject.Properties) {
+            $current = $existing.PSObject.Properties[$property.Name]
+            if ($null -eq $current) {
+              $existing | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
+              continue
+            }
+            if ($current.Value -is [PSCustomObject] -and $property.Value -is [PSCustomObject]) {
+              Merge-Defaults $current.Value $property.Value
             }
           }
         }
