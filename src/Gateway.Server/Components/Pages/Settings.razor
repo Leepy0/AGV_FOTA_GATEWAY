@@ -15,11 +15,13 @@
 @inject AgvGroupStore Groups
 @inject Gateway.Server.Data.GatewayDb Db
 @inject HostGuard Hosts
+@inject AppSettingsEditorService SettingsEditor
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>설정 · AGV FOTA</PageTitle>
 <h1>설정</h1>
-<p class="muted">현재 적용된 값입니다. 바꾸려면 <code>@SettingsPath</code> 를 고치고 서비스를 다시 시작하세요 (<code>sc stop AgvFotaGateway &amp; sc start AgvFotaGateway</code> 또는 서비스 관리자). 업데이트해도 appsettings.json 은 유지됩니다.</p>
+<p class="muted">현재 적용된 값입니다. 아래 편집기에서 설정을 변경하고 저장하거나, 저장 후 서비스를 재시작해 반영할 수 있습니다. 서버 업데이트 시에도 기존 설정은 유지되고 새 버전의 누락된 기본 설정이 보충됩니다.</p>\n\n<section class="card">\n    <h2>설정 파일 편집</h2>\n    <p class="muted small">JSON 형식 그대로 편집합니다. 문법 오류가 있으면 저장하지 않습니다. 비밀값은 <code>********</code>로 가려지며, 그대로 두면 기존 값이 유지됩니다. 저장 전 원본 백업을 만듭니다.</p>\n    <textarea class="mono" style="width:100%; min-height:28rem; font-family:monospace" @bind="settingsJson" spellcheck="false"></textarea>\n    @if (!string.IsNullOrWhiteSpace(settingsMessage)) { <div class="msg @(settingsError ? "err" : "")" role="status">@settingsMessage</div> }\n    <div class="row-buttons">\n        <button @onclick="LoadSettings" disabled="@settingsBusy">다시 읽기</button>\n        <button @onclick="SaveSettings" disabled="@settingsBusy">설정 저장</button>\n        <button class="primary" @onclick="SaveAndApply" disabled="@settingsBusy">저장 후 반영 (서비스 재시작)</button>\n    </div>\n</section>
 
 <section class="card">
     <h2>서버</h2>
@@ -103,7 +105,7 @@
 @code {
     System.Threading.Timer? timer;
     // ACS 중계·위치 보고·소속 받기 상태가 연 시점 값에 멈추지 않게 3초마다 다시 그린다
-    protected override void OnInitialized() => timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 3000, 3000);
+    protected override void OnInitialized() { settingsJson = SettingsEditor.ReadMasked(); timer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 3000, 3000); }\n    void LoadSettings() { try { settingsJson = SettingsEditor.ReadMasked(); settingsMessage = "현재 파일을 다시 읽었습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; } }\n    void SaveSettings() { settingsBusy = true; try { SettingsEditor.Save(settingsJson); settingsJson = SettingsEditor.ReadMasked(); settingsMessage = "설정을 저장했습니다. 실행 중인 서비스에는 아직 적용되지 않았습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; } finally { settingsBusy = false; } }\n    async Task SaveAndApply() { if (!await JS.ConfirmAsync("설정을 저장하고 서버 서비스를 재시작합니다. 재시작 중 ACS 중계와 AGV 통신이 잠시 중단됩니다. 진행할까요?")) return; settingsBusy = true; try { SettingsEditor.Save(settingsJson); SettingsEditor.RequestRestart(); settingsMessage = "설정 저장 완료. 서비스 재시작을 요청했습니다."; settingsError = false; } catch (Exception e) { settingsMessage = e.Message; settingsError = true; settingsBusy = false; } }
     public void Dispose() => timer?.Dispose();
 
     static string SettingsPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
