@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Hosting.WindowsServices;\nusing Microsoft.Extensions.Options;
 
 namespace Gateway.Server.Services;
 
@@ -9,7 +9,7 @@ public sealed class AppSettingsEditorService(IOptions<Gateway.Server.Options.Upd
 {
     const string Mask = "********";
     readonly string _path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-    readonly string _restartDir = Path.Combine(AppContext.BaseDirectory, "data", "update");
+    readonly string _restartDir = Path.Combine(gateway.Value.DataDir, "update");
 
     public string ReadMasked()
     {
