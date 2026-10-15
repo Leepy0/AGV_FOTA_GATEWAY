@@ -5,7 +5,7 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <AssemblyName>AgvFotaGateway</AssemblyName>
     <RootNamespace>Gateway.Server</RootNamespace>
-    <Version>0.3.2</Version>
+    <Version>0.3.3</Version>
     <!-- 빌드 채널: CI 가 release(정식) / dev(main 테스트) 로 덮어씀. 로컬 빌드는 local → 자동 교체 안 함 -->
     <BuildChannel Condition="'$(BuildChannel)' == ''">local</BuildChannel>
     <!-- 배포: dotnet publish -c Release -r win-x64 → 단일 exe, 런타임 포함 (PC 에 .NET 설치 불필요) -->

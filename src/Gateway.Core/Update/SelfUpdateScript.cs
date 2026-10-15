@@ -113,6 +113,39 @@ public static partial class SelfUpdateScript
     /// cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 ASCII 만 쓴다.
     /// set 은 모두 set "X=값" 형식 — set X=1 &amp; ... 은 &amp; 앞 공백까지 값에 들어간다.
     /// </summary>
+    /// <summary>기존 appsettings.json의 값을 유지하면서 새 버전 기본 파일에만 있는 키를 보충한다.</summary>
+    public const string SettingsMergeScript = """
+        param([string]$Target, [string]$Defaults)
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path -LiteralPath $Defaults)) { exit 0 }
+        $new = Get-Content -Raw -LiteralPath $Defaults | ConvertFrom-Json
+        if (-not (Test-Path -LiteralPath $Target)) {
+          $new | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 -LiteralPath ($Target + '.new')
+          Move-Item -Force -LiteralPath ($Target + '.new') -Destination $Target
+          exit 0
+        }
+        $old = Get-Content -Raw -LiteralPath $Target | ConvertFrom-Json
+        function Merge-Defaults($existing, $defaults) {
+          foreach ($property in $defaults.PSObject.Properties) {
+            $current = $existing.PSObject.Properties[$property.Name]
+            if ($null -eq $current) {
+              $existing | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
+              continue
+            }
+            if ($current.Value -is [PSCustomObject] -and $property.Value -is [PSCustomObject]) {
+              Merge-Defaults $current.Value $property.Value
+            }
+          }
+        }
+        Merge-Defaults $old $new
+        $backup = $Target + '.' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.bak'
+        Copy-Item -LiteralPath $Target -Destination $backup
+        $temp = $Target + '.new'
+        $old | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 -LiteralPath $temp
+        Get-Content -Raw -LiteralPath $temp | ConvertFrom-Json | Out-Null
+        Move-Item -Force -LiteralPath $temp -Destination $Target
+        """;
+
     public const string Text = """
         @echo off
         rem AgvFotaGateway self-update (written by UpdateService before each run - do not edit)
@@ -146,6 +179,9 @@ public static partial class SelfUpdateScript
         :swap_files
         timeout /t 1 /nobreak >nul
         if /i "%MODE%"=="rollback" goto swap_rollback
+        rem Merge new defaults before replacing the executable; existing operator values win.
+        powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0merge-settings.ps1" "%APP%\appsettings.json" "%STAGE%\appsettings.json" >>"%LOG%" 2>&1
+        if errorlevel 1 (>>"%LOG%" echo [%date% %time%] appsettings merge failed, update aborted& >"%PENDING%" echo apply-failed %WANT%& goto start_only)
         rem the current exe waits as .prev; the existing .old (rollback point) is replaced only after the new exe is in place
         if exist "%EXE%.prev" del /f /q "%EXE%.prev"
         ren "%EXE%" AgvFotaGateway.exe.prev >>"%LOG%" 2>&1

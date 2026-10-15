@@ -61,6 +61,7 @@ builder.Services.AddSingleton<AcsInventoryPullService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsInventoryPullService>());
 builder.Services.AddSingleton<AcsMapInventoryService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsMapInventoryService>());
+builder.Services.AddSingleton<AppSettingsEditorService>();
 builder.Services.AddSingleton<UpdateService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<UpdateService>());
 
