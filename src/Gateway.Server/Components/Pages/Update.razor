@@ -5,6 +5,7 @@
 @inject AgvRegistry Reg
 @inject IOptions<GatewayOptions> GwOpt
 @inject IJSRuntime JS
+@inject AppSettingsEditorService SettingsEditor
 @implements IDisposable
 
 <PageTitle>서버 업데이트 · AGV FOTA</PageTitle>
@@ -36,12 +37,18 @@
 
 <section class="card">
     <h2>서버 ZIP 직접 업로드</h2>
-    <p class="muted small">GitHub 릴리스 없이 Windows x64 서버 배포 ZIP을 직접 올릴 수 있습니다. 파일은 64 MB 이하, 실행 파일의 제품 버전은 현재 버전보다 높아야 합니다. 업로드 후 기존 적용 버튼으로 적용하며, 정상 기동 확인 및 롤백 절차는 동일합니다.</p>
+    <p class="muted small">GitHub 릴리스 없이 Windows x64 서버 배포 ZIP을 직접 올릴 수 있습니다. 파일은 64 MB 이하, 실행 파일의 제품 버전은 현재 버전보다 높아야 합니다. 업로드 후 기존 적용 버튼으로 적용하며, 정상 기동 확인 및 롤백 절차는 동일합니다. 업로드에는 관리자 토큰이 필요합니다.</p>
+    @if (!SettingsEditor.IsEditTokenConfigured) { <div class="msg err">직접 업로드가 잠겨 있습니다. 서버 환경변수 <code>AGV_GATEWAY_SETTINGS_TOKEN</code> 또는 <code>Gateway:SettingsEditToken</code>을 설정하세요.</div> }
+    <div class="row-buttons">
+        <input type="password" placeholder="관리자 토큰" @bind="uploadToken" autocomplete="off" />
+        <button @onclick="AuthorizeUpload" disabled="@(!SettingsEditor.IsEditTokenConfigured)">권한 확인</button>
+        @if (uploadAuthorized) { <span class="muted">쓰기 권한 확인됨</span> }
+    </div>
     <div class="form">
         <InputFile OnChange="SelectUpload" accept=".zip,application/zip" disabled="@busy" />
         @if (uploadFile is not null) { <div class="muted small">선택: @uploadFile.Name (@(uploadFile.Size / 1024) KB)</div> }
         <div class="row-buttons">
-            <button @onclick="Upload" disabled="@(busy || uploadFile is null || !Upd.CanSelfUpdate)">업로드 및 검증</button>
+            <button @onclick="Upload" disabled="@(busy || uploadFile is null || !Upd.CanSelfUpdate || !uploadAuthorized)">업로드 및 검증</button>
         </div>
         @if (!string.IsNullOrWhiteSpace(uploadMessage)) { <div class="msg @(uploadError ? "err" : "")" role="status">@uploadMessage</div> }
     </div>
@@ -57,7 +64,7 @@
     protected override void OnInitialized() => Upd.Changed += OnChanged;
     void OnChanged() => InvokeAsync(StateHasChanged);
     public void Dispose() => Upd.Changed -= OnChanged;
-    void SelectUpload(InputFileChangeEventArgs e) { uploadFile = e.File; uploadMessage = ""; uploadError = false; }\n    async Task Upload()\n    {\n        if (uploadFile is null) return;\n        busy = true; uploadMessage = ""; uploadError = false;\n        try { await using var stream = uploadFile.OpenReadStream(64L * 1024 * 1024); await Upd.StageUploadedAsync(stream, uploadFile.Name, uploadFile.Size); uploadMessage = Upd.Message; uploadFile = null; }\n        catch (Exception e) { uploadMessage = e.Message; uploadError = true; }\n        finally { busy = false; }\n    }\n    async Task Check() { busy = true; try { await Upd.CheckAsync(); } finally { busy = false; } }
+    void AuthorizeUpload() { uploadAuthorized = SettingsEditor.ValidateEditToken(uploadToken); uploadMessage = uploadAuthorized ? "쓰기 권한을 확인했습니다." : "관리자 토큰이 올바르지 않습니다."; uploadError = !uploadAuthorized; }\n    void SelectUpload(InputFileChangeEventArgs e) { uploadFile = e.File; uploadMessage = ""; uploadError = false; }\n    async Task Upload()\n    {\n        if (uploadFile is null) return;\n        if (!SettingsEditor.ValidateEditToken(uploadToken)) { uploadAuthorized = false; uploadMessage = "관리자 토큰이 올바르지 않습니다."; uploadError = true; return; }\n        busy = true; uploadMessage = ""; uploadError = false;\n        try { await using var stream = uploadFile.OpenReadStream(64L * 1024 * 1024); await Upd.StageUploadedAsync(stream, uploadFile.Name, uploadFile.Size); uploadMessage = Upd.Message; uploadFile = null; }\n        catch (Exception e) { uploadMessage = e.Message; uploadError = true; }\n        finally { busy = false; }\n    }\n    async Task Check() { busy = true; try { await Upd.CheckAsync(); } finally { busy = false; } }
     async Task Download() { busy = true; try { await Upd.DownloadAsync(); } finally { busy = false; } }
     async Task Apply()
     {
