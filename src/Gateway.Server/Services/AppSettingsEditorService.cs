@@ -1,13 +1,13 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
+using System.Text.Json.Nodes;\nusing System.Security.Cryptography;\nusing System.Text;
 using Microsoft.Extensions.Hosting.WindowsServices;\nusing Microsoft.Extensions.Options;
 
 namespace Gateway.Server.Services;
 
 /// <summary>웹에서 appsettings.json을 안전하게 편집한다. 비밀값은 마스킹해 반환하고, 마스크가 그대로 저장되면 원본 값을 보존한다.</summary>
-public sealed class AppSettingsEditorService(IOptions<Gateway.Server.Options.UpdateOptions> update, IOptions<Gateway.Server.Options.GatewayOptions> gateway, IHostApplicationLifetime lifetime, ILogger<AppSettingsEditorService> log)
+public sealed class AppSettingsEditorService(IOptions<Gateway.Server.Options.UpdateOptions> update, IOptions<Gateway.Server.Options.GatewayOptions> gateway, IHostApplicationLifetime lifetime, IConfiguration configuration, ILogger<AppSettingsEditorService> log)
 {
-    const string Mask = "********";
+    const string Mask = "********";\n    readonly string _editToken = configuration["Gateway:SettingsEditToken"] ?? Environment.GetEnvironmentVariable("AGV_GATEWAY_SETTINGS_TOKEN") ?? "";\n    public bool IsEditTokenConfigured => !string.IsNullOrWhiteSpace(_editToken);\n    public bool ValidateEditToken(string? token)\n    {\n        if (!IsEditTokenConfigured || string.IsNullOrEmpty(token)) return false;\n        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(_editToken), Encoding.UTF8.GetBytes(token));\n    }\n    void RequireEditToken(string? token) { if (!ValidateEditToken(token)) throw new InvalidOperationException("설정 편집/업로드 권한이 없습니다. Gateway:SettingsEditToken 또는 AGV_GATEWAY_SETTINGS_TOKEN을 확인하세요."); }
     readonly string _path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     readonly string _restartDir = Path.Combine(gateway.Value.DataDir, "update");
 
