@@ -309,6 +309,52 @@ public sealed class UpdateService : BackgroundService
         }
     }
 
+    /// <summary>관리자가 웹에서 업로드한 Windows x64 배포 ZIP을 검증하고 기존 적용 경로에 스테이징한다.</summary>
+    public async Task StageUploadedAsync(Stream source, string fileName, long declaredLength, CancellationToken ct = default)
+    {
+        if (!CanSelfUpdate) throw new InvalidOperationException("Windows 정식/테스트 빌드에서만 서버 ZIP 업로드를 적용할 수 있습니다.");
+        if (!fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Windows x64 배포 ZIP 파일만 업로드할 수 있습니다.");
+        if (declaredLength <= 0 || declaredLength > 64L * 1024 * 1024) throw new InvalidOperationException("ZIP 크기는 1~64 MB여야 합니다.");
+        if (!Enter(UpdateStage.Downloading, "업로드한 서버 패키지 검증 중…", s => s is UpdateStage.Idle or UpdateStage.Error or UpdateStage.Ready or UpdateStage.Available or UpdateStage.UpToDate))
+            throw new InvalidOperationException("다른 업데이트 작업이 진행 중입니다.");
+        string? zip = null;
+        try
+        {
+            Directory.CreateDirectory(_dir);
+            zip = Path.Combine(_dir, "manual-upload-" + Guid.NewGuid().ToString("N") + ".zip");
+            await using (var output = new FileStream(zip, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
+            {
+                await source.CopyToAsync(output, ct);
+                if (output.Length > 64L * 1024 * 1024) throw new InvalidOperationException("업로드 파일이 64 MB를 초과합니다.");
+            }
+            string hash;
+            await using (var input = File.OpenRead(zip)) hash = Convert.ToHexString(await SHA256.HashDataAsync(input, ct)).ToLowerInvariant();
+            var stageRoot = Path.Combine(_dir, "v-upload-" + Guid.NewGuid().ToString("N"));
+            ZipFile.ExtractToDirectory(zip, stageRoot); // .NET 경로 탈출(Zip Slip) 검사를 적용한다
+            var exe = Directory.GetFiles(stageRoot, "AgvFotaGateway.exe", SearchOption.AllDirectories).FirstOrDefault();
+            if (exe is null) { Directory.Delete(stageRoot, true); throw new InvalidOperationException("ZIP에 AgvFotaGateway.exe가 없습니다."); }
+            var rawVersion = FileVersionInfo.GetVersionInfo(exe).ProductVersion?.Split('+')[0];
+            var version = UpdateFeed.ParseVersion(rawVersion);
+            if (version is null) { Directory.Delete(stageRoot, true); throw new InvalidOperationException("실행 파일에서 유효한 제품 버전을 읽지 못했습니다."); }
+            if (version <= Current) { Directory.Delete(stageRoot, true); throw new InvalidOperationException($"업로드 버전 {version.ToString(3)}은 현재 버전 {CurrentText}보다 새 버전이 아닙니다."); }
+            var tag = "v" + version.ToString(3);
+            var finalStage = Path.Combine(_dir, tag);
+            if (Directory.Exists(finalStage)) Directory.Delete(finalStage, true);
+            Directory.Move(stageRoot, finalStage);
+            exe = Directory.GetFiles(finalStage, "AgvFotaGateway.exe", SearchOption.AllDirectories).First();
+            StagedDir = Path.GetDirectoryName(exe)!;
+            StagedTag = tag;
+            Add($"웹 업로드 패키지 검증 완료: {tag}, SHA-256 {hash}");
+            Set(UpdateStage.Ready, $"{tag} 업로드 및 검증 완료 (SHA-256 계산됨) — 적용 대기");
+        }
+        catch (Exception e)
+        {
+            Set(HasStaged ? UpdateStage.Ready : UpdateStage.Error, "업로드 검증 실패: " + e.Message);
+            throw;
+        }
+        finally { if (zip is not null) TryDelete(zip); }
+    }
+
     // ───── 교체 · 되돌리기 (Windows, 배치) ─────
     public async Task ApplyAsync()
     {
