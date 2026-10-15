@@ -31,7 +31,7 @@ public sealed class AcsMapInventoryService : BackgroundService
     public AcsMapInventoryService(IOptions<AcsMapInventoryOptions> options, AcsRestPublisher http, AgvRegistry registry, ILogger<AcsMapInventoryService> log)
     { _opt = options.Value; _http = http; _registry = registry; _log = log; }
 
-    AcsRestSettings Settings(string path) => new(_opt.BaseUrl, path, "GET", _opt.AuthType, _opt.AuthValue, _opt.ApiKeyHeader, _opt.TimeoutMs);
+    AcsRestSettings Settings(string path, string? baseUrl = null) => new(baseUrl ?? _opt.BaseUrl, path, "GET", _opt.AuthType, _opt.AuthValue, _opt.ApiKeyHeader, _opt.TimeoutMs);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -79,7 +79,7 @@ public sealed class AcsMapInventoryService : BackgroundService
         }
 
         // The second API provides live tape/status fields. Its path may include query parameters.
-        var tapeResponse = await _http.GetAsync(Settings(_opt.TapePath), ct);
+        var tapeResponse = await _http.GetAsync(Settings(_opt.TapePath, _opt.TapeBaseUrl), ct);
         if (!tapeResponse.Ok) { SetResult("TAPE 상태 API 조회 실패: " + tapeResponse); return; }
         var tapeRows = new List<JsonElement>();
         using (var doc = JsonDocument.Parse(tapeResponse.Body))
