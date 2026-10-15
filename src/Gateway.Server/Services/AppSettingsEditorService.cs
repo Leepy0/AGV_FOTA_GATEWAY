@@ -63,26 +63,25 @@ public sealed class AppSettingsEditorService(IOptions<Gateway.Server.Options.Upd
         string script;
         if (WindowsServiceHelpers.IsWindowsService())
         {
-            script = $"""@echo off
-timeout /t 2 /nobreak >nul
-sc stop "{service}" >nul 2>&1
-set /a N=0
-:waitstop
-sc query "{service}" | findstr /I "STOPPED" >nul && goto startsvc
-set /a N+=1
-if %N% GEQ 45 goto startsvc
-timeout /t 1 /nobreak >nul
-goto waitstop
-:startsvc
-sc start "{service}"
-""";
+            script = string.Join(Environment.NewLine, new[]
+            {
+                "@echo off",
+                "timeout /t 2 /nobreak >nul",
+                $"sc stop \"{service}\" >nul 2>&1",
+                "set /a N=0",
+                ":waitstop",
+                $"sc query \"{service}\" | findstr /I \"STOPPED\" >nul && goto startsvc",
+                "set /a N+=1",
+                "if %N% GEQ 45 goto startsvc",
+                "timeout /t 1 /nobreak >nul",
+                "goto waitstop",
+                ":startsvc",
+                $"sc start \"{service}\""
+            });
         }
         else
         {
-            script = $"""@echo off
-timeout /t 2 /nobreak >nul
-start "" "{exe}"
-""";
+            script = string.Join(Environment.NewLine, new[] { "@echo off", "timeout /t 2 /nobreak >nul", $"start \"\" \"{exe}\"" });
         }
         File.WriteAllText(bat, script, System.Text.Encoding.ASCII);
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c start \"\" /min \"{bat}\"")
