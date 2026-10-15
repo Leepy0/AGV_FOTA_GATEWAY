@@ -31,7 +31,7 @@ public sealed class AcsMapInventoryService : BackgroundService
     public AcsMapInventoryService(IOptions<AcsMapInventoryOptions> options, AcsRestPublisher http, AgvRegistry registry, ILogger<AcsMapInventoryService> log)
     { _opt = options.Value; _http = http; _registry = registry; _log = log; }
 
-    AcsRestSettings Settings(string path, string? baseUrl = null) => new(baseUrl ?? _opt.BaseUrl, path, "GET", _opt.AuthType, _opt.AuthValue, _opt.ApiKeyHeader, _opt.TimeoutMs);
+    AcsRestSettings Settings(string path, string? baseUrl = null) => new(string.IsNullOrWhiteSpace(baseUrl) ? _opt.BaseUrl : baseUrl, path, "GET", _opt.AuthType, _opt.AuthValue, _opt.ApiKeyHeader, _opt.TimeoutMs);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
