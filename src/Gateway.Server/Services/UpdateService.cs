@@ -381,6 +381,7 @@ public sealed class UpdateService : BackgroundService
             var bat = Path.Combine(_dir, SelfUpdateScript.FileName);
             File.WriteAllText(bat, SelfUpdateScript.Text.ReplaceLineEndings("\r\n"), System.Text.Encoding.ASCII);   // cmd 는 UTF-8 BOM 없는 한글을 깨뜨리므로 스크립트는 ASCII 만
             File.WriteAllText(Path.Combine(_dir, "exclude.txt"), "appsettings.json\r\n");
+            File.WriteAllText(Path.Combine(_dir, "merge-settings.ps1"), SelfUpdateScript.SettingsMergeScript, new System.Text.UTF8Encoding(false));
             File.WriteAllText(pending, $"{mode} {tag}");
             var health = SelfUpdateScript.HealthUrl(_server.Features.Get<IServerAddressesFeature>()?.Addresses ?? []);
             var args = SelfUpdateScript.Arguments(mode, Environment.ProcessId, AppContext.BaseDirectory, stageDir, _opt.ServiceName,
