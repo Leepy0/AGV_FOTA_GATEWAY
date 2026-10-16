@@ -4,7 +4,7 @@ AGV 펌웨어를 무선으로 올리는 서버입니다.
 사내 PC 한 대에 설치하고, 브라우저로 씁니다.
 브리지(ESP32-S3)와 메인보드(TMS320F2808) 펌웨어를 올리고, 호기를 골라 순서대로 배포합니다.
 
-- 기준 버전: Gateway **v0.3.0** · 브리지 **v0.5.2**
+- 기준 버전: Gateway **v0.3.4** · 브리지 **v0.5.2**
 - 설치 파일 하나에 .NET 런타임이 들어 있습니다. PC 에 .NET 을 따로 설치하지 않습니다.
 - 전체 동작 원리는 [SYSTEM_FLOW.md](SYSTEM_FLOW.md) 를 봅니다. 저장소 `docs/` 와 설치 폴더에 이 문서와 함께 들어 있습니다.
 
@@ -780,6 +780,9 @@ ACS 로 호기 위치를 보내는 설정입니다. 스키마 미확정이라 �
 | `BaseUrl` | `https://github.com/Leepy0/AGV_FOTA_GATEWAY` | 릴리스 위치. **`https://github.com` 저장소 주소만** 됩니다 ([9-2](#9-2-업데이트-출처와-저장소-공개)) |
 | `ManifestUrl` | `""` | 매니페스트 주소를 직접 줄 때. 이것도 https 의 `github.com`·`api.github.com` 주소만 |
 | `GitHubToken` | `""` | 비공개 저장소 API 폴백용 토큰 (Contents: Read). 환경 변수 `Update__GitHubToken` |
+| `Proxy` | `""` | 업데이트 확인·받기에 쓸 사내 프록시 (`http://proxy.회사:8080`). 비우면 시스템 설정, `none` 이면 프록시 없이 직접 연결. **서비스로 돌 때 사내망에서 확인이 안 되면 여기에 적습니다** ([9-2](#9-2-업데이트-출처와-저장소-공개)) |
+| `ProxyUser` | `""` | 프록시 계정 (`DOMAIN\user` 가능). 비우면 현재 계정(서비스는 컴퓨터 계정) 자격으로 인증 |
+| `ProxyPassword` | `""` | 프록시 비밀번호. 환경 변수 `Update__ProxyPassword` 로도 줄 수 있음. 웹 설정 편집기에서는 가려서 보임 |
 | `FirstCheckDelaySec` | `3` | 시작 뒤 첫 확인까지(초) |
 | `CheckIntervalMin` | `360` | 확인 주기(분). `0` = 시작할 때 한 번만 |
 | `AutoApply` | `false` | `true` = 새 버전을 받으면 배포 작업이 실행 중이 아닐 때 자동 적용(재시작). 단 **ACS 중계가 연결돼 있으면 적용을 미루고** 화면에서 적용하게 함. 되돌린 버전·교체에 실패한 버전은 자동 적용하지 않음 |
@@ -938,7 +941,13 @@ SQLite 이전 버전의 파일이 있으면 첫 실행 때 DB 로 옮깁니다. 
 
 - 출처는 **https 의 `github.com`·`api.github.com` 만** 허용합니다. 사내 웹 서버, `http://`, `file://` 공유 폴더는 쓸 수 없습니다(`허용되지 않은 업데이트 주소 …`). 이 경우 [9-4 수동 업데이트](#9-4-수동-업데이트) 를 씁니다.
 - 사내 방화벽·프록시에서 열어 둘 주소: `github.com`, `api.github.com`(폴백), `objects.githubusercontent.com`·`release-assets.githubusercontent.com`(GitHub 가 릴리스 파일을 넘겨 주는 주소).
-- 서비스(LocalSystem)는 로그인 사용자가 아니라 SYSTEM 계정의 프록시 설정을 씁니다.
+- **사내 프록시가 있는 망**: 서비스(LocalSystem)는 로그인 사용자의 인터넷 옵션(프록시·PAC)과 Windows 로그인 인증을 쓰지 않고, SYSTEM 계정의(보통 비어 있는) 설정과 컴퓨터 계정을 씁니다. 그래서 같은 PC 에서 `start.bat` 으로는 확인되는데 서비스로는 `확인 실패: …` 가 나옵니다. 이때는 `appsettings.json` 의 `Update.Proxy` 에 프록시 주소를 적고 서비스를 다시 시작합니다. 프록시가 계정 인증을 요구해 컴퓨터 계정으로는 거부되면 `ProxyUser`·`ProxyPassword` 도 적습니다. 업데이트 확인·받기에만 쓰이고 ACS 중계·ACS REST 에는 영향이 없습니다.
+
+  ```json
+  "Update": { "Proxy": "http://proxy.회사:8080", "ProxyUser": "", "ProxyPassword": "" }
+  ```
+
+  지금 돌고 있는 버전이 `Update.Proxy` 가 없는 0.3.3 이하라면, 관리자 명령 프롬프트에서 SYSTEM 계정의 프록시를 넣고 서비스를 다시 시작하면 그 버전으로도 확인·받기가 됩니다: `bitsadmin /util /setieproxy localsystem MANUAL_PROXY proxy.회사:8080 "<local>"` (PAC 이면 `AUTOSCRIPT <PAC 주소>`). 프록시가 컴퓨터 계정 인증을 거부하면 이 방법으로는 안 되고 0.3.4 의 `ProxyUser` 가 필요합니다.
 
 | 상황 | 결과 · 할 일 |
 |---|---|
@@ -1141,7 +1150,8 @@ SQLite 이전 버전의 파일이 있으면 첫 실행 때 DB 로 옮깁니다. 
 |---|---|
 | `정식 릴리스가 없거나 접근할 수 없음 (…)` | 정식 릴리스가 없거나 저장소가 비공개. [9-2](#9-2-업데이트-출처와-저장소-공개) |
 | `허용되지 않은 업데이트 주소 (…) — https://github.com 저장소 주소만 됩니다` | `Update.BaseUrl`·`ManifestUrl` 을 GitHub 주소로. 사내 서버는 쓸 수 없음 → [9-4](#9-4-수동-업데이트) |
-| `확인 실패: …` | 인터넷·방화벽([9-2](#9-2-업데이트-출처와-저장소-공개) 의 주소). `start.bat` 으로는 되는데 서비스로는 안 되면 SYSTEM 계정의 프록시 설정 차이 |
+| `확인 실패: …` | 인터넷·방화벽([9-2](#9-2-업데이트-출처와-저장소-공개) 의 주소). `start.bat` 으로는 되는데 서비스로는 안 되면 사내 프록시 — `Update.Proxy`(필요하면 `ProxyUser`·`ProxyPassword`)를 적고 서비스 재시작. 서비스로 돌 때는 메시지 끝에 이 안내가 붙음 |
+| `… · Update.Proxy 가 올바르지 않음: …` | `Update.Proxy` 를 `http://호스트:포트` 형식으로 (주소에 계정을 넣지 않음). 고칠 때까지 시스템 설정으로 확인 |
 | `GitHub API 횟수 제한 — 1시간 뒤 다시` | 1시간 뒤 다시 |
 | `받기 실패: 받은 파일이 손상됨 (SHA-256 불일치) — 다시 받으세요` | **받기** 를 다시 누름 |
 | `받기 실패: 릴리스에 검증용 SHA-256 정보가 없음 …` | 릴리스에 `.sha256` 이 없음. 릴리스를 다시 만들거나 수동 업데이트 |

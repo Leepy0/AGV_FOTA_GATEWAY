@@ -14,7 +14,8 @@
 <section class="card">
     <div class="form">
         <div>현재 <b>v@(Upd.CurrentText)</b> · @Upd.ChannelName@(Upd.Commit is null ? "" : $" · {Upd.Commit}") · 마지막 확인 @(Upd.LastCheck?.ToLocalTime().ToString("MM-dd HH:mm") ?? "-")</div>
-        <div class="muted small">확인 주소 @Upd.ManifestUrl</div>
+        <div class="muted small">확인 주소 @Upd.ManifestUrl · 프록시 @Upd.ProxyText</div>
+        @if (Upd.ProxyError is { } pe) { <div class="msg err">@pe</div> }
         @if (Upd.OutsideScmWarning is { } scm) { <div class="msg err">@scm</div> }
         @if (!Upd.Enabled) { <div class="msg err">appsettings.json 의 Update.Enabled 가 false 입니다</div> }
         @if (!Upd.CanSelfUpdate) { <div class="muted">@(Upd.Channel == "local" ? "로컬 빌드는 자동 교체하지 않습니다 (확인·받기는 됩니다)." : "자동 교체는 Windows 서비스/콘솔 실행에서만 됩니다.")</div> }
