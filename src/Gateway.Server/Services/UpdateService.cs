@@ -72,6 +72,10 @@ public sealed class UpdateService : BackgroundService
     /// LocalSystem 으로 돌고 있으면 다음 업데이트·되돌리기가 svc 모드로 sc start 해서 서비스로 되돌아간다
     /// </summary>
     public string? OutsideScmWarning { get; }
+    /// <summary>업데이트 HttpClient 가 쓰는 프록시 설명 (화면·로그용, 비밀번호 없음)</summary>
+    public string ProxyText { get; }
+    /// <summary>Update.Proxy 가 잘못됐을 때 안내 문구 (그동안 시스템 설정으로 동작), 아니면 null</summary>
+    public string? ProxyError { get; }
     /// <summary>배치를 svc 모드(sc stop/start)로 돌릴지</summary>
     readonly bool _runAsService;
     public event Action? Changed;
@@ -93,10 +97,18 @@ public sealed class UpdateService : BackgroundService
         CurrentText = Current.ToString(3);
         Commit = parts.Length > 1 && parts[1].Length >= 7 ? parts[1][..7] : null;
         Channel = asm.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "BuildChannel")?.Value ?? "local";
-        // 시스템 프록시 사용. 콘솔 실행이면 로그인 사용자의 프록시·자격, 서비스(LocalSystem)면 SYSTEM 계정의 프록시 설정과
-        // 컴퓨터 계정(DOMAIN\PC$) 자격이 쓰인다 (사용자 프록시·사용자 인증은 서비스에 적용되지 않음)
-        _http = new HttpClient(new HttpClientHandler { UseProxy = true, DefaultProxyCredentials = CredentialCache.DefaultCredentials, AutomaticDecompression = DecompressionMethods.All })
-        { Timeout = TimeSpan.FromMinutes(10) };
+        // 프록시: Update.Proxy 가 비어 있으면 시스템 설정 — 콘솔 실행이면 로그인 사용자의 프록시·자격, 서비스(LocalSystem)면 SYSTEM 계정의
+        // 프록시 설정과 컴퓨터 계정(DOMAIN\PC$) 자격이 쓰인다 (사용자 프록시·사용자 인증은 서비스에 적용되지 않음). 사내 프록시는 Update.Proxy 에 적는다
+        var handler = new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All };
+        try { ProxyText = UpdateProxy.Apply(handler, _opt.Proxy, _opt.ProxyUser, _opt.ProxyPassword).Text; }
+        catch (ArgumentException e)
+        {
+            ProxyError = e.Message + " — 고칠 때까지 시스템 설정으로 확인합니다";
+            ProxyText = UpdateProxy.Apply(handler, "", "", "").Text;
+            _log.LogError("update proxy: {Msg}", e.Message);
+        }
+        _log.LogInformation("update proxy: {Proxy}", ProxyText);
+        _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("AgvFotaGateway/" + CurrentText);
 
         _runAsService = WindowsServiceHelpers.IsWindowsService();
@@ -195,6 +207,9 @@ public sealed class UpdateService : BackgroundService
             var why = first is null
                 ? $"정식 릴리스가 없거나 접근할 수 없음 ({ManifestUrl}). 비공개 저장소면 공개로 바꾸거나 GitHubToken 을 설정"
                 : "확인 실패: " + first.Message;
+            if (ProxyError is not null) why += " · " + ProxyError;
+            else if (first is HttpRequestException or TaskCanceledException && _runAsService && string.IsNullOrWhiteSpace(_opt.Proxy))
+                why += " — 서비스(SYSTEM 계정)는 로그인 사용자의 프록시 설정·로그인 인증을 쓰지 않습니다. start.bat 으로는 확인되면 appsettings.json 의 Update.Proxy 에 사내 프록시를 적으세요 (DEPLOY.md 9-2)";
             // 받아 둔 업데이트는 확인이 실패해도 그대로 적용할 수 있다
             if (HasStaged) Set(UpdateStage.Ready, $"{why} — 받아 둔 {StagedTag} 은(는) 적용 가능");
             else Set(UpdateStage.Error, why);

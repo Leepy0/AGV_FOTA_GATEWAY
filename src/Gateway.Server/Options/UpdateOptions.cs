@@ -17,6 +17,15 @@ public sealed class UpdateOptions
     public string? ManifestUrl { get; set; }
     /// <summary>비공개 저장소에서 API 폴백을 쓸 때만 (fine-grained PAT, Contents: Read). 환경변수 Update__GitHubToken</summary>
     public string? GitHubToken { get; set; }
+    /// <summary>
+    /// 업데이트 확인·받기에 쓸 프록시 (예: http://proxy.corp:8080). 비우면 시스템 설정, "none" 이면 프록시 없이 직접 연결.
+    /// 서비스(LocalSystem)는 로그인 사용자의 프록시 설정·로그인 자격을 쓰지 않으므로, 콘솔(start.bat)로는 확인되는데 서비스로는 실패하는 사내망에서 적는다
+    /// </summary>
+    public string? Proxy { get; set; }
+    /// <summary>프록시 계정 (DOMAIN\user 가능). 비우면 현재 계정(서비스는 컴퓨터 계정) 자격</summary>
+    public string? ProxyUser { get; set; }
+    /// <summary>프록시 비밀번호. 환경변수 Update__ProxyPassword 로도 줄 수 있음 (화면 설정 편집기에서는 가려짐)</summary>
+    public string? ProxyPassword { get; set; }
     /// <summary>시작 후 첫 확인까지 (초)</summary>
     public int FirstCheckDelaySec { get; set; } = 3;
     /// <summary>자동 확인 주기 (분, 0 = 시작 때 한 번만)</summary>

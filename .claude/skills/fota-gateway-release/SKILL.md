@@ -11,7 +11,8 @@ description: "AGV FOTA Gateway(ASP.NET Core Blazor 웹 서버, 사내 PC Windows
 
 | 항목 | 값 |
 |---|---|
-| 저장소 | `Leepy0/AGV_FOTA_GATEWAY` (**비공개** — github.com 매니페스트 주소가 404 라 자동 업데이트는 저장소 공개 전환 뒤에 동작. 그 전에는 수동 업데이트) |
+| 저장소 | `Leepy0/AGV_FOTA_GATEWAY` (**공개** — 비공개로 돌리면 github.com 매니페스트 주소가 404 라 자동 업데이트가 멈춘다) |
+| 사내 프록시 | 서비스(LocalSystem)는 사용자 프록시·로그인 인증을 쓰지 않는다. `start.bat` 으로는 되고 서비스로는 "확인 실패" 면 `appsettings.json` `Update.Proxy`(·`ProxyUser`·`ProxyPassword`, 0.3.4+) — `docs/DEPLOY.md` 9-2 |
 | 자산 | `AgvFotaGateway_win-x64.zip`(고정 이름), `.sha256`, `AgvFotaGateway.json` |
 | 매니페스트 주소 | `https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` |
 | 버전 원본 | `src/Gateway.Server/Gateway.Server.csproj` `<Version>` — 태그와 다르면 CI 가 실패 |
