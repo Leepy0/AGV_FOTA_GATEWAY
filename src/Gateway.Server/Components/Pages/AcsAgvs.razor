@@ -14,8 +14,10 @@
 @if (error.Length > 0) { <div class="banner err">@error</div> }
 
 <div class="filters">
-    <label>ACS KEY <input @bind="acsKeyFilter" @bind:event="oninput" placeholder="전체" /></label>
-    <label>Area <input @bind="areaFilter" @bind:event="oninput" placeholder="전체" /></label>
+    <label>ACS KEY <input @bind="acsKeyFilter" @bind:event="oninput" list="acsKeyOptions" placeholder="전체 또는 직접 입력" /></label>
+    <datalist id="acsKeyOptions">@foreach (var key in AcsKeys) { <option value="@key" /> }</datalist>
+    <label>Area <input @bind="areaFilter" @bind:event="oninput" list="areaOptions" placeholder="전체 또는 직접 입력" /></label>
+    <datalist id="areaOptions">@foreach (var area in Areas) { <option value="@area" /> }</datalist>
     <label>Product <select @bind="productFilter"><option value="">전체 제품군</option>@foreach (var p in Products) { <option value="@p">@p</option> }</select></label>
     <label>상태 <select @bind="statusFilter"><option value="">전체 상태</option>@foreach (var s in Statuses) { <option value="@s">@s</option> }</select></label>
     <label>검색 <input @bind="textFilter" @bind:event="oninput" placeholder="AGV ID / 이름 / IP" /></label>
@@ -76,6 +78,8 @@ else
         (statusFilter.Length == 0 || a.StatusLabel.Equals(statusFilter, StringComparison.OrdinalIgnoreCase)) &&
         (textFilter.Length == 0 || Has(a.Name, textFilter) || Has(a.AgvId, textFilter) || Has(a.AgvCode, textFilter) || Has(a.Ip, textFilter)))
         .ToList();
+    IEnumerable<string> AcsKeys => Inventory.Snapshot.Select(a => a.AcsKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
+    IEnumerable<string> Areas => Inventory.Snapshot.Select(a => a.Area).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
     IEnumerable<string> Products => Inventory.Snapshot.Select(a => string.IsNullOrWhiteSpace(a.Product) ? "(제품 미분류)" : a.Product).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
     IEnumerable<string> Statuses => Inventory.Snapshot.Select(a => a.StatusLabel).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x);
     static bool Has(string value, string filter) => filter.Length == 0 || value.Contains(filter, StringComparison.OrdinalIgnoreCase);
