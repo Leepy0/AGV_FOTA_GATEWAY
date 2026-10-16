@@ -115,7 +115,7 @@ public sealed class AcsMapInventoryService : BackgroundService
                 ip, First(row, "agvName", "agvCode"), code, id,
                 hasLive ? First(live, "ACS_KEY", "acsKey", "acs_key") : "",
                 hasLive ? First(live, "area", "areaCode") : First(row, "areaCode"),
-                hasLive ? First(live, "product", "productFamily", "product_name") : "",
+                First(row, "product"),
                 type, status, ResolveStatus(status), battery, DateTimeOffset.UtcNow));
         }
 
