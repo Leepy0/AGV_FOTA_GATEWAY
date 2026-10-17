@@ -224,7 +224,7 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 foreach (var s in Subscribers(h.Agv)) s.OtaResults.Writer.TryWrite(js);
                 break;
             case BridgePacket.CfgResult:
-                Trace?.Invoke($"[{h.Agv:D2}] CFG> {Encoding.UTF8.GetString(pl).TrimEnd('\n')}");
+                Trace?.Invoke($"[{h.Agv:D2}] CFG> {BridgePacket.CfgResultText(pl)}");
                 break;
             case BridgePacket.Pong:
                 break;

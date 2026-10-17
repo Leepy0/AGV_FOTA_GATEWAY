@@ -15,6 +15,29 @@ public class BridgePacketTests
     }
 
     [Fact]
+    public void Payload_limit_is_1024_and_enforced_both_ways()
+    {
+        Assert.Equal(1024, BridgePacket.PayloadMax);
+        var max = new byte[BridgePacket.PayloadMax];
+        var p = BridgePacket.Build(BridgePacket.CfgCmd, 7, 1, max);
+        Assert.True(BridgePacket.TryParse(p, out _, out var pl));
+        Assert.Equal(1024, pl.Length);
+        Assert.Throws<ArgumentException>(() => BridgePacket.Build(BridgePacket.CfgCmd, 7, 1, new byte[1025]));
+        p[8] = 0x01; p[9] = 0x04; p = [.. p, 0];      // len 1025 — 헤더 길이가 맞아도 한도 초과로 거부
+        Assert.False(BridgePacket.TryParse(p, out _, out _));
+    }
+
+    [Theory]
+    [InlineData("rebooting\n>\n", "rebooting")]                  // 끝 표시 줄 제거
+    [InlineData("ok hb_ms 300 - 'save' then 'reboot' to apply\n>\n", "ok hb_ms 300 - 'save' then 'reboot' to apply")]
+    [InlineData("cfg\nagv=7\n>\n", "cfg\nagv=7")]                // 여러 줄 본문 유지
+    [InlineData(">\n", "")]                                    // 본문 없이 끝 표시만
+    [InlineData("{\"fw\":\"0.5.5\"}\n>\n", "{\"fw\":\"0.5.5\"}")]
+    [InlineData("old firmware text\n", "old firmware text")]   // 끝 표시가 없는 구버전 응답은 그대로
+    public void Cfg_result_text_drops_end_marker(string raw, string expected)
+        => Assert.Equal(expected, BridgePacket.CfgResultText(System.Text.Encoding.UTF8.GetBytes(raw)));
+
+    [Fact]
     public void Parse_rejects_length_mismatch_and_bad_version()
     {
         var p = BridgePacket.Build(BridgePacket.Status, 1, 1, "{}"u8);

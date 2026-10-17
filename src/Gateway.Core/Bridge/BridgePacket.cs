@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Text;
 
 namespace Gateway.Core.Bridge;
 
@@ -9,7 +10,7 @@ namespace Gateway.Core.Bridge;
 public static class BridgePacket
 {
     public const int HeaderLength = 10;
-    public const int PayloadMax = 512;
+    public const int PayloadMax = 1024;    // 브리지 0.6.0+ (이전 512). 0.5.x 브리지는 512 를 넘는 패킷을 버린다
     public const byte Magic0 = 0xA5, Magic1 = 0x5A, Version = 1;
 
     public const byte MainUp = 0x01;     // ESP → 서버: 메인보드 UART 원본
@@ -48,6 +49,14 @@ public static class BridgePacket
         header = new BridgeHeader(b[3], b[4], b[5], BinaryPrimitives.ReadUInt16LittleEndian(b.Slice(6)), (ushort)len);
         payload = b.Slice(HeaderLength);
         return true;
+    }
+
+    /// <summary>CFG_RESULT 본문을 표시용 텍스트로. 브리지는 응답 끝에 ">" 한 줄(끝 표시)을 붙이므로 떼어 낸다.</summary>
+    public static string CfgResultText(ReadOnlySpan<byte> payload)
+    {
+        var s = Encoding.UTF8.GetString(payload).TrimEnd('\n');
+        if (s == ">") return "";
+        return s.EndsWith("\n>", StringComparison.Ordinal) ? s[..^2] : s;
     }
 
     public static string TypeName(byte type) => type switch

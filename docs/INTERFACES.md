@@ -202,7 +202,7 @@
 |---|---|---|
 | `GET /api/agvs` | 호기 목록과 상태. 새 필드 `conflict`(번호 충돌 중), `conflictEndPoint`, `conflictAt`, `conflictCount` | 200 |
 | `POST /api/agvs/{n}/send` | MAIN_DOWN 수동 전송 `{ "data": "<STX>…<ETX>" }`. 256바이트 이하. 종류 `F`·`R` 프레임은 400 | 200 / 400 / 404 endpoint 없음 / 409 번호 충돌 |
-| `POST /api/agvs/{n}/cfg` | CFG_CMD `{ "data": "set ip …" }`. 512바이트(UTF-8) 이하 | 200 / 400 / 404 / 409 번호 충돌 |
+| `POST /api/agvs/{n}/cfg` | CFG_CMD `{ "data": "set ip …" }`. 1024바이트(UTF-8) 이하 (브리지 0.6.0+. 0.5.x 는 512바이트까지만 받음) | 200 / 400 / 404 / 409 번호 충돌 |
 | `POST /api/agvs/{n}/info` | INFO 요청 | 200 / 400 / 404 |
 
 - 세 요청 모두 호기 번호가 1~99 밖이면 400 입니다. `send`·`cfg` 는 `data` 가 비어도 400 입니다.

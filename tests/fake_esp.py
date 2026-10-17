@@ -6,7 +6,7 @@
   python3 tests/fake_esp.py --agv 7 --dup-id ...                                       # 같은 번호의 두 번째 장치 (충돌 시험)
 
 실제 브리지 코드(main/net_bridge.c·dsp_ota.c·ota.c·app_config.c·cmd.c, 0.5.2)와 맞춘 동작
-- 패킷: [A5 5A 01][type][agv][flags 0][seq u16][len u16] + payload(≤512). 타입별 seq 는 0 부터, 오프라인·유실이어도 증가.
+- 패킷: [A5 5A 01][type][agv][flags 0][seq u16][len u16] + payload(≤1024). 타입별 seq 는 0 부터, 오프라인·유실이어도 증가.
   PONG·CFG_RESULT 는 요청 seq 를 반송하고 요청 송신원(주소·포트)으로 보낸다. 그 밖의 보고는 --server 로.
 - 수신: 설정된 서버 IP(--server 의 호스트) 외 송신원은 버림. 서버 패킷을 받으면(종류·호기 무관) 미확정 OTA(ota=pending)·
   원격 설정(cfg=trial)을 확정. MAIN_DOWN·OTA_START·CFG_CMD·DSP_OTA_START/APPLY 는 호기 번호가 다르면 버림, PING·INFO_REQ 는 받음.
@@ -93,7 +93,7 @@ T_PING, T_PONG = 0x20, 0x21
 T_OTA_START, T_OTA_RESULT = 0x30, 0x31
 T_DSP_START, T_DSP_RESULT, T_DSP_APPLY = 0x32, 0x33, 0x34
 T_CFG_CMD, T_CFG_RESULT = 0x40, 0x41
-HDR_LEN, PAYLOAD_MAX = 10, 512
+HDR_LEN, PAYLOAD_MAX = 10, 1024
 RX_NAMES = {T_MAIN_DOWN: "MAIN", T_PING: "PING", T_OTA_START: "OTA", T_CFG_CMD: "CFG", T_INFO_REQ: "INFO",
             T_DSP_START: "START", T_DSP_APPLY: "APPLY"}
 
@@ -830,7 +830,8 @@ class Bridge:
         line = pl[:199].decode("latin-1").split("\r")[0].split("\n")[0].rstrip(" ")
         self.log("CFG< " + line)
         out, reboot = self.cmd_exec(line)
-        self.send(T_CFG_RESULT, out.encode()[:PAYLOAD_MAX], "cfg", dst=src, seq=seq)
+        # 응답 끝 표시 줄 ">" (브리지 BR-8) 까지 붙여 보낸다
+        self.send(T_CFG_RESULT, (out + ">\n").encode()[:PAYLOAD_MAX], "cfg", dst=src, seq=seq)
         if reboot:
             def later():
                 time.sleep(1.0)                         # REBOOT_DELAY_MS

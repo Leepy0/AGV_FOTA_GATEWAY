@@ -102,7 +102,8 @@ public class ApiInputTests
     {
         Assert.Null(ApiGuard.CfgCommandProblem("set ip 192.168.10.107"));
         Assert.Null(ApiGuard.CfgCommandProblem(new string('a', Gateway.Core.Bridge.BridgePacket.PayloadMax)));
-        Assert.Contains("512", ApiGuard.CfgCommandProblem(new string('a', Gateway.Core.Bridge.BridgePacket.PayloadMax + 1)));
-        Assert.NotNull(ApiGuard.CfgCommandProblem(new string('가', 171)));   // UTF-8 3바이트 × 171 = 513
+        Assert.Contains("1024", ApiGuard.CfgCommandProblem(new string('a', Gateway.Core.Bridge.BridgePacket.PayloadMax + 1)));
+        Assert.Null(ApiGuard.CfgCommandProblem(new string('가', 341)));      // UTF-8 3바이트 × 341 = 1023
+        Assert.NotNull(ApiGuard.CfgCommandProblem(new string('가', 342)));   // 3 × 342 = 1026
     }
 }

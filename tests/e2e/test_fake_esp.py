@@ -250,7 +250,7 @@ class Basics(FakeBridgeTest):
         s3 = self.send(fk.T_CFG_CMD, b"reboot")
         res = self.pump(lambda: (lambda r: r if len(r) >= 3 else None)([(s, pl.decode()) for t, s, pl, _ in self.got if t == fk.T_CFG_RESULT]))
         self.assertEqual([s for s, _ in res], [s1, s2, s3])
-        self.assertTrue(res[0][1].startswith("ok hb_ms") and res[1][1].startswith("saved (trial)") and res[2][1] == "rebooting\n")
+        self.assertTrue(res[0][1].startswith("ok hb_ms") and res[1][1].startswith("saved (trial)") and res[2][1] == "rebooting\n>\n")
         self.fresh_hb(lambda h: h["cfg"] == "trial" and h["up"] < 5, 8)
         self.send(fk.T_PING, b"x")
         self.fresh_hb(lambda h: h["cfg"] == "saved")
