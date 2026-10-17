@@ -1,0 +1,144 @@
+@page "/wifi"
+@inject WifiStore Store
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
+@implements IDisposable
+
+<PageTitle>Wi-Fi 분석 · AGV FOTA</PageTitle>
+<h1>Wi-Fi 분석</h1>
+<p class="muted">
+    브리지 heartbeat 의 RSSI·접속 AP(BSSID)·끊김 횟수를 서버가 이어 보며 끊김과 AP 이동(로밍)을 가려냅니다.
+    위치는 호기가 <b>마지막으로 읽은 바닥 RFID 태그</b>입니다 (태그를 읽은 적이 없으면 "(태그 모름)"). 신호가 -75 dBm 이하이면 '약한 신호'로 셉니다.
+    집계는 @(Opt.Value.WifiFlushSec)초 간격으로 기록되며 @(Opt.Value.WifiKeepDays)일 보관합니다.
+</p>
+
+<div class="stats">
+    <span class="muted small">기간</span>
+    @foreach (var (h, label) in Periods)
+    {
+        <button class="stat @(hours == h ? "on" : "")" @onclick="() => SetHours(h)">@label</button>
+    }
+    <select class="grp" value="@(agv?.ToString() ?? "")" @onchange="e => SetAgv(e.Value?.ToString())" aria-label="사건을 볼 호기">
+        <option value="">사건: 전체 호기</option>
+        @foreach (var a in Reg.Snapshot()) { <option value="@a.Id">@a.Id.ToString("D2") 호기</option> }
+    </select>
+    <button @onclick="Refresh">새로 고침</button>
+</div>
+
+<section class="card">
+    <h2>AP 별 <span class="muted small">접속한 AP 마다의 신호 — 약한 신호 비율이 높거나 끊김이 많은 AP 를 먼저 보세요</span></h2>
+    @if (aps.Count == 0) { <div class="empty">아직 집계가 없습니다. heartbeat 가 쌓이면 30초 안에 나타납니다.</div> }
+    else
+    {
+        <div class="table-wrap"><table class="grid">
+            <thead><tr><th>AP (BSSID)</th><th>지금 붙은 호기</th><th>표본</th><th>평균 RSSI</th><th>최저</th><th>약한 신호</th><th>끊김</th><th>이 AP 로 옮겨 옴</th></tr></thead>
+            <tbody>
+                @foreach (var r in aps)
+                {
+                    var now = Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec) && string.Equals(a.Status?.Bssid, r.Bssid, StringComparison.OrdinalIgnoreCase)).Select(a => a.Id).ToList();
+                    <tr>
+                        <td class="mono">@r.Bssid</td>
+                        <td class="small">@(now.Count == 0 ? "" : $"{now.Count}대 ({string.Join(", ", now.Take(8).Select(i => i.ToString("D2")))}{(now.Count > 8 ? " …" : "")})")</td>
+                        <td>@r.Samples.ToString("N0")</td>
+                        <td class="@Cls(r.AvgRssi)">@r.AvgRssi.ToString("0.0")</td>
+                        <td class="@Cls(r.MinRssi)">@r.MinRssi</td>
+                        <td class="@(r.WeakPercent >= 10 ? "warn-text" : "")">@r.WeakPercent.ToString("0.0")%</td>
+                        <td class="@(r.Drops > 0 ? "bad-text" : "")">@r.Drops</td>
+                        <td>@r.Roams</td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+<section class="card">
+    <h2>위치(RFID 태그) 별 <span class="muted small">끊김 → 약한 신호 비율 순 — 위쪽이 음영·로밍 문제 후보 지점</span></h2>
+    @if (spots.Count == 0) { <div class="empty">아직 집계가 없습니다.</div> }
+    else
+    {
+        <div class="table-wrap"><table class="grid">
+            <thead><tr><th>태그</th><th>표본</th><th>평균 RSSI</th><th>최저</th><th>약한 신호</th><th>끊김</th><th>로밍</th><th>붙은 AP 수</th></tr></thead>
+            <tbody>
+                @foreach (var r in spots.Take(shownSpots))
+                {
+                    <tr>
+                        <td class="mono small">@(r.Tag.Length == 0 ? "(태그 모름)" : r.Tag)</td>
+                        <td>@r.Samples.ToString("N0")</td>
+                        <td class="@Cls(r.AvgRssi)">@r.AvgRssi.ToString("0.0")</td>
+                        <td class="@Cls(r.MinRssi)">@r.MinRssi</td>
+                        <td class="@(r.WeakPercent >= 10 ? "warn-text" : "")">@r.WeakPercent.ToString("0.0")%</td>
+                        <td class="@(r.Drops > 0 ? "bad-text" : "")">@r.Drops</td>
+                        <td>@r.Roams</td>
+                        <td>@r.Aps</td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+        @if (spots.Count > shownSpots) { <button @onclick="() => shownSpots += 30">더 보기 (@(spots.Count - shownSpots)곳 더)</button> }
+    }
+</section>
+
+<section class="card">
+    <h2>최근 사건 <span class="muted small">끊김(disc 증가)과 AP 이동(BSSID 변경) — 최근 @events.Count 건</span></h2>
+    @if (events.Count == 0) { <div class="empty">사건이 없습니다.</div> }
+    else
+    {
+        <div class="table-wrap"><table class="grid">
+            <thead><tr><th>시각</th><th>호기</th><th>종류</th><th>이전 AP</th><th>→ 현재 AP</th><th>채널</th><th>RSSI</th><th>태그</th></tr></thead>
+            <tbody>
+                @foreach (var e in events)
+                {
+                    <tr>
+                        <td>@e.At.ToLocalTime().ToString("MM-dd HH:mm:ss")</td>
+                        <td>@e.Agv.ToString("D2")</td>
+                        <td class="@(e.Kind == WifiEventKind.Disconnect ? "bad-text" : "")">@(e.Kind == WifiEventKind.Disconnect ? "끊김" : "로밍")</td>
+                        <td class="mono small">@e.FromBssid</td>
+                        <td class="mono small">@e.ToBssid</td>
+                        <td>@e.Channel</td>
+                        <td class="@Cls(e.Rssi)">@e.Rssi</td>
+                        <td class="mono small">@(e.Tag.Length == 0 ? "" : e.Tag)</td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+@code {
+    static readonly (int h, string label)[] Periods = [(1, "1시간"), (6, "6시간"), (24, "24시간"), (168, "7일")];
+    int hours = 24, shownSpots = 30;
+    int? agv;
+    List<WifiApRow> aps = [];
+    List<WifiSpotRow> spots = [];
+    List<WifiEvent> events = [];
+    System.Threading.Timer? timer;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        Store.Changed += OnChanged;
+        var every = Math.Max(5, Opt.Value.WifiFlushSec) * 1000;
+        timer = new System.Threading.Timer(_ => OnChanged(), null, every, every);     // 집계가 기록되는 주기마다 새로 읽음
+    }
+
+    void OnChanged() => InvokeAsync(() => { Refresh(); StateHasChanged(); });
+    public void Dispose() { Store.Changed -= OnChanged; timer?.Dispose(); }
+
+    void SetHours(int h) { hours = h; Refresh(); }
+    void SetAgv(string? v) { agv = int.TryParse(v, out var n) ? n : null; Refresh(); }
+
+    void Refresh()
+    {
+        var since = DateTime.UtcNow.AddHours(-hours);
+        try
+        {
+            aps = Store.Aps(since);
+            spots = Store.Spots(since);
+            events = Store.Events(since, agv, 200);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException) { /* DB 가 잠겼으면 이전 값을 유지 */ }
+    }
+
+    static string Cls(double rssi) => rssi == 0 ? "" : rssi >= -60 ? "ok-text" : rssi >= -70 ? "" : rssi >= -75 ? "warn-text" : "bad-text";
+}

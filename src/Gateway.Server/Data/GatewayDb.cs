@@ -10,7 +10,7 @@ namespace Gateway.Server.Data;
 /// </summary>
 public sealed class GatewayDb
 {
-    public const int SchemaVersion = 3;
+    public const int SchemaVersion = 4;
     public string Path { get; }
     readonly string _cs;
 
@@ -127,6 +127,25 @@ public sealed class GatewayDb
             using var tx = c.BeginTransaction();
             AddColumn(c, "jobs", "recover", "INTEGER NOT NULL DEFAULT 0");
             Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '3')");
+            tx.Commit();
+        }
+        if (ver < 4)
+        {
+            // v4: Wi-Fi 분석(시간대·위치·AP 별 신호 집계, 끊김·로밍 기록)과 호기 설정 사본·기준값. 기존 표는 건드리지 않는다
+            using var tx = c.BeginTransaction();
+            Exec(c, """
+                CREATE TABLE IF NOT EXISTS wifi_spot(
+                    hour TEXT NOT NULL, tag TEXT NOT NULL, bssid TEXT NOT NULL, n INTEGER NOT NULL, rssi_sum INTEGER NOT NULL,
+                    rssi_min INTEGER NOT NULL, weak INTEGER NOT NULL, drops INTEGER NOT NULL, roams INTEGER NOT NULL, PRIMARY KEY(hour, tag, bssid));
+                CREATE TABLE IF NOT EXISTS wifi_event(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, agv INTEGER NOT NULL, kind TEXT NOT NULL,
+                    from_bssid TEXT NOT NULL, to_bssid TEXT NOT NULL, ch INTEGER NOT NULL, rssi INTEGER NOT NULL, tag TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS ix_wifi_event_at ON wifi_event(at);
+                CREATE TABLE IF NOT EXISTS agv_cfg(
+                    agv INTEGER PRIMARY KEY, taken_at TEXT NOT NULL, raw TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS cfg_baseline(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                """);
+            Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '4')");
             tx.Commit();
         }
     }

@@ -41,6 +41,18 @@
 | `dspb` | 메인보드 부트로더 버전(앱의 버전 응답·부트로더 HELLO 응답에서). 0.5.2 의 `dsp/boot` 는 `1.1.0`, 0.5.1 이전 소스는 `1.0.0`. 아직 모르면 `?`, 앱이 알려 주지 않으면 `-`. 앱 버전이 `?` 로 바뀌어도 마지막 값을 유지 |
 | `dsp` | `U000`·`V000` 에 앱이 답하지 않으면(`app_no_reply`, 버전 조회 무응답) `?` 로 바뀜. `?` 인 동안 60초마다 다시 물어 앱이 살아 있으면 돌아옴 |
 
+### 시각 동기 (브리지 0.8.0+)
+
+| 필드·패킷 | 내용 |
+|---|---|
+| heartbeat `tsync` | 마지막 시각 동기 뒤 경과 초. `-1` = 아직 서버와 맞추지 않음. 이 키가 있으면 시각 동기를 아는 브리지 |
+| heartbeat `ts` | 브리지 시각 (UTC unix ms). 동기된 뒤에만 들어감. 서버가 받은 시각과의 차이 = 편차 |
+| `0x22` TIME_REQ | 브리지 → 서버. `{"t0": 브리지 가동 ms}` |
+| `0x23` TIME | 서버 → 브리지. 응답 `{"t0","t1","t2"}` (t1·t2 = 서버 UTC unix ms) 또는 서버가 먼저 보내는 `{"t2"}`. 브리지는 `t2 + rtt/2` 로 맞춘다 (`rtt = (받은 가동 ms − t0) − (t2 − t1)`, 0~10000 ms 밖이면 버림) |
+
+`cfg json`·`stat json`·`scan`·`nettest`·`discard` 는 CFG_CMD 로 보내는 명령이다 (브리지 0.6.0+ / 0.7.0+). `cfg json`·`stat json` 은 한 줄 JSON,
+응답 끝에는 `>` 줄이 붙는다 (0.6.0+). 게이트웨이는 응답을 요청 seq 로 짝짓고 `>` 줄을 뗀다. `cfg json` 은 `keys` 를 포함해 600바이트쯤이므로 1024바이트 payload 가 필요하다.
+
 게이트웨이는 INFO 를 받으면 직전 상태에 INFO 의 키만 덮어쓰고, heartbeat 를 받으면 전체를 새 값으로 하되 heartbeat 에 없는 `mac`·`ip` 는 직전 값을 남긴다.
 
 ### 메인보드 OTA JSON
@@ -204,6 +216,38 @@
 | `POST /api/agvs/{n}/send` | MAIN_DOWN 수동 전송 `{ "data": "<STX>…<ETX>" }`. 256바이트 이하. 종류 `F`·`R` 프레임은 400 | 200 / 400 / 404 endpoint 없음 / 409 번호 충돌 |
 | `POST /api/agvs/{n}/cfg` | CFG_CMD `{ "data": "set ip …" }`. 1024바이트(UTF-8) 이하 (브리지 0.6.0+. 0.5.x 는 512바이트까지만 받음) | 200 / 400 / 404 / 409 번호 충돌 |
 | `POST /api/agvs/{n}/info` | INFO 요청 | 200 / 400 / 404 |
+| `POST /api/agvs/{n}/cfg/wait` | CFG_CMD 를 보내고 응답을 기다림(최대 20초) `{ "data": "scan" }` → `{ ok, text }` | 200 / 400 / 409 / 504 `{ ok:false, error }` (오프라인·응답 없음) |
+| `POST /api/agvs/{n}/time` | 서버 시각을 브리지에 보냄 (브리지 0.8.0+) | 200 / 400 (미지원 펌웨어) / 404 |
+
+`GET /api/agvs` 의 새 필드(0.5.0): `clockSkewMs`(브리지 − 서버, ms. 미동기·미지원은 null), `clockSynced`, `timeReplies`(서버가 시각 요청에 답한 횟수), `lastTag`(마지막으로 읽은 RFID 태그).
+
+### 호기 설정 (브리지 0.6.0+, 게이트웨이 0.5.0)
+
+| 요청 | 내용 | 응답 |
+|---|---|---|
+| `GET /api/cfg` | `{ baseline, agvs[] }` — 호기별 `agv, takenAt, fw, name, state, differs, values{}, drift[{key,expected,actual}]` | 200 |
+| `POST /api/cfg/collect` | `{ "agvs": [7, 12] }` (생략 = 온라인 전체) 설정을 지금 읽음 → `{ ok, fail }` | 200 / 400 |
+| `PUT /api/cfg/baseline` | `{ "hb_ms": "1000", … }` 기준값을 통째로 바꿈. 호기마다 다른 항목(`agv`·`ip`·`pass`)은 400 | 200 / 400 |
+| `POST /api/cfg/baseline/from-fleet` | 수집된 사본의 항목별 다수결로 기준값을 만듦 | 200 |
+| `GET /api/cfg/{n}/restore` | 보드를 바꿀 때 붙여 넣을 `set` 명령 (텍스트, 비밀번호 제외) | 200 / 404 |
+| `POST /api/cfg/bulk` | `{ agvs, changes:[{key,value}], batchSize }` 일괄 변경 시작. 바꿀 수 있는 항목: ssid mask gw dns dns2 server server_port local_port rfid_dst rfid_port main_baud rfid_baud hb_ms pass | 200 / 400 (입력 오류·이미 실행 중) |
+| `GET /api/cfg/bulk` · `POST /api/cfg/bulk/cancel` | 진행 상태 `{ state, message, batchCount, currentBatch, changes, targets[{agv,state,message}] }` (비밀번호 값은 가려짐) / 취소 | 200 / 404 |
+
+### Wi-Fi 분석
+
+| 요청 | 내용 |
+|---|---|
+| `GET /api/wifi/aps?hours=24` | AP(BSSID) 별 표본 수·평균·최저 RSSI·약한 신호 %·끊김·로밍 |
+| `GET /api/wifi/spots?hours=24` | 위치(마지막 RFID 태그) 별 같은 집계, 끊김 많은 순 |
+| `GET /api/wifi/events?hours=24&agv=7&limit=200` | 끊김(`Disconnect`)·로밍(`Roam`) 기록, 최근 것이 먼저 |
+
+### 브리지 새 버전
+
+| 요청 | 내용 |
+|---|---|
+| `GET /api/bridge/release` | `{ latest, lastCheck, error, manifest, imported, outdated[] }` |
+| `POST /api/bridge/release/check` | 지금 확인 |
+| `POST /api/bridge/release/import` | 최신 앱 이미지를 받아 sha256·크기·앱 헤더 확인 후 펌웨어 목록(ESP)에 올림. 이미 있으면 그 항목. 확인 실패는 400 |
 
 - 세 요청 모두 호기 번호가 1~99 밖이면 400 입니다. `send`·`cfg` 는 `data` 가 비어도 400 입니다.
 
@@ -228,7 +272,7 @@
 | `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` | ACS 위치 보고 |
 | `GET /api/groups` · `/api/groups/list` · `/api/groups/agvs?path=` · `/api/groups/export.csv`, `POST /api/groups/import`, `GET·PUT·DELETE /api/agvs/{n}/group` | 구역 ([ACS_API.md](ACS_API.md)) |
 | `GET /api/acs/inventory/status`, `POST /api/acs/inventory/preview` · `/pull` | ACS 소속 받기 |
-| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 3)·백업 |
+| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 4)·백업 |
 
 ## 메인보드(AGV) OTA 결정 (2026-10-09, 2026-10-10 점검 반영)
 

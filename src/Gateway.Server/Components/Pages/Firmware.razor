@@ -2,10 +2,47 @@
 @inject FirmwareStore Store
 @inject JobService JobSvc
 @inject IJSRuntime JS
+@inject BridgeReleaseService Rel
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
 @implements IDisposable
 
 <PageTitle>펌웨어 · AGV FOTA</PageTitle>
 <h1>펌웨어</h1>
+
+<section class="card">
+    <h2>브리지 새 버전 <span class="muted small">GitHub 릴리스 (bridge.json)</span></h2>
+    @if (Rel.Latest is { } latest)
+    {
+        var have = Rel.AlreadyImported(latest);
+        var outdated = Reg.Snapshot().Where(a => latest.IsOutdated(a.Status?.Fw)).ToList();
+        <p>최신 <b>v@(latest.Version.ToString(3))</b> <span class="muted small">(@(latest.Published == DateTimeOffset.MinValue ? "" : latest.Published.ToLocalTime().ToString("yyyy-MM-dd HH:mm")) · <a href="@latest.PageUrl" target="_blank" rel="noopener">릴리스 페이지</a>)</span>
+            · 구버전 <b>@outdated.Count</b>대@(outdated.Count > 0 ? $" ({string.Join(", ", outdated.Take(12).Select(a => a.Id.ToString("D2")))}{(outdated.Count > 12 ? " …" : "")})" : "")</p>
+        @if (latest.Notes.Length > 0) { <p class="muted small">@latest.Notes</p> }
+        <div class="row-buttons">
+            @if (have is null)
+            {
+                <button class="primary" @onclick="ImportRelease" disabled="@relBusy">@(relBusy ? "가져오는 중…" : $"펌웨어로 가져오기 (v{latest.Version.ToString(3)})")</button>
+            }
+            else
+            {
+                <span class="msg">이미 가져옴: 아래 목록의 v@(have.Version)</span>
+                var onlineOld = outdated.Where(a => a.Online(Opt.Value.OfflineAfterSec)).Select(a => a.Id).ToList();
+                var jobUrl = $"jobs?fw={have.Id}" + (onlineOld.Count > 0 ? "&agvs=" + string.Join(",", onlineOld) : "");
+                <a class="button" href="@jobUrl">배포 작업 만들기@(onlineOld.Count > 0 ? $" (온라인 구버전 {onlineOld.Count}대 선택됨)" : "")</a>
+            }
+            <button @onclick="CheckRelease" disabled="@relBusy">지금 확인</button>
+        </div>
+    }
+    else
+    {
+        <p class="muted">@(Rel.Error ?? "아직 확인하지 않았습니다.")</p>
+        <div class="row-buttons"><button @onclick="CheckRelease" disabled="@relBusy">지금 확인</button></div>
+    }
+    @if (Rel.Latest is not null && Rel.Error is not null) { <p class="msg warn">@Rel.Error</p> }
+    @if (relMsg is not null) { <div class="msg @(relErr ? "err" : "")">@relMsg</div> }
+    <p class="muted small">@(Rel.LastCheck == default ? "" : $"마지막 확인 {Rel.LastCheck.ToLocalTime():HH:mm:ss} · ")주소 <span class="mono">@Rel.ManifestUrl</span> — 받은 이미지는 sha256·크기·앱 헤더를 확인한 뒤에만 목록에 올립니다.</p>
+</section>
 
 <section class="card">
     <h2>업로드</h2>
@@ -80,12 +117,31 @@
     // 다른 PC·REST 로 올린 펌웨어, 작업 상태 변화(삭제 버튼 활성)를 바로 반영
     protected override void OnInitialized()
     {
-        Store.Changed += OnChanged; JobSvc.Changed += OnChanged;
+        Store.Changed += OnChanged; JobSvc.Changed += OnChanged; Rel.Changed += OnChanged;
         Load();
     }
     void Load() { list = Store.List(); jobList = JobSvc.List(); }
     void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
-    public void Dispose() { Store.Changed -= OnChanged; JobSvc.Changed -= OnChanged; }
+    public void Dispose() { Store.Changed -= OnChanged; JobSvc.Changed -= OnChanged; Rel.Changed -= OnChanged; }
+
+    bool relBusy, relErr;
+    string? relMsg;
+
+    async Task CheckRelease()
+    {
+        relBusy = true; relMsg = null; relErr = false;
+        try { await Rel.CheckAsync(); relMsg = Rel.Error is null ? $"최신 v{Rel.Latest?.Version.ToString(3)}" : null; }
+        finally { relBusy = false; }
+    }
+
+    async Task ImportRelease()
+    {
+        relBusy = true; relMsg = null; relErr = false;
+        try { var e = await Rel.ImportLatestAsync(); relMsg = $"가져옴: 브리지 {e.Version} — {e.FilesText}"; }
+        catch (InvalidOperationException ex) { relMsg = ex.Message; relErr = true; }
+        catch (Exception ex) { relMsg = "가져오기 실패: " + ex.Message; relErr = true; }
+        finally { relBusy = false; Load(); }
+    }
 
     // 이 펌웨어를 쓰는 끝나지 않은 작업 이름 (확인창 전 안내용 — 실제 판정은 DeleteFirmwareIfUnused 가 원자적으로)
     List<string> ActiveJobNames(string id) => JobSvc.List().Where(j => j.FirmwareId == id && j.IsActive).Select(j => j.Name).ToList();

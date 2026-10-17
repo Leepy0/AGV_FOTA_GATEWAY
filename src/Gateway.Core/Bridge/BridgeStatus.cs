@@ -13,8 +13,12 @@ public sealed record BridgeStatus(
     long Disconnects, long MainRx, long MainTx, long RfidRx, long UartErrors, long NetOffline, long NetErrors,
     long Heap, string Cfg, bool SetupAp,
     string Dsp, string DspBoot, string DspBuild, string DspState, long? StagedJob, string? StagedVer,
-    string Mac, string Ip, string Raw)
+    string Mac, string Ip, string Raw,
+    long TsMs = 0, long TsyncAgeSec = 0, bool HasClock = false, int Reason = 0)
 {
+    /// <summary>시각 동기를 아는 브리지(0.8.0+)이고 시각을 서버에서 받아 맞춘 상태 — heartbeat 의 ts(UTC unix ms)가 믿을 만함</summary>
+    public bool ClockSynced => HasClock && TsMs >= BridgeClock.MinPlausibleUnixMs;
+
     public static BridgeStatus? Parse(ReadOnlySpan<byte> json)
     {
         var raw = System.Text.Encoding.UTF8.GetString(json);
@@ -33,7 +37,8 @@ public sealed record BridgeStatus(
                 Num(r, "disc"), Num(r, "m_rx"), Num(r, "m_tx"), Num(r, "r_rx"), Num(r, "u_err"), Num(r, "n_off"), Num(r, "n_err"),
                 Num(r, "heap"), Str(r, "cfg"), Num(r, "ap") != 0 || Num(r, "setup") != 0,
                 Str(r, "dsp"), Str(r, "dspb"), Str(r, "dsp_build"), Str(r, "dsp_st"), stagedJob, stagedVer,
-                Str(r, "mac"), Str(r, "ip"), raw);
+                Str(r, "mac"), Str(r, "ip"), raw,
+                Num(r, "ts"), Num(r, "tsync"), r.TryGetProperty("tsync", out _), (int)Num(r, "reason"));
         }
         catch (JsonException)
         {

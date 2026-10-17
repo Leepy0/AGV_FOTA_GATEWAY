@@ -105,7 +105,7 @@ class Server:
 
     def start(self, dotnet):
         args = [dotnet, self.dll, "--urls", self.base, f"--Gateway:DataDir={self.data}", f"--Gateway:UdpPort={self.udp}",
-                "--Gateway:RfidPort=0", f"--Gateway:OfflineAfterSec={self.offline_sec}", "--Update:Enabled=false",
+                "--Gateway:RfidPort=0", f"--Gateway:OfflineAfterSec={self.offline_sec}", "--Gateway:WifiFlushSec=2", "--Update:Enabled=false",
                 "--Logging:LogLevel:Default=Information", "--Logging:LogLevel:Microsoft.AspNetCore=Warning"]
         env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1", ASPNETCORE_ENVIRONMENT="Production")
         self.out = open(self.log, "w", encoding="utf-8")
@@ -657,6 +657,128 @@ def s11_cfg_trial(ctx):
     return f"save→reboot→trial→{conf[0]['by']} 로 {t:.1f}초 만에 saved (명령 {results})"
 
 
+def s13_clock(ctx):
+    """시각 동기: 브리지가 서버에 묻고(reply), 틀린 시계는 서버가 편차를 보고 먼저 보낸다(push). 시각 동기를 모르는 구 펌웨어는 제외"""
+    fa = ctx.fake("s13a", [31], "--fw", "0.8.0", "--clock-first-req", "0.5", "--up-start", "5")
+    fb = ctx.fake("s13b", [32], "--fw", "0.8.0", "--clock-wrong-ms", "5000", "--clock-no-req", "--up-start", "5")
+    ctx.fake("s13c", [33], "--fw", "0.7.0")
+    ctx.wait_online([31, 32, 33])
+    ev = ctx.wait(lambda: fa.ev("time_sync", 31), 20, "31 호기가 서버에 시각을 물어 맞춤")
+    check(ev[0]["kind"] == "reply", f"처음 동기가 reply 가 아님: {ev[0]}")
+    a = ctx.wait(lambda: (lambda x: x if x and x.get("clockSynced") and x.get("clockSkewMs") is not None else None)(ctx.agv(31)), 15, "서버가 31 호기 편차를 봄")
+    check(a["timeReplies"] >= 1, f"서버가 시각 요청에 답한 횟수 {a['timeReplies']}")
+    check(abs(a["clockSkewMs"]) < 1000, f"31 호기 편차 {a['clockSkewMs']} ms")
+
+    # 32 호기: +5초 틀린 채 맞춘 줄 알고 서버에 묻지 않음 → 서버가 heartbeat 의 ts 로 편차를 보고 시각을 먼저 보낸다
+    pushed = ctx.wait(lambda: fb.ev("time_sync", 32), 20, "서버가 32 호기에 시각을 먼저 보냄")
+    check(pushed[0]["kind"] == "push", f"32 호기 동기 방식 {pushed[0]['kind']}")
+    fixed = ctx.wait(lambda: (lambda x: x if x and x.get("clockSkewMs") is not None and abs(x["clockSkewMs"]) < 1000 else None)(ctx.agv(32)), 15, "32 호기 편차가 1초 안으로 줄어듦")
+
+    # 화면의 "시각 동기" = POST /api/agvs/{n}/time
+    n = len(fa.ev("time_sync", 31))
+    st, body = ctx.api.post("/api/agvs/31/time")
+    check(st == 200, f"수동 시각 동기 {st} {body}")
+    ctx.wait(lambda: len(fa.ev("time_sync", 31)) > n, 10, "수동으로 보낸 시각이 도착")
+
+    # 0.7.0 은 시각 동기를 모른다: 거부, 편차 없음
+    st, body = ctx.api.post("/api/agvs/33/time")
+    check(st == 400 and "0.8.0" in str(body), f"구 펌웨어 시각 동기 거부: {st} {body}")
+    old = ctx.agv(33)
+    check(old["clockSkewMs"] is None and not old["clockSynced"], f"구 펌웨어에 편차가 보임: {old}")
+    return f"31 reply(편차 {a['clockSkewMs']} ms) · 32 push(+5초 → {fixed['clockSkewMs']} ms) · 수동 동기 도착 · 0.7.0 거부"
+
+
+def s14_diag(ctx):
+    """원격 진단: cfg/wait 로 설정·상태·AP 스캔·ping 을 읽는다. 0.5.5 는 텍스트·모르는 명령, 끝 표시 줄은 서버가 뗀다"""
+    ctx.fake("s14a", [34], "--fw", "0.8.0")
+    ctx.fake("s14b", [35], "--fw", "0.5.5")
+    ctx.wait_online([34, 35])
+
+    def ask(agv, cmd):
+        return ctx.api.post(f"/api/agvs/{agv}/cfg/wait", {"data": cmd})
+
+    st, r = ask(34, "cfg json")
+    check(st == 200 and r["ok"], f"cfg json {st} {r}")
+    check(not r["text"].rstrip().endswith("\n>"), "응답 끝 표시 줄('>')이 남아 있음")
+    js = json.loads(r["text"])
+    check(js["fw"] == "0.8.0" and js["cfg"]["agv"] == 34 and js["state"] == "saved", f"cfg json 내용: {js}")
+    st, r = ask(34, "stat json")
+    stj = json.loads(r["text"])
+    check(stj["wifi"]["up"] is True and stj["setup"]["name"].startswith("AGVBR-34"), f"stat json 내용: {stj}")
+    st, r = ask(34, "scan")
+    aps = json.loads(r["text"])
+    check(aps[0]["ssid"] == "AGV_WIFI" and aps[0]["auth"] == "wpa2", f"scan: {aps}")
+    st, r = ask(34, "nettest")
+    check("3/3 ok" in r["text"], f"nettest: {r}")
+
+    st, r = ask(35, "cfg json")                                 # 0.5.5: 인자를 무시하고 텍스트
+    check(st == 200 and r["text"].startswith("agv=35 "), f"0.5.5 cfg json: {r}")
+    st, r = ask(35, "scan")
+    check(r["text"].startswith("unknown command 'scan'"), f"0.5.5 scan: {r}")
+
+    st, r = ask(98, "stat")                                     # 모르는 호기
+    check(st == 504 and r["ok"] is False, f"모르는 호기: {st} {r}")
+    st, r = ctx.api.post("/api/agvs/34/cfg/wait", {"data": "x" * 1100})
+    check(st == 400, f"1024바이트 초과 명령 거부: {st}")
+    return "cfg json·stat json·scan·nettest 응답 확인, 0.5.5 는 텍스트·unknown command, 모르는 호기 504"
+
+
+def s15_cfg_fleet(ctx):
+    """호기 설정 자동 수집 → 기준값(다수결)·드리프트 → 일괄 변경(2대씩, 재부팅·확정·확인)"""
+    ctx.fake("s15a", [41, 42], "--fw", "0.8.0", "--confirm-sec", "60")
+    ctx.fake("s15b", [43], "--fw", "0.8.0", "--hb", "0.5", "--confirm-sec", "60")        # 43: hb_ms 500 (다른 호기는 1000)
+    ctx.wait_online([41, 42, 43])
+    ctx.wait(lambda: {a["agv"] for a in ctx.api.get("/api/cfg")["agvs"]} >= {41, 42, 43}, 40, "설정이 자동으로 수집됨 (처음 보인 호기)")
+
+    st, r = ctx.api.post("/api/cfg/baseline/from-fleet")
+    check(st == 200 and r["baseline"]["hb_ms"] == "1000", f"다수결 기준값: {st} {r}")
+    drift = {a["agv"]: [d["key"] for d in a["drift"]] for a in ctx.api.get("/api/cfg")["agvs"]}
+    check(drift[41] == [] and drift[42] == [] and drift[43] == ["hb_ms"], f"드리프트: {drift}")
+
+    # 입력 검사
+    for body, why in (({"agvs": [41], "changes": [{"key": "ip", "value": "1.2.3.4"}]}, "ip 는 호기마다 달라 일괄 불가"),
+                      ({"agvs": [41], "changes": []}, "바꿀 항목 없음"),
+                      ({"agvs": [], "changes": [{"key": "hb_ms", "value": "500"}]}, "대상 없음"),
+                      ({"agvs": [41], "changes": [{"key": "hb_ms", "value": "500"}], "batchSize": 99}, "묶음 크기 범위")):
+        st, resp = ctx.api.post("/api/cfg/bulk", body)
+        check(st == 400, f"{why}: {st} {resp}")
+
+    # 기준값(hb_ms 1000)으로 맞추면서 dns 도 바꿈 — 2대씩 두 묶음
+    st, run = ctx.api.post("/api/cfg/bulk", {"agvs": [41, 42, 43], "changes": [{"key": "hb_ms", "value": "1000"}, {"key": "dns", "value": "192.168.10.1"}], "batchSize": 2})
+    check(st == 200, f"일괄 변경 시작: {st} {run}")
+    st, again = ctx.api.post("/api/cfg/bulk", {"agvs": [41], "changes": [{"key": "hb_ms", "value": "900"}]})
+    check(st == 400, f"실행 중에 또 시작: {st} {again}")
+    final = ctx.wait(lambda: (lambda r: r if r["state"] != "Running" else None)(ctx.api.get("/api/cfg/bulk")), 150, "일괄 변경 끝", interval=1)
+    detail = [(t["agv"], t["state"], t["message"]) for t in final["targets"]]
+    check(final["state"] == "Done" and all(t["state"] == "Done" for t in final["targets"]), f"일괄 변경 결과 {final['state']} {final['message']}: {detail}")
+    check(final["batchCount"] == 2, f"묶음 수 {final['batchCount']}")
+
+    st, res = ctx.api.post("/api/cfg/collect", {"agvs": [41, 42, 43]})
+    check(st == 200 and res["ok"] == 3, f"다시 읽기: {st} {res}")
+    cfg = {a["agv"]: a for a in ctx.api.get("/api/cfg")["agvs"]}
+    shown = {k: (v["values"]["dns"], v["values"]["hb_ms"]) for k, v in cfg.items()}
+    check(all(c["values"]["dns"] == "192.168.10.1" and c["values"]["hb_ms"] == "1000" for c in cfg.values()), f"반영 안 됨: {shown}")
+    check(not [d for d in cfg[43]["drift"] if d["key"] == "hb_ms"], "43 호기 hb_ms 드리프트가 남음")
+    return f"자동 수집 3대 · 다수결 기준값 · 43 hb_ms 드리프트 → 일괄 변경 {final['batchCount']}묶음 완료, 값 반영 확인"
+
+
+def s16_wifi(ctx):
+    """Wi-Fi 분석: heartbeat 의 BSSID 변경 → 로밍, disc 증가 → 끊김. AP 별 집계"""
+    ctx.fake("s16", [51], "--fw", "0.8.0", "--roam-at", "4", "--disc-at", "9")
+    ctx.wait_online([51])
+    ev = ctx.wait(lambda: (lambda e: e if {x["kind"] for x in e} >= {"Roam", "Disconnect"} else None)(ctx.api.get("/api/wifi/events?hours=1&agv=51")), 60, "로밍·끊김 사건이 기록됨", interval=1)
+    roam = next(x for x in ev if x["kind"] == "Roam")
+    check(roam["fromBssid"] == "02:00:00:00:00:01" and roam["toBssid"] == "02:00:00:00:00:02" and roam["channel"] == 11, f"로밍 내용: {roam}")
+    aps = {a["bssid"]: a for a in ctx.api.get("/api/wifi/aps?hours=1")}
+    check({"02:00:00:00:00:01", "02:00:00:00:00:02"} <= set(aps), f"AP 집계: {list(aps)}")
+    check(aps["02:00:00:00:00:02"]["roams"] >= 1 and aps["02:00:00:00:00:02"]["samples"] > 0, f"새 AP 집계: {aps['02:00:00:00:00:02']}")
+    spots = ctx.api.get("/api/wifi/spots?hours=1")
+    check(spots and spots[0]["tag"] == "", f"태그를 읽은 적이 없으면 위치 키가 비어 있음: {spots}")
+    other = ctx.api.get("/api/wifi/events?hours=1&agv=52")
+    check(other == [], f"다른 호기 필터: {other}")
+    return f"로밍 {roam['fromBssid'][-2:]}→{roam['toBssid'][-2:]} (ch {roam['channel']}) · 끊김 기록 · AP {len(aps)}곳 집계"
+
+
 SCENARIOS = [
     (1, "메인보드 Approve 3대", s1_approve),
     (2, "메인보드 Immediate", s2_immediate),
@@ -670,6 +792,10 @@ SCENARIOS = [
     (10, "수동 전송 F/R·다른 출처 403", s10_manual_guard),
     (11, "원격 설정 trial → saved", s11_cfg_trial),
     (12, "구 앱·침묵 앱 일반 적용 → app_no_fwup·app_no_reply", s12_old_app),
+    (13, "시각 동기 (요청 응답·서버가 먼저 보정·구 펌웨어 제외)", s13_clock),
+    (14, "원격 진단 cfg/wait (cfg json·stat json·scan·nettest)", s14_diag),
+    (15, "호기 설정 수집·기준값·드리프트·일괄 변경", s15_cfg_fleet),
+    (16, "Wi-Fi 분석 (로밍·끊김·AP 집계)", s16_wifi),
 ]
 
 

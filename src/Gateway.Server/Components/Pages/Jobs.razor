@@ -186,6 +186,9 @@
 @code {
     [SupplyParameterFromQuery] public int? Agv { get; set; }
     [SupplyParameterFromQuery] public string? Group { get; set; }
+    /// <summary>펌웨어 화면·호기 현황의 "배포 작업 만들기"에서 넘어올 때: 미리 고를 펌웨어 id, 호기 목록(쉼표)</summary>
+    [SupplyParameterFromQuery(Name = "fw")] public string? FwQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "agvs")] public string? AgvsQuery { get; set; }
     readonly string[] casc = new string[AgvGroup.Levels];
 
     string fwId = "", name = "", extraTargets = "", when = "now";
@@ -208,6 +211,9 @@
     {
         JobSvc.Changed += OnChanged; Reg.Changed += OnChanged; Groups.Changed += OnChanged;
         if (Agv is int a && a is >= 1 and <= 99) targets.Add(a);
+        if (!string.IsNullOrEmpty(FwQuery) && Store.Get(FwQuery) is not null) fwId = FwQuery;
+        foreach (var s in (AgvsQuery ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (int.TryParse(s, out var q) && q is >= 1 and <= 99) targets.Add(q);
         for (int i = 0; i < AgvGroup.Levels; i++) casc[i] = "";
         if (Group is not null)
         {

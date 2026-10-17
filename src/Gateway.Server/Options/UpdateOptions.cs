@@ -33,4 +33,8 @@ public sealed class UpdateOptions
     /// <summary>새 버전을 받으면 배포 작업이 없을 때 자동으로 적용(재시작). ACS 중계가 연결돼 있으면 미루고 화면에서 적용. false 면 화면에서 "적용"</summary>
     public bool AutoApply { get; set; } = false;
     public string ServiceName { get; set; } = "AgvFotaGateway";
+    /// <summary>브리지 펌웨어 릴리스 저장소 — {BridgeBaseUrl}/releases/latest/download/bridge.json 으로 최신 버전을 확인한다 (같은 출처 제한·프록시 사용)</summary>
+    public string BridgeBaseUrl { get; set; } = "https://github.com/Leepy0/AGV_Wifi_Bridge";
+    /// <summary>브리지 새 버전 확인 주기 (분, 0 = 시작 때와 화면의 "확인" 때만)</summary>
+    public int BridgeCheckIntervalMin { get; set; } = 360;
 }

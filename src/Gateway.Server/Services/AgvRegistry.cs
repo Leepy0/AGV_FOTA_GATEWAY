@@ -33,6 +33,21 @@ public sealed class AgvState
     public DateTime ConflictWarnedAt { get; set; }
     /// <summary>cfg=trial / ota=pending 확정용 자동 PING 을 마지막으로 보낸 시각 (호기당 5초에 1회)</summary>
     public DateTime LastAutoPing { get; set; }
+
+    /// <summary>시각 동기 (브리지 0.8.0+): heartbeat ts − 서버가 받은 시각 (ms, 양수 = 브리지가 앞섬). 미동기·구 펌웨어면 null</summary>
+    public long? ClockSkewMs { get; set; }
+    public DateTime ClockSkewAt { get; set; }
+    /// <summary>서버가 시각을 먼저 보낸 마지막 시각 (자동 보정 빈도 제한·화면 "시각 동기")</summary>
+    public DateTime LastTimePush { get; set; }
+    /// <summary>브리지의 TIME_REQ 에 답한 횟수와 마지막 시각</summary>
+    public long TimeReplies;
+    public DateTime LastTimeReply { get; set; }
+
+    /// <summary>마지막으로 읽은 바닥 RFID 태그(위치 대용)와 읽은 시각 — RFID 포트로 받는다</summary>
+    public string LastTag { get; set; } = "";
+    public DateTime LastTagAt { get; set; }
+    /// <summary>Wi-Fi 분석에 쓸 위치 키: 최근 30분 안에 읽은 태그, 없으면 ""</summary>
+    public string LocationTag => LastTag.Length > 0 && (DateTime.UtcNow - LastTagAt).TotalMinutes < 30 ? LastTag : "";
 }
 
 /// <summary>

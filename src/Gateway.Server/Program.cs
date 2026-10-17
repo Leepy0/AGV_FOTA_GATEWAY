@@ -46,11 +46,22 @@ builder.Services.AddSingleton(sp => new GatewayDb(dataDir));
 builder.Services.AddSingleton(sp => new AgvRegistry(sp.GetRequiredService<GatewayDb>()));
 builder.Services.AddSingleton<BridgeUdpService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<BridgeUdpService>());
+builder.Services.AddSingleton<ICfgChannel>(sp => sp.GetRequiredService<BridgeUdpService>());
+// 운영 기능: Wi-Fi 음영·로밍 분석, 호기 설정 사본·드리프트·일괄 변경, 브리지 새 버전 확인
+builder.Services.AddSingleton<WifiStore>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WifiStore>());
+builder.Services.AddSingleton(sp => new CfgStore(sp.GetRequiredService<GatewayDb>(), sp.GetRequiredService<AgvRegistry>(), sp.GetRequiredService<BridgeUdpService>(),
+    sp.GetRequiredService<ICfgChannel>(), sp.GetRequiredService<IOptions<GatewayOptions>>(), sp.GetRequiredService<ILogger<CfgStore>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CfgStore>());
+builder.Services.AddSingleton<CfgBulkService>();
 builder.Services.AddSingleton<AcsRelayService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AcsRelayService>());
 builder.Services.AddSingleton(sp => new FirmwareStore(dataDir, sp.GetRequiredService<GatewayDb>(), sp.GetRequiredService<ILogger<FirmwareStore>>()));
 builder.Services.AddSingleton<JobService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<JobService>());
+builder.Services.AddSingleton(sp => new BridgeReleaseService(sp.GetRequiredService<IOptions<UpdateOptions>>(), sp.GetRequiredService<FirmwareStore>(),
+    sp.GetRequiredService<ILogger<BridgeReleaseService>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<BridgeReleaseService>());
 builder.Services.AddSingleton<TraceLog>();
 builder.Services.AddSingleton<AgvPositionStore>();
 builder.Services.AddHttpClient<AcsRestPublisher>();
@@ -102,7 +113,17 @@ api.MapGet("/agvs", (AgvRegistry reg, IOptions<GatewayOptions> o) =>
         Dsp = a.Status?.Dsp, DspBoot = a.Status?.DspBoot, DspState = a.Status?.DspState, a.Status?.StagedJob, a.Status?.StagedVer,
         a.MainUp, a.MainDown, a.SeqLoss, a.LastFrame, a.StatusRaw,
         Conflict = a.InConflict(o.Value.OfflineAfterSec), ConflictEndPoint = a.ConflictEndPoint?.ToString(), a.ConflictAt, a.ConflictCount,
+        // 시각 동기 (브리지 0.8.0+): 편차 ms(+ = 브리지가 앞섬), 미동기·구 펌웨어는 null
+        ClockSkewMs = a.ClockSkewMs, ClockSynced = a.Status?.ClockSynced ?? false, a.TimeReplies, LastTag = a.LastTag.Length > 0 ? a.LastTag : null,
     }));
+api.MapPost("/agvs/{agv:int}/time", (int agv, BridgeUdpService link, AgvRegistry reg) =>
+{
+    // 서버 시각을 브리지에 보낸다 (브리지 0.8.0+)
+    if (agv is < 1 or > 99) return Results.BadRequest("호기 번호는 1~99");
+    if (reg.Get(agv)?.Status is not { } st) return Results.NotFound("호기 endpoint 없음");
+    if (!st.HasClock) return Results.BadRequest("이 브리지는 시각 동기를 지원하지 않습니다 (0.8.0 이상 필요)");
+    return link.SendTime(agv) ? Results.Ok() : Results.NotFound("보내지 못했습니다");
+});
 api.MapGet("/firmware", (FirmwareStore fw) => fw.List());
 api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
 {
@@ -174,6 +195,71 @@ api.MapPost("/agvs/{agv:int}/cfg", (int agv, SendRequest r, BridgeUdpService lin
     if (ApiGuard.CfgCommandProblem(cmd) is { } tooLong) return Results.BadRequest(tooLong);
     return link.SendCfg(agv, cmd) ? Results.Ok() : Results.NotFound("호기 endpoint 없음");
 });
+// 명령을 보내고 브리지의 응답 글을 돌려받는다 (최대 20초 — scan 2~3초, nettest 수 초). 원격 진단·스크립트용
+api.MapPost("/agvs/{agv:int}/cfg/wait", async (int agv, SendRequest r, ICfgChannel ch, AgvRegistry reg) =>
+{
+    if (ApiGuard.ManualSendRefusal(agv, reg.Get(agv), opt.OfflineAfterSec) is { } no) return no;
+    if (string.IsNullOrWhiteSpace(r.Data)) return Results.BadRequest("data 가 비어 있습니다");
+    var cmd = r.Data.Trim();
+    if (ApiGuard.CfgCommandProblem(cmd) is { } tooLong) return Results.BadRequest(tooLong);
+    var reply = await ch.RequestCfgAsync(agv, cmd, TimeSpan.FromSeconds(20));
+    return reply.Ok ? Results.Ok(new { ok = true, text = reply.Text }) : Results.Json(new { ok = false, error = reply.Error }, statusCode: 504);
+});
+// ───── 브리지 새 버전 (GitHub 릴리스의 bridge.json) ─────
+api.MapGet("/bridge/release", (BridgeReleaseService b, AgvRegistry reg, FirmwareStore fw) => new
+{
+    latest = b.Latest is { } l ? new { version = l.Version.ToString(3), l.Tag, l.Published, l.PageUrl, sha256 = l.AppSha256, l.AppSize, l.Notes } : null,
+    b.LastCheck, b.Error, manifest = b.ManifestUrl,
+    imported = b.Latest is { } l2 ? b.AlreadyImported(l2)?.Id : null,
+    outdated = b.Latest is { } l3 ? reg.Snapshot().Where(a => l3.IsOutdated(a.Status?.Fw)).Select(a => new { a.Id, Fw = a.Status!.Fw, Online = a.Online(opt.OfflineAfterSec) }) : null,
+});
+api.MapPost("/bridge/release/check", async (BridgeReleaseService b) =>
+{
+    await b.CheckAsync();
+    return Results.Ok(new { latest = b.Latest?.Version.ToString(3), b.Error });
+});
+api.MapPost("/bridge/release/import", async (BridgeReleaseService b) =>
+{
+    try { return Results.Ok(await b.ImportLatestAsync()); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
+});
+// ───── Wi-Fi 음영·로밍 (heartbeat 의 RSSI·BSSID·끊김 + 마지막 RFID 태그) ─────
+api.MapGet("/wifi/aps", (WifiStore w, int? hours) => w.Aps(DateTime.UtcNow.AddHours(-Math.Clamp(hours ?? 24, 1, 24 * 30))));
+api.MapGet("/wifi/spots", (WifiStore w, int? hours) => w.Spots(DateTime.UtcNow.AddHours(-Math.Clamp(hours ?? 24, 1, 24 * 30))));
+api.MapGet("/wifi/events", (WifiStore w, int? hours, int? agv, int? limit) => w.Events(DateTime.UtcNow.AddHours(-Math.Clamp(hours ?? 24, 1, 24 * 30)), agv, limit ?? 200));
+// ───── 호기 설정 사본·기준값·드리프트·일괄 변경 (브리지 0.6.0+ 의 cfg json) ─────
+api.MapGet("/cfg", (CfgStore s) => new
+{
+    baseline = s.Baseline(),
+    agvs = s.Snapshots().Select(e => new { e.Agv, e.TakenAt, e.Snapshot.Fw, e.Snapshot.Name, e.Snapshot.State, e.Snapshot.Differs, values = e.Snapshot.Values, drift = s.DriftOf(e.Agv) }),
+});
+api.MapPost("/cfg/collect", async (CfgCollectRequest? r, CfgStore s, AgvRegistry reg) =>
+{
+    var ids = r?.Agvs is { Count: > 0 } l ? l : reg.Snapshot().Where(a => a.Online(opt.OfflineAfterSec)).Select(a => a.Id).ToList();
+    if (ids.Any(a => a is < 1 or > 99)) return Results.BadRequest("호기 번호는 1~99");
+    var (ok, fail) = await s.CollectManyAsync(ids);
+    return Results.Ok(new { ok, fail });
+});
+api.MapPut("/cfg/baseline", (Dictionary<string, string>? values, CfgStore s) =>
+{
+    if (values is null) return Results.BadRequest("본문(JSON 객체)이 없습니다");
+    var bad = values.Keys.FirstOrDefault(k => !Gateway.Core.Bridge.CfgSnapshot.FleetKeys.Contains(k));
+    if (bad is not null) return Results.BadRequest($"기준값으로 둘 수 없는 항목: {bad} (호기마다 다른 agv·ip·pass 는 제외)");
+    s.SetBaseline(values);
+    return Results.Ok(s.Baseline());
+});
+api.MapPost("/cfg/baseline/from-fleet", (CfgStore s) => Results.Ok(new { items = s.SetBaselineFromFleet(), baseline = s.Baseline() }));
+api.MapGet("/cfg/{agv:int}/restore", (int agv, CfgStore s) =>
+    s.Get(agv) is { } e ? Results.Text(string.Join("\n", Gateway.Core.Bridge.CfgDrift.RestoreCommands(e.Snapshot)) + "\n", "text/plain; charset=utf-8") : Results.NotFound("수집된 설정 없음"));
+api.MapGet("/cfg/bulk", (CfgBulkService b) => b.Current is { } r ? Results.Ok(BulkApi.View(r)) : Results.NotFound());
+api.MapPost("/cfg/bulk", (BulkRequest? r, CfgBulkService b) =>
+{
+    if (r?.Changes is null || r.Agvs is null) return Results.BadRequest("agvs, changes 가 필요합니다");
+    var changes = r.Changes.Select(c => new BulkChange(c.Key ?? "", c.Value ?? "")).ToList();
+    try { return Results.Ok(BulkApi.View(b.Start(r.Agvs, changes, r.BatchSize ?? 5))); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
+});
+api.MapPost("/cfg/bulk/cancel", (CfgBulkService b) => { b.Cancel(); return Results.Ok(); });
 api.MapGet("/update", (UpdateService u) => new { current = u.CurrentText, u.Channel, u.Commit, stage = u.Stage.ToString(), u.Message, latest = u.Latest?.Tag, sha256 = u.Latest?.Sha256, u.LastCheck, manifest = u.ManifestUrl, old = u.OldVersionText });
 api.MapPost("/update/check", async (UpdateService u) => { var i = await u.CheckAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message, latest = i?.Tag }); });
 api.MapPost("/update/download", async (UpdateService u) => { await u.DownloadAsync(); return Results.Ok(new { stage = u.Stage.ToString(), u.Message }); });
@@ -256,6 +342,20 @@ record JobCreateRequest(string? Name, string? FirmwareId, List<int>? Targets, Da
                         bool? Recover = null);
 record GroupSetRequest(string? ProductFamily, string? Floor, string? Line, string? Process, string? Route, string? Name, string? Note);
 record SendRequest(string? Data);
+record CfgCollectRequest(List<int>? Agvs);
+record BulkChangeDto(string? Key, string? Value);
+record BulkRequest(List<int>? Agvs, List<BulkChangeDto>? Changes, int? BatchSize);
+
+/// <summary>일괄 변경 REST 응답 — 비밀번호 값은 가린다</summary>
+static class BulkApi
+{
+    internal static object View(BulkRun r) => new
+    {
+        r.Id, r.StartedAt, r.FinishedAt, State = r.State.ToString(), r.Message, r.BatchSize, r.BatchCount, r.CurrentBatch,
+        Changes = r.Changes.Select(c => new { c.Key, Value = c.Shown }),
+        Targets = r.Targets.Select(t => new { t.Agv, State = t.State.ToString(), t.Message }),
+    };
+}
 record PositionInject(double? X, double? Y, double? Heading, string? State, double? Speed, bool? Rotating, string? LastTag, string? Map);
 
 /// <summary>POST /api/jobs 입력 검사</summary>

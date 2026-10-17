@@ -3,6 +3,9 @@
 @inject BridgeUdpService Link
 @inject AgvGroupStore Groups
 @inject IOptions<GatewayOptions> Opt
+@inject BridgeReleaseService Rel
+@inject ICfgChannel Ch
+@inject IJSRuntime JS
 @implements IDisposable
 
 <PageTitle>호기 현황 · AGV FOTA</PageTitle>
@@ -21,6 +24,21 @@ else
             ⚠ 같은 호기 번호를 쓰는 장치가 둘 있습니다:
             @foreach (var c in conflicts) { <span class="badge bad" title="충돌 @(c.ConflictCount)회 · 마지막 @Ago(c.ConflictAt)">@c.Id.ToString("D2") 호기 — 사용 중 @c.EndPoint / 새 주소 @c.ConflictEndPoint</span> }
             <br /><span class="small">처음 붙어 있던 주소로 계속 중계합니다. 충돌이 풀릴 때까지 이 호기는 배포 작업 대상·수동 전송에서 제외됩니다. 한쪽 브리지의 agv 번호를 고치세요.</span>
+        </div>
+    }
+    @if (Rel.Latest is { } latest && all.Count(a => latest.IsOutdated(a.Status?.Fw)) is var oldN and > 0)
+    {
+        <div class="banner info">
+            브리지 새 버전 <b>v@(latest.Version.ToString(3))</b> — 구버전 @oldN 대 (온라인 @all.Count(a => On(a) && latest.IsOutdated(a.Status?.Fw)) 대).
+            <a href="firmware">펌웨어 화면</a> 에서 가져와 배포 작업을 만드세요.
+        </div>
+    }
+    @if (clockBad.Count > 0)
+    {
+        <div class="banner err" role="alert">
+            ⚠ 브리지 시각이 서버와 @Opt.Value.ClockSkewWarnMs ms 넘게 다르거나 맞춰지지 않은 호기 @clockBad.Count 대:
+            @foreach (var c in clockBad.Take(10)) { <span class="badge bad">@c.Id.ToString("D2") @ClockText(c)</span> }
+            <span class="small">@(Opt.Value.ClockAutoSync ? "서버가 자동으로 시각을 다시 보냅니다(호기당 1분에 1회)." : "자동 보정이 꺼져 있습니다 (Gateway.ClockAutoSync) — 호기 상세의 '시각 동기'로 맞추세요.")</span>
         </div>
     }
     <div class="stats">
@@ -57,7 +75,7 @@ else
     <div class="table-wrap">
         <table class="grid clickable">
             <thead>
-                <tr><th>호기</th><th>구역</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+                <tr><th>호기</th><th>구역</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th title="브리지 시각 − 서버 시각 (브리지 0.8.0+)">시각 편차</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
             </thead>
             <tbody>
                 @foreach (var a in Visible())
@@ -76,6 +94,7 @@ else
                         <td class="@(st?.Ota == "pending" ? "warn-text" : "")" title="@(st?.Ota == "pending" ? "재부팅 후 미확정 — 서버 PING 을 받으면 valid 로 확정" : "")">@st?.Ota</td>
                         <td>@st?.Cfg @(st?.SetupAp == true ? "(AP)" : "")</td>
                         <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null ? "" : st.Rssi)</td>
+                        <td class="@(clockBad.Contains(a) ? "bad-text" : "")" title="@ClockTitle(a)">@ClockText(a)</td>
                         <td title="@(st?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 — USB 전체 굽기 필요" : st?.DspState == "" ? "브리지 0.5.0 미만" : "")">@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : st?.DspState == "nopart" ? " ⚠ 파티션 없음" : "")</td>
                         <td>@(st?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {st.StagedJob})" : st?.DspState is "downloading" ? "받는 중" : "")</td>
                         <td>@a.MainUp / @a.MainDown</td>
@@ -84,7 +103,7 @@ else
                     </tr>
                     @if (sel == a.Id)
                     {
-                        <tr class="detail"><td colspan="14">
+                        <tr class="detail"><td colspan="15">
                             <div class="detail-box">
                                 <div class="row-buttons">
                                     <b>@a.Id.ToString("D2") 호기</b>
@@ -93,14 +112,37 @@ else
                                     <a href="trace?agv=@a.Id" @onclick:stopPropagation>통신 로그</a>
                                     <a href="jobs?agv=@a.Id" @onclick:stopPropagation>이 호기에 배포</a>
                                     <a href="groups?path=@Uri.EscapeDataString(Groups.Get(a.Id)?.Group.Path ?? "")" @onclick:stopPropagation>구역 @(Groups.Get(a.Id) is null ? "(미등록)" : "")</a>
+                                    @if (st?.HasClock == true) { <button @onclick='() => Do(a.Id, Link.SendTime, "시각 동기")' @onclick:stopPropagation title="서버 시각을 브리지에 보냅니다">시각 동기</button> }
                                     @if (result is { } r && r.agv == a.Id) { <span class="msg @(r.ok ? "" : "err")" role="status">@r.text</span> }
                                 </div>
+                                <div class="row-buttons small">
+                                    <span class="muted small">원격 진단</span>
+                                    <button @onclick='() => Diag(a.Id, "설정 읽기", "cfg json")' @onclick:stopPropagation disabled="@(diagBusy || !on)">설정 읽기</button>
+                                    <button @onclick='() => Diag(a.Id, "상태 읽기", "stat json")' @onclick:stopPropagation disabled="@(diagBusy || !on)">상태 읽기</button>
+                                    <button @onclick="() => Scan(a.Id)" @onclick:stopPropagation disabled="@(diagBusy || !on)" title="주변 2.4GHz AP 목록 (브리지 0.7.0+). 2~3초 동안 중계가 느려질 수 있어 AGV 정지 상태에서만">AP 스캔</button>
+                                    <button @onclick='() => Diag(a.Id, "서버 ping", "nettest")' @onclick:stopPropagation disabled="@(diagBusy || !on)" title="브리지에서 서버로 ping 3회 (브리지 0.7.0+)">서버 ping</button>
+                                    @if (diagBusy && diag is null) { <span class="muted small">기다리는 중…</span> }
+                                </div>
+                                @if (diag is { } d && d.Agv == a.Id)
+                                {
+                                    <div class="msg @(d.Error is null ? "" : "err")" role="status">@d.Title @(d.Error is null ? "" : $"— {d.Error}")</div>
+                                    @if (d.Scan is { } scan)
+                                    {
+                                        <table class="grid">
+                                            <thead><tr><th>SSID</th><th>RSSI</th><th>채널</th><th>보안</th></tr></thead>
+                                            <tbody>@foreach (var s in scan) { <tr><td>@s.Ssid</td><td class="@Rssi(s.Rssi).cls">@s.Rssi</td><td>@s.Ch</td><td>@s.Auth</td></tr> }</tbody>
+                                        </table>
+                                        @if (scan.Count == 0) { <div class="muted small">보이는 AP 가 없습니다.</div> }
+                                    }
+                                    else if (d.Text is not null) { <pre class="log small">@d.Text</pre> }
+                                }
                                 @if (st is not null)
                                 {
                                     <dl class="kv">
                                         <dt>마지막 수신</dt><dd>@a.LastSeen.ToLocalTime().ToString("HH:mm:ss") (@Ago(a.LastSeen))</dd>
                                         <dt>가동</dt><dd>@Up(st.UpSeconds)</dd>
-                                        <dt>Wi-Fi</dt><dd>ch @st.Channel · @st.Bssid · 끊김 @(st.Disconnects)회 · RSSI @st.Rssi (@Rssi(st.Rssi).text)</dd>
+                                        <dt>Wi-Fi</dt><dd>ch @st.Channel · @st.Bssid · 끊김 @(st.Disconnects)회 · RSSI @st.Rssi (@Rssi(st.Rssi).text)@(a.LastTag.Length > 0 ? $" · 마지막 태그 {a.LastTag}" : "")</dd>
+                                        <dt>시각</dt><dd>@ClockTitle(a)@(a.TimeReplies > 0 ? $" · 서버가 시각 요청에 {a.TimeReplies}회 답함" : "")</dd>
                                         <dt>주소</dt><dd class="mono">@st.Ip @(st.Mac.Length > 0 ? $"({st.Mac})" : "") ← @a.EndPoint</dd>
                                         <dt>UART</dt><dd>MAIN rx @st.MainRx / tx @st.MainTx · RFID rx @st.RfidRx · 오류 @st.UartErrors</dd>
                                         <dt>네트</dt><dd>오프라인 @st.NetOffline · 오류 @st.NetErrors · heap @st.Heap.ToString("N0")</dd>
@@ -126,11 +168,13 @@ else
     (int agv, string text, bool ok)? result;   // INFO/PING 결과 — 그 호기 상세에서만 보인다
     int pending, busyDsp;
     List<AgvState> conflicts = [];
+    /// <summary>온라인이면서 시각 동기를 아는 브리지인데 미동기이거나 편차가 임계를 넘은 호기</summary>
+    List<AgvState> clockBad = [];
     System.Threading.Timer? timer;
 
     protected override void OnInitialized()
     {
-        Reg.Changed += OnChanged; Groups.Changed += OnChanged;
+        Reg.Changed += OnChanged; Groups.Changed += OnChanged; Rel.Changed += OnChanged;
         timer = new System.Threading.Timer(_ => OnChanged(), null, 2000, 2000);   // 오프라인 표시 갱신
         if (!string.IsNullOrEmpty(Group)) group = Group;
         Load();
@@ -141,6 +185,8 @@ else
         pending = all.Count(a => On(a) && a.Status?.Ota == "pending");
         busyDsp = all.Count(a => On(a) && a.Status?.DspState is "downloading" or "programming");
         conflicts = all.Where(a => a.InConflict(Opt.Value.OfflineAfterSec)).ToList();
+        clockBad = all.Where(a => On(a) && a.Status is { HasClock: true } st && st.UpSeconds >= 30
+                                  && (!st.ClockSynced || (a.ClockSkewMs is { } k && BridgeClock.OverThreshold(k, Opt.Value.ClockSkewWarnMs)))).ToList();
         // 고른 필터의 버튼이 사라졌으면(개수 0, 버전 칩 없어짐) 전체로 되돌린다 — 빈 표만 남지 않게
         bool exists = filter switch
         {
@@ -154,7 +200,63 @@ else
         if (!exists) filter = "all";
     }
     void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
-    public void Dispose() { Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; timer?.Dispose(); }
+    public void Dispose() { Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; Rel.Changed -= OnChanged; timer?.Dispose(); }
+
+    // ───── 시각 ─────
+    string ClockText(AgvState a)
+    {
+        if (a.Status is not { } st) return "";
+        if (!st.HasClock) return "-";
+        if (!st.ClockSynced || a.ClockSkewMs is null) return "미동기";
+        return BridgeClock.FormatSkew(a.ClockSkewMs.Value);
+    }
+    string ClockTitle(AgvState a)
+    {
+        if (a.Status is not { } st) return "";
+        if (!st.HasClock) return "시각 동기를 지원하지 않는 브리지 (0.8.0 미만)";
+        if (!st.ClockSynced) return "브리지 시각이 아직 서버와 맞춰지지 않음";
+        return $"브리지 − 서버 = {BridgeClock.FormatSkew(a.ClockSkewMs ?? 0)} (한 방향 지연 수 ms 포함) · 마지막 동기 {st.TsyncAgeSec}초 전 · 임계 {Opt.Value.ClockSkewWarnMs} ms";
+    }
+
+    // ───── 원격 진단 (CFG_CMD 를 보내고 응답을 기다린다) ─────
+    sealed record ScanRow(string Ssid, int Rssi, int Ch, string Auth);
+    sealed record DiagResult(int Agv, string Title, string? Text, string? Error, List<ScanRow>? Scan);
+    DiagResult? diag;
+    bool diagBusy;
+
+    async Task Scan(int agv)
+    {
+        // 스캔은 STA 연결 중 중계를 2~3초 느리게 한다 — 정지 확인 뒤에만
+        if (!await JS.ConfirmAsync($"{agv:D2} 호기가 정지해 있습니까?\n\nAP 스캔은 2~3초 동안 이 호기의 중계(RFID·ACS 프레임)를 늦출 수 있습니다. 정지 상태에서만 하세요.")) return;
+        await Diag(agv, "AP 스캔", "scan");
+    }
+
+    async Task Diag(int agv, string title, string cmd)
+    {
+        diagBusy = true; diag = null; StateHasChanged();
+        try
+        {
+            var r = await Ch.RequestCfgAsync(agv, cmd, TimeSpan.FromSeconds(20));
+            if (!r.Ok) { diag = new(agv, title, null, r.Error, null); return; }
+            var text = r.Text!.Trim();
+            if (cmd == "scan" && ParseScan(text) is { } rows) { diag = new(agv, $"{title} — {rows.Count}개", null, null, rows); return; }
+            diag = new(agv, title, Pretty(text), text.StartsWith("unknown command", StringComparison.Ordinal) ? "이 브리지 펌웨어가 지원하지 않는 명령입니다" : null, null);
+        }
+        finally { diagBusy = false; StateHasChanged(); }
+    }
+
+    static List<ScanRow>? ParseScan(string text)
+    {
+        if (!text.StartsWith('[')) return null;
+        try
+        {
+            using var d = System.Text.Json.JsonDocument.Parse(text);
+            return d.RootElement.EnumerateArray().Select(e => new ScanRow(
+                e.TryGetProperty("ssid", out var s) ? s.GetString() ?? "" : "", e.TryGetProperty("rssi", out var r) ? r.GetInt32() : 0,
+                e.TryGetProperty("ch", out var c) ? c.GetInt32() : 0, e.TryGetProperty("auth", out var a) ? a.GetString() ?? "" : "")).ToList();
+        }
+        catch (Exception e) when (e is System.Text.Json.JsonException or InvalidOperationException or FormatException) { return null; }
+    }
 
     bool On(AgvState a) => a.Online(Opt.Value.OfflineAfterSec);
 

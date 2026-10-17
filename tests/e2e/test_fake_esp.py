@@ -250,7 +250,7 @@ class Basics(FakeBridgeTest):
         s3 = self.send(fk.T_CFG_CMD, b"reboot")
         res = self.pump(lambda: (lambda r: r if len(r) >= 3 else None)([(s, pl.decode()) for t, s, pl, _ in self.got if t == fk.T_CFG_RESULT]))
         self.assertEqual([s for s, _ in res], [s1, s2, s3])
-        self.assertTrue(res[0][1].startswith("ok hb_ms") and res[1][1].startswith("saved (trial)") and res[2][1] == "rebooting\n>\n")
+        self.assertTrue(res[0][1].startswith("ok hb_ms") and res[1][1].startswith("saved (trial)") and res[2][1] == "rebooting\n")
         self.fresh_hb(lambda h: h["cfg"] == "trial" and h["up"] < 5, 8)
         self.send(fk.T_PING, b"x")
         self.fresh_hb(lambda h: h["cfg"] == "saved")
@@ -326,6 +326,113 @@ class EraseFail(FakeBridgeTest):
         self.assertEqual([d["pct"] for d in self.finals(50, "retry")], [1, 2])
         self.assertEqual(self.finals(50, "fail")[0], {"job": 50, "stage": "fail", "ver": "1.5.0", "err": "erase"})
         self.fresh_hb(lambda h: h["dsp"] == "?" and h["dsp_st"] == "staged" and h["staged"] == {"job": 50, "ver": "1.5.0"})
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+class ModernBridge(FakeBridgeTest):
+    """브리지 0.8.0 흉내: cfg json · stat json · discard · scan · nettest · 시각 동기"""
+    extra = ["--fw", "0.8.0", "--clock-first-req", "0.3"]
+
+    def cfg(self, cmd, timeout=8.0):
+        """CFG_CMD 를 보내고 같은 seq 의 CFG_RESULT 본문을 돌려준다"""
+        seq = self.send(fk.T_CFG_CMD, cmd.encode())
+        return self.pump(lambda: next((pl.decode() for t, s, pl, _ in self.got if t == fk.T_CFG_RESULT and s == seq), None), timeout)
+
+    def test_cfg_json_is_one_line_with_end_marker_and_tracks_edits(self):
+        text = self.cfg("cfg json")
+        self.assertTrue(text.endswith("\n>\n"), text)
+        js = json.loads(text[:-3])
+        self.assertEqual((js["fw"], js["state"], js["differs"], js["cfg"]["agv"], js["cfg"]["hb_ms"]), ("0.8.0", "saved", False, 7, 200))   # 시험은 --hb 0.2
+        self.assertEqual(js["name"], "AGVBR-07-0007")
+        self.assertIn("pass", js["keys"])
+        self.assertTrue(self.cfg("set hb_ms 300").startswith("ok hb_ms"))
+        self.assertTrue(self.cfg("set dns 192.168.10.1").startswith("ok dns"))
+        js = json.loads(self.cfg("cfg json")[:-3])
+        self.assertEqual((js["differs"], js["cfg"]["hb_ms"], js["cfg"]["dns"]), (True, 300, "192.168.10.1"))
+        self.assertEqual(self.cfg("discard"), "discarded - edit copy now equals running config\n>\n")
+        self.assertFalse(json.loads(self.cfg("cfg json")[:-3])["differs"])
+
+    def test_password_is_reported_by_length_only(self):
+        self.assertTrue(self.cfg("set pass secret-pass").startswith("ok pass"))
+        text = self.cfg("cfg json")
+        self.assertNotIn("secret-pass", text)
+        self.assertEqual(json.loads(text[:-3])["cfg"]["pass_len"], 11)
+        self.assertTrue(self.cfg("set pass short").startswith("invalid key or value"))
+
+    def test_stat_json_scan_and_nettest(self):
+        st = json.loads(self.cfg("stat json")[:-3])
+        self.assertEqual((st["fw"], st["wifi"]["up"], st["setup"]["name"]), ("0.8.0", True, "AGVBR-07-0007"))
+        self.assertIn("uart", st)
+        self.assertIn("time", st)
+        aps = json.loads(self.cfg("scan")[:-3])
+        self.assertEqual(aps[0], {"ssid": "AGV_WIFI", "rssi": -48, "ch": 6, "auth": "wpa2"})
+        self.assertIn("3/3 ok", self.cfg("nettest"))
+        self.assertIn("dns: gateway.local ->", self.cfg("nettest gateway.local"))
+
+    def test_clock_request_reply_sets_time_and_heartbeat_reports_it(self):
+        # 시각을 맞추기 전: tsync -1, ts 없음
+        h = self.fresh_hb(lambda h: "tsync" in h)
+        self.assertEqual(h["tsync"], -1)
+        self.assertNotIn("ts", h)
+        # 브리지가 먼저 TIME_REQ 를 보낸다 (부팅 0.3초 뒤)
+        req = self.pump(lambda: next((js for t, _, _, js in self.got if t == fk.T_TIME_REQ), None), 5)
+        self.assertIn("t0", req)
+        t1 = now_ms()
+        self.send(fk.T_TIME, json.dumps({"t0": req["t0"], "t1": t1, "t2": t1 + 1}).encode())
+        h = self.fresh_hb(lambda h: h.get("tsync", -1) >= 0)
+        self.assertLess(abs(h["ts"] - now_ms()), 1500)
+        ev = [e for e in self.ev("time_sync")]
+        self.assertEqual(ev[0]["kind"], "reply")
+
+    def test_unmatched_reply_is_ignored_and_bad_time_is_refused(self):
+        req = self.pump(lambda: next((js for t, _, _, js in self.got if t == fk.T_TIME_REQ), None), 5)
+        t1 = now_ms()
+        self.send(fk.T_TIME, json.dumps({"t0": req["t0"] + 999, "t1": t1, "t2": t1 + 1}).encode())   # 내 요청과 짝이 안 맞음
+        self.send(fk.T_TIME, json.dumps({"t2": 1000}).encode())                                        # 1970 근처
+        self.send(fk.T_TIME, b"garbage")
+        time.sleep(0.6)
+        self.assertEqual(self.b.clock_synced, False)
+        self.assertEqual(self.ev("time_sync"), [])
+
+    def test_unsolicited_time_from_server_sets_clock_without_a_request(self):
+        self.send(fk.T_TIME, json.dumps({"t2": now_ms() + 3000}).encode())
+        h = self.fresh_hb(lambda h: h.get("tsync", -1) >= 0)
+        self.assertLess(abs(h["ts"] - (now_ms() + 3000)), 1500)
+        self.assertEqual(self.ev("time_sync")[0]["kind"], "push")
+
+
+class WrongClockBridge(FakeBridgeTest):
+    """시각이 틀린 채 맞춘 것처럼 시작하고 서버에 묻지 않는 브리지 — 서버가 먼저 보내 주는 경로"""
+    extra = ["--fw", "0.8.0", "--clock-wrong-ms", "5000", "--clock-no-req"]
+
+    def test_heartbeat_shows_the_error_until_the_server_pushes(self):
+        h = self.fresh_hb(lambda h: "ts" in h)
+        self.assertGreater(h["ts"] - now_ms(), 4000)
+        self.send(fk.T_TIME, json.dumps({"t2": now_ms()}).encode())
+        h = self.fresh_hb(lambda h: abs(h.get("ts", 0) - now_ms()) < 1500)
+        self.assertEqual(h["tsync"] >= 0, True)
+
+
+class OlderBridges(FakeBridgeTest):
+    """0.5.5 흉내: 새 기능이 없다 — 인자를 무시하고 텍스트를 내고, 새 명령은 모르는 명령"""
+    extra = ["--fw", "0.5.5", "--clock-first-req", "0.2"]
+
+    def cfg(self, cmd):
+        seq = self.send(fk.T_CFG_CMD, cmd.encode())
+        return self.pump(lambda: next((pl.decode() for t, s, pl, _ in self.got if t == fk.T_CFG_RESULT and s == seq), None), 8)
+
+    def test_no_new_features(self):
+        self.assertTrue(self.cfg("cfg json").startswith("agv=7 "))               # 인자 무시 → 텍스트, 끝 표시 줄 없음
+        self.assertFalse(self.cfg("cfg json").endswith(">\n"))
+        self.assertTrue(self.cfg("scan").startswith("unknown command 'scan'"))
+        self.assertTrue(self.cfg("discard").startswith("unknown command 'discard'"))
+        h = self.fresh_hb(lambda h: True)
+        self.assertNotIn("tsync", h)
+        time.sleep(0.6)
+        self.assertFalse(any(t == fk.T_TIME_REQ for t, _, _, _ in self.got))      # 시각을 묻지 않는다
 
 
 if __name__ == "__main__":

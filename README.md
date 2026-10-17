@@ -30,7 +30,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | 경로 | 내용 |
 |---|---|
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat·번호 충돌 판정·seq 손실, AGV 프레임(BCC, ACS 화이트리스트, 하향 F·R 차단), `.dspfw` 파서(블록·`app_crc` 검사)·버전 규칙, 메인보드 OTA(B안)·브리지 OTA 클라이언트(재전송·heartbeat 판정), 업데이트 피드·교체 배치 |
-| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기(스테이징·적용 대기·승인), 화면 7개(호기 현황·구역·펌웨어·배포 작업·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db`, 스키마 v3 — 펌웨어 목록·작업·소속·최근 위치·마지막 접속), 서버 자체 업데이트, REST API |
+| `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기(스테이징·적용 대기·승인), 화면 9개(호기 현황·구역·펌웨어·배포 작업·호기 설정·Wi-Fi 분석·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db`, 스키마 v3 — 펌웨어 목록·작업·소속·최근 위치·마지막 접속), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` · `tests/Gateway.Server.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`(브리지 기준 이미지 대조), 메인보드·브리지 OTA 단계·재전송·실패, 작업 실행기·DB 마이그레이션, API 검사 |
 | `tests/fake_esp.py` | 가짜 브리지 — 브리지 0.5.2 흉내, 장애 주입 옵션 (`python3 tests/fake_esp.py --help`) |
 | `tests/e2e/` | 종단 시험 `run_e2e.py`, 가짜 브리지 자체 시험 `test_fake_esp.py` ([README](tests/e2e/README.md)) |
@@ -67,6 +67,7 @@ REST API (화면과 같은 기능, 스크립트용 — 자세한 본문·응답 
 `GET /api/agvs`, `GET|POST|DELETE /api/firmware`, `GET|POST /api/jobs` (`applyMode`·`notAfter`·`recover`), `POST /api/jobs/{id}/approve`, `POST /api/jobs/{id}/cancel[?queued=true]`, `DELETE /api/jobs/{id}` (끝난 작업만, 없는 작업 404·끝나지 않은 작업 409),
 `POST /api/agvs/{n}/send` `{ "data": "<STX>…<ETX>" }`, `POST /api/agvs/{n}/cfg` `{ "data": "set ip …" }`, `GET /fw/{id}/{file}` (브리지가 받아 가는 파일),
 `GET /api/positions[/{n}]` 호기 위치, `POST /api/positions/{n}` 시험 주입, `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` ACS 위치 보고,
+`POST /api/agvs/{n}/cfg/wait` · `POST /api/agvs/{n}/time` 원격 진단·시각 동기, `GET|POST /api/cfg…` 호기 설정·기준값·일괄 변경, `GET /api/wifi/{aps,spots,events}` Wi-Fi 분석, `GET|POST /api/bridge/release…` 브리지 새 버전,
 `GET /api/groups` 구역 트리 · `GET /api/groups/agvs?path=` · `PUT|DELETE /api/agvs/{n}/group` · `POST /api/groups/import` (CSV) · `GET /api/groups/export.csv` · `POST /api/acs/inventory/preview|pull` ACS 소속 받기, `GET /api/health`.
 다른 웹페이지에서 브라우저로 보낸 변경 요청은 403 이고, 오류는 상태 코드와 짧은 사유(JSON 문자열)로 돌려줍니다.
 접속 주소(Host)가 IP·`localhost`·이 PC 이름이 아니면 화면·API 모두 403 입니다(DNS 리바인딩 방어). 사내 DNS 별칭으로 접속하면 `Gateway.AllowedHostNames` 에 그 이름을 넣습니다.

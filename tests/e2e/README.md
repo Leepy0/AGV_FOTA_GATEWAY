@@ -5,7 +5,7 @@
 
 ```bash
 dotnet build -c Release
-python3 tests/e2e/run_e2e.py              # 전체 12개, 약 3분
+python3 tests/e2e/run_e2e.py              # 전체 16개, 약 4분
 python3 tests/e2e/run_e2e.py --only 1,3   # 골라서
 python3 tests/e2e/run_e2e.py --list       # 시나리오 목록
 python3 tests/e2e/run_e2e.py --dll <다른 빌드의 AgvFotaGateway.dll> --keep   # 임시 폴더(서버·가짜 브리지 로그) 남기기
@@ -30,7 +30,11 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 | 10 | 수동 전송 F/R 프레임 400, 다른 출처 Origin·cross-site POST 403 |
 | 11 | 원격 설정 `save`·`reboot` → cfg=trial → 서버 자동 PING 으로 saved |
 | 12 | 살아 있는 구 앱(`--nodsp mute`, dsp=`?`) 일반 적용 → 원시 모드 없이 `app_no_fwup` / 버전 아는 앱이 U 에 침묵(`--app-u noreply --app-frames no`) → `app_no_reply` 뒤 heartbeat dsp `?` — 둘 다 recover 없음, 실패 안내는 구 앱이 JTAG, 침묵한 앱이 '복구 적용으로 다시 배포' |
+| 13 | 시각 동기(0.8.0 흉내): 브리지가 TIME_REQ 로 물어 맞춤(reply) / +5초 틀린 브리지는 서버가 heartbeat `ts` 의 편차를 보고 먼저 보냄(push) / 화면의 '시각 동기' / 0.7.0 은 거부 |
+| 14 | 원격 진단 `POST /api/agvs/{n}/cfg/wait`: cfg json·stat json·scan·nettest, 끝 표시 `>` 줄 제거, 0.5.5 는 텍스트·unknown command, 모르는 호기 504 |
+| 15 | 호기 설정 자동 수집 3대 → 다수결 기준값 → 드리프트(hb_ms) → 입력 검사 → 일괄 변경(2대씩 두 묶음: set·save·reboot·trial 확정·cfg json 확인) |
+| 16 | Wi-Fi 분석: 가짜 브리지가 AP 를 옮기고(`--roam-at`) 끊김(`--disc-at`)을 일으킴 → 로밍·끊김 기록, AP 별 집계 |
 
 가짜 브리지 단독 실행과 장애 주입 옵션(`--drop`, `--drop-rx`, `--mute-after-cmd`, `--fail-at`, `--app-u`, `--app-frames`, `--nodsp`,
-`--nopart`, `--legacy`, `--dup-id`, `--events` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.
+`--nopart`, `--legacy`, `--dup-id`, `--events`, 기능 버전 `--fw 0.6.0/0.7.0/0.8.0`, 시각 `--clock-wrong-ms`·`--clock-no-req`, Wi-Fi `--roam-at`·`--disc-at` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.
 실제 브리지와 다른 점도 그 주석의 '남은 차이'에 적어 두었습니다.

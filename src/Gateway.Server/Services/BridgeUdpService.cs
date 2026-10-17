@@ -19,13 +19,15 @@ namespace Gateway.Server.Services;
 /// 충돌 중에는 OTA·DSP·CFG 송신을 거부한다. MAIN_DOWN(ACS 중계)은 기존 endpoint 로 계속.
 /// 마지막 접속 DB 기록은 별도 타이머(PersistLoop)가 모아서 한다 — 수신 루프에서 DB I/O 없음.
 /// </summary>
-public sealed class BridgeUdpService : BackgroundService, IAgvLink
+public sealed class BridgeUdpService : BackgroundService, IAgvLink, ICfgChannel
 {
     readonly GatewayOptions _opt;
     readonly AgvRegistry _reg;
     readonly ILogger<BridgeUdpService> _log;
     readonly ConcurrentDictionary<int, List<AgvSubscription>> _subs = new();
     readonly ConcurrentDictionary<int, ushort> _downSeq = new();
+    /// <summary>응답을 기다리는 설정 명령 — (호기, 요청 seq). CFG_RESULT 가 seq 를 그대로 반송한다</summary>
+    readonly ConcurrentDictionary<(int Agv, ushort Seq), TaskCompletionSource<string>> _cfgWait = new();
     UdpClient? _udp;
     long _acsDropped;
     int _dbFails;
@@ -37,6 +39,8 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
     public event Action<int, byte[]>? MainUpForAcs;
     /// <summary>화면용 최근 프레임 로그</summary>
     public event Action<string>? Trace;
+    /// <summary>heartbeat·INFO 로 호기 상태가 갱신된 뒤 (호기, 직전 상태, 새 상태). 수신 루프에서 불리므로 가볍게 끝내야 한다 (DB·네트워크 금지)</summary>
+    public event Action<AgvState, BridgeStatus?, BridgeStatus>? StatusUpdated;
     /// <summary>ETX·BCC 가 깨져 ACS 로 넘기지 않은 E·A 프레임 수</summary>
     public long AcsDroppedFrames => Interlocked.Read(ref _acsDropped);
 
@@ -138,12 +142,22 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
             UdpReceiveResult r;
             try { r = await u.ReceiveAsync(ct); } catch (OperationCanceledException) { break; } catch (SocketException) { continue; }
             if (BridgePacket.TryParse(r.Buffer, out var h, out var pl) && h.Type == BridgePacket.Rfid)
-                Trace?.Invoke($"[{h.Agv:D2}] RFID> {AgvFrame.Fmt(pl)}");
+            {
+                var text = AgvFrame.Fmt(pl);
+                Trace?.Invoke($"[{h.Agv:D2}] RFID> {text}");
+                // Wi-Fi 분석의 위치 대용: 마지막으로 읽은 태그 (아는 호기만 — 엉뚱한 번호로 호기를 만들지 않는다)
+                if (_reg.Get(h.Agv) is { } ag && text.Length > 0)
+                {
+                    ag.LastTag = text.Length > 40 ? text[..40] : text;
+                    ag.LastTagAt = DateTime.UtcNow;
+                }
+            }
         }
     }
 
     void Handle(byte[] b, IPEndPoint ep)
     {
+        var recvMs = BridgeClock.NowUnixMs();   // 시각 동기의 t1·편차 계산용 — 패킷을 받은 바로 그 시각
         if (!BridgePacket.TryParse(b, out var h, out var plSpan))
         {
             Trace?.Invoke($"BAD packet from {ep} ({b.Length}B)");
@@ -192,8 +206,14 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 else
                 {
                     // INFO 와 heartbeat 가 서로의 필드(IP·MAC ↔ RSSI·카운터)를 지우지 않게 합친다. 주소가 바뀌었으면 이전 값은 버린다
-                    a.Status = BridgeStatus.Merge(fresh, origin == OriginDecision.Move ? null : a.Status, h.Type == BridgePacket.Info);
+                    var prev = origin == OriginDecision.Move ? null : a.Status;
+                    a.Status = BridgeStatus.Merge(fresh, prev, h.Type == BridgePacket.Info);
                     a.StatusRaw = a.Status.Raw;
+                    if (h.Type == BridgePacket.Status)
+                    {
+                        UpdateClock(a, fresh, recvMs, now);   // ts 는 heartbeat 에만 있다 (합친 상태의 ts 는 옛 값일 수 있음)
+                        try { StatusUpdated?.Invoke(a, prev, a.Status); } catch (Exception e) { _log.LogWarning(e, "StatusUpdated 처리기 오류"); }
+                    }
                 }
                 if (h.Type == BridgePacket.Info) Trace?.Invoke($"[{h.Agv:D2}] INFO {Encoding.UTF8.GetString(pl)}");
                 _reg.Touch(a);
@@ -224,7 +244,13 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 foreach (var s in Subscribers(h.Agv)) s.OtaResults.Writer.TryWrite(js);
                 break;
             case BridgePacket.CfgResult:
-                Trace?.Invoke($"[{h.Agv:D2}] CFG> {BridgePacket.CfgResultText(pl)}");
+                var cfgText = BridgePacket.CfgResultText(pl);
+                // 응답을 기다리는 요청이면 깨운다 (진단·설정 수집은 길이가 큰 JSON 이라 로그에는 앞부분만)
+                if (_cfgWait.TryRemove((h.Agv, h.Seq), out var waiter)) waiter.TrySetResult(cfgText);
+                Trace?.Invoke($"[{h.Agv:D2}] CFG> {(cfgText.Length > 300 ? cfgText[..300] + $"… ({cfgText.Length}자)" : cfgText)}");
+                break;
+            case BridgePacket.TimeReq:
+                OnTimeRequest(a, h, pl, recvMs);
                 break;
             case BridgePacket.Pong:
                 break;
@@ -232,6 +258,56 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
                 Trace?.Invoke($"[{h.Agv:D2}] {BridgePacket.TypeName(h.Type)} {AgvFrame.Fmt(pl)}");
                 break;
         }
+    }
+
+    /// <summary>브리지의 시각 요청에 즉시 답한다 — t1(받은 시각)과 t2(보내는 시각)를 함께 줘서 브리지가 왕복 지연을 뺀다</summary>
+    void OnTimeRequest(AgvState a, BridgeHeader h, byte[] pl, long recvMs)
+    {
+        if (BridgeClock.ParseRequest(pl) is not { } t0)
+        {
+            Trace?.Invoke($"[{h.Agv:D2}] TIME_REQ 형식 오류 — 무시 ({AgvFrame.Fmt(pl)})");
+            return;
+        }
+        if (!Send(h.Agv, BridgePacket.Time, BridgeClock.BuildReply(t0, recvMs, BridgeClock.NowUnixMs()))) return;
+        a.LastTimeReply = DateTime.UtcNow;
+        var n = Interlocked.Increment(ref a.TimeReplies);
+        Trace?.Invoke($"[{h.Agv:D2}] TIME 동기 응답 (누적 {n})");
+    }
+
+    /// <summary>
+    /// heartbeat 의 ts 로 시각 편차를 기록한다. ClockAutoSync 이면 편차가 임계를 넘거나(시각 동기를 아는 브리지가 아직 미동기이면 부팅 30초 뒤부터)
+    /// 서버가 먼저 시각을 보낸다 — 호기당 1분에 1회까지.
+    /// </summary>
+    void UpdateClock(AgvState a, BridgeStatus st, long recvMs, DateTime now)
+    {
+        if (!st.HasClock) { a.ClockSkewMs = null; return; }   // 시각 동기를 모르는 구 펌웨어 — 보내도 소용없다
+        if (st.ClockSynced)
+        {
+            a.ClockSkewMs = BridgeClock.SkewMs(st.TsMs, recvMs);
+            a.ClockSkewAt = now;
+            if (_opt.ClockAutoSync && BridgeClock.OverThreshold(a.ClockSkewMs.Value, _opt.ClockSkewWarnMs))
+                PushTime(a, now, $"편차 {BridgeClock.FormatSkew(a.ClockSkewMs.Value)} > {_opt.ClockSkewWarnMs} ms");
+        }
+        else
+        {
+            a.ClockSkewMs = null;
+            // 브리지는 부팅하면 스스로 요청한다. 한동안 답이 없으면(요청 유실·서버 재시작) 서버가 보낸다
+            if (_opt.ClockAutoSync && st.UpSeconds >= 30) PushTime(a, now, "브리지 시각 미동기");
+        }
+    }
+
+    void PushTime(AgvState a, DateTime now, string why)
+    {
+        if ((now - a.LastTimePush).TotalSeconds < 60) return;
+        a.LastTimePush = now;
+        if (SendTime(a.Id)) Trace?.Invoke($"[{a.Id:D2}] 시각 보정 전송 ({why})");
+    }
+
+    /// <summary>서버 시각을 브리지에 보낸다 (화면의 "시각 동기"·편차 자동 보정). 시각 동기를 모르는 구 펌웨어에는 보내지 않는다</summary>
+    public bool SendTime(int agv)
+    {
+        if (_reg.Get(agv)?.Status is not { HasClock: true }) return false;
+        return Send(agv, BridgePacket.Time, BridgeClock.BuildReply(null, 0, BridgeClock.NowUnixMs()));
     }
 
     /// <summary>같은 호기 번호를 다른 장치가 쓰고 있음 — 기존 endpoint·상태는 그대로 두고 기록·경고만 (빈도 제한)</summary>
@@ -265,7 +341,10 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
         lock (list) return list.ToArray();
     }
 
-    bool Send(int agv, byte type, ReadOnlySpan<byte> payload)
+    bool Send(int agv, byte type, ReadOnlySpan<byte> payload) => SendCore(agv, type, payload, null);
+
+    /// <summary>beforeSend: 이번 패킷의 seq 를 알려 준다 (보내기 직전 — 응답 대기를 먼저 등록하려고)</summary>
+    bool SendCore(int agv, byte type, ReadOnlySpan<byte> payload, Action<ushort>? beforeSend)
     {
         var a = _reg.Get(agv);
         var ep = a?.EndPoint;
@@ -283,6 +362,7 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
             return false;
         }
         var seq = _downSeq.AddOrUpdate(agv, 1, (_, s) => (ushort)(s + 1));
+        beforeSend?.Invoke(seq);
         var pkt = BridgePacket.Build(type, agv, seq, payload);
         try { _udp.Send(pkt, pkt.Length, ep); } catch (SocketException e) { _log.LogWarning("udp tx {Agv}: {Msg}", agv, e.Message); return false; }
         return true;
@@ -308,6 +388,35 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink
     public bool SendInfoRequest(int agv) => Send(agv, BridgePacket.InfoReq, ReadOnlySpan<byte>.Empty);
     public bool SendPing(int agv) => Send(agv, BridgePacket.Ping, BitConverter.GetBytes(DateTime.UtcNow.Ticks));
     public bool SendCfg(int agv, string cmd) => Send(agv, BridgePacket.CfgCmd, Encoding.UTF8.GetBytes(cmd));
+
+    /// <summary>
+    /// 설정 명령을 보내고 CFG_RESULT 를 기다린다. 오프라인·번호 충돌 중·payload 한도 초과는 바로 Error,
+    /// 시간 안에 응답이 없으면 Error="응답 없음". 명령 문자열은 로그에 남기지 않는다 (set pass 등 비밀 포함 가능).
+    /// </summary>
+    public async Task<CfgReply> RequestCfgAsync(int agv, string cmd, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var a = _reg.Get(agv);
+        if (a is null || a.EndPoint is null) return new(null, "호기 주소를 모릅니다 (heartbeat 없음)");
+        if (!a.Online(_opt.OfflineAfterSec)) return new(null, "오프라인");
+        if (a.InConflict(_opt.OfflineAfterSec)) return new(null, "호기 번호 충돌 중");
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        (int, ushort)? key = null;
+        var sent = SendCore(agv, BridgePacket.CfgCmd, Encoding.UTF8.GetBytes(cmd), seq => { key = (agv, seq); _cfgWait[(agv, seq)] = tcs; });
+        if (!sent)
+        {
+            if (key is { } k0) _cfgWait.TryRemove(k0, out _);
+            return new(null, "보내지 못했습니다 (주소·충돌·길이 한도)");
+        }
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var done = await Task.WhenAny(tcs.Task, Task.Delay(timeout, cts.Token));
+            cts.Cancel();
+            return done == tcs.Task ? new(await tcs.Task, null) : new(null, "응답 없음 (시간 초과)");
+        }
+        catch (OperationCanceledException) { return new(null, "취소됨"); }
+        finally { if (key is { } k) _cfgWait.TryRemove(k, out _); }
+    }
 
     public AgvSubscription Subscribe(int agv)
     {

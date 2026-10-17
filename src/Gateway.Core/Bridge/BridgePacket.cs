@@ -21,6 +21,8 @@ public static class BridgePacket
     public const byte Info = 0x12;       // ESP → 서버: JSON (agv, mac, ip, fw, part, ota, cfg, dsp, dspb, staged …)
     public const byte Ping = 0x20;
     public const byte Pong = 0x21;
+    public const byte TimeReq = 0x22;    // ESP → 서버: 시각 요청 {"t0": 브리지 가동 ms} (브리지 0.8.0+)
+    public const byte Time = 0x23;       // 서버 → ESP: 서버 UTC 시각 {"t0","t1","t2"} (요청 응답) 또는 {"t2"} (서버가 먼저 보냄)
     public const byte OtaStart = 0x30;   // 서버 → ESP: 펌웨어 URL
     public const byte OtaResult = 0x31;  // ESP → 서버: JSON stage
     public const byte DspOtaStart = 0x32;  // 서버 → ESP: JSON {url, ver, crc32, size, job, apply} — 메인보드 이미지 스테이징
@@ -61,7 +63,7 @@ public static class BridgePacket
 
     public static string TypeName(byte type) => type switch
     {
-        MainUp => "MAIN_UP", MainDown => "MAIN_DOWN", Rfid => "RFID", Status => "STATUS", Ping => "PING", Pong => "PONG",
+        MainUp => "MAIN_UP", MainDown => "MAIN_DOWN", Rfid => "RFID", Status => "STATUS", Ping => "PING", Pong => "PONG", TimeReq => "TIME_REQ", Time => "TIME",
         InfoReq => "INFO_REQ", Info => "INFO",
         OtaStart => "OTA_START", OtaResult => "OTA_RESULT", CfgCmd => "CFG_CMD", CfgResult => "CFG_RESULT",
         DspOtaStart => "DSP_OTA_START", DspOtaResult => "DSP_OTA_RESULT", DspOtaApply => "DSP_OTA_APPLY",

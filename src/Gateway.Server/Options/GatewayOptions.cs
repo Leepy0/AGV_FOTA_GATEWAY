@@ -23,6 +23,16 @@ public sealed class GatewayOptions
     /// 사내 DNS 별칭 등으로 접속하면 여기에 적는다 ("*" = 검사 안 함). DNS 리바인딩 방어용
     /// </summary>
     public string[] AllowedHostNames { get; set; } = [];
+    /// <summary>브리지 시각과 서버 시각의 차이가 이 값(ms)을 넘으면 편차 경고를 표시하고, ClockAutoSync 이면 서버가 시각을 다시 보낸다 (브리지 0.8.0+)</summary>
+    public int ClockSkewWarnMs { get; set; } = 1000;
+    /// <summary>편차가 크거나 브리지가 시각 미동기면 서버가 먼저 시각을 보낸다 (호기당 1분에 1회까지)</summary>
+    public bool ClockAutoSync { get; set; } = true;
+    /// <summary>호기 설정(cfg json) 자동 수집 주기 (분, 0 = 자동 수집 안 함 — 화면의 "지금 수집"만). 브리지 0.6.0+</summary>
+    public int CfgCollectIntervalMin { get; set; } = 360;
+    /// <summary>Wi-Fi 끊김·로밍 기록과 시간대별 신호 집계를 보관할 일수</summary>
+    public int WifiKeepDays { get; set; } = 14;
+    /// <summary>Wi-Fi 신호 집계를 DB 에 쓰는 주기 (초). 화면은 이 주기만큼 늦게 반영된다</summary>
+    public int WifiFlushSec { get; set; } = 30;
     public AcsOptions Acs { get; set; } = new();
 
     /// <summary>

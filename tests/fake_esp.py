@@ -90,12 +90,26 @@ import zlib
 T_MAIN_UP, T_MAIN_DOWN, T_RFID = 0x01, 0x02, 0x03
 T_STATUS, T_INFO_REQ, T_INFO = 0x10, 0x11, 0x12
 T_PING, T_PONG = 0x20, 0x21
+T_TIME_REQ, T_TIME = 0x22, 0x23                  # 브리지 0.8.0+ 시각 동기 (ESP→서버 요청 / 서버→ESP 서버 시각)
 T_OTA_START, T_OTA_RESULT = 0x30, 0x31
 T_DSP_START, T_DSP_RESULT, T_DSP_APPLY = 0x32, 0x33, 0x34
 T_CFG_CMD, T_CFG_RESULT = 0x40, 0x41
 HDR_LEN, PAYLOAD_MAX = 10, 1024
 RX_NAMES = {T_MAIN_DOWN: "MAIN", T_PING: "PING", T_OTA_START: "OTA", T_CFG_CMD: "CFG", T_INFO_REQ: "INFO",
-            T_DSP_START: "START", T_DSP_APPLY: "APPLY"}
+            T_DSP_START: "START", T_DSP_APPLY: "APPLY", T_TIME: "TIME"}
+
+
+def fw_tuple(v: str):
+    """'0.8.0' · '0.7.0-abc1234' → (0, 8, 0). 읽을 수 없으면 (0, 0, 0)"""
+    import re
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", v or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
+
+
+# 브리지 펌웨어 버전별 기능 (--fw 로 정한다. 기본 0.5.2 는 아래가 모두 없음)
+CAP_CFGJSON = (0, 6, 0)     # cfg json · stat json · discard · 응답 끝 표시 ">" 줄
+CAP_SCAN = (0, 7, 0)        # scan · nettest
+CAP_CLOCK = (0, 8, 0)       # 시각 동기 (TIME_REQ/TIME, heartbeat ts·tsync)
 
 
 def build_pkt(t, agv, seq, pl: bytes):
@@ -387,7 +401,7 @@ _OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({
 ST_IDLE, ST_DOWNLOADING, ST_STAGED, ST_PROGRAMMING = "idle", "downloading", "staged", "programming"
 FINAL_REPORTS, FINAL_GAP = 3, 0.3
 RECENT_S = 600
-CFG_KEYS = ("agv", "ssid", "pass", "ip", "mask", "gw", "server", "server_port", "local_port", "rfid_dst", "rfid_port",
+CFG_KEYS = ("agv", "ssid", "pass", "ip", "mask", "gw", "dns", "dns2", "server", "server_port", "local_port", "rfid_dst", "rfid_port",
             "main_baud", "rfid_baud", "hb_ms")
 
 _events_lock = threading.Lock()
@@ -452,9 +466,19 @@ class Bridge:
         self.drop_rx_left = dict(opts.drop_rx)
         self.mute_until = 0.0
         self.muted = set()
+        # 시각 동기 (브리지 0.8.0+): 브리지 시계 = 실제 시각 + clock_off_ms. 서버와 맞추기 전에는 synced=False
+        self.clock_synced = False
+        self.clock_off_ms = 0
+        self.clock_sync_at = 0.0
+        self.clock_t0 = None                # 응답을 기다리는 TIME_REQ 의 t0 (가동 ms)
+        self.clock_next_req = 0.0
         self._boot(first=True)
 
     # ───── 공통 ─────
+    def has(self, cap):
+        """이 펌웨어 버전이 기능(CAP_*)을 갖는가 — 0.4.x 흉내(--legacy)는 아무것도 없다"""
+        return not self.o.legacy and fw_tuple(self.fw) >= cap
+
     def log(self, m):
         if not self.o.quiet:
             print(time.strftime("%H:%M:%S"), f"[esp {self.name}]", m, flush=True)
@@ -538,12 +562,23 @@ class Bridge:
             d = {"fw": self.fw}
             if not self.o.legacy:
                 d["mac"] = self.mac
-            d.update({"part": self.part, "ota": self.ota_state(), "up": self.up(), "rssi": -55, "ch": 6,
-                      "bssid": "02:00:00:00:00:01", "disc": 0, "reason": 0, "m_rx": 0, "m_tx": 0, "r_rx": 0, "u_err": 0,
+            since_boot = time.monotonic() - self.boot_t
+            roamed = self.o.roam_at is not None and since_boot >= self.o.roam_at
+            d.update({"part": self.part, "ota": self.ota_state(), "up": self.up(), "rssi": -55 if not roamed else -62, "ch": 6 if not roamed else 11,
+                      "bssid": "02:00:00:00:00:02" if roamed else "02:00:00:00:00:01",
+                      "disc": 1 if self.o.disc_at is not None and since_boot >= self.o.disc_at else 0, "reason": 0, "m_rx": 0, "m_tx": 0, "r_rx": 0, "u_err": 0,
                       "n_off": self.counters["tx_off"], "n_err": 0, "heap": 180000, "cfg": self.cfg_state(), "setup": 0})
+            if self.has(CAP_CLOCK):
+                # tsync: 마지막 동기 뒤 초 (-1 = 미동기), ts: 브리지 시각(UTC unix ms, 동기된 뒤에만)
+                d["tsync"] = int(time.monotonic() - self.clock_sync_at) if self.clock_synced else -1
+                if self.clock_synced:
+                    d["ts"] = self.clock_now_ms()
             if not self.o.legacy:
                 d.update(self.dsp_json())
         return json.dumps(d, separators=(",", ":"))
+
+    def clock_now_ms(self):
+        return int(time.time() * 1000) + self.clock_off_ms
 
     def info_json(self):
         with self.lock:
@@ -579,6 +614,13 @@ class Bridge:
             if self.cfg_bak is not None:
                 self.cfg_trial = True
                 self.trial_deadline = now + self.o.confirm_sec
+            # 시각: 부팅하면 맞춰지지 않은 상태에서 시작 (시각은 RAM 에만 있다). --clock-wrong-ms 는 틀린 채로 맞춘 것처럼 시작
+            if self.o.clock_wrong_ms is not None:
+                self.clock_synced, self.clock_off_ms, self.clock_sync_at = True, self.o.clock_wrong_ms, now
+            else:
+                self.clock_synced, self.clock_off_ms = False, 0
+            self.clock_t0 = None
+            self.clock_next_req = now + self.o.clock_first_req
             # 망·메인보드
             self.seq = {}
             self.boot_t = now
@@ -670,6 +712,8 @@ class Bridge:
             self.handle_cfg(src, seq, pl)
         elif t == T_INFO_REQ:
             self.send(T_INFO, self.info_json().encode(), "info", dst=src)
+        elif t == T_TIME and self.has(CAP_CLOCK):
+            self.on_time(pl)
         elif t == T_DSP_START and not self.o.legacy:
             if not mine:
                 self.counters["rx_foreign"] += 1
@@ -684,6 +728,48 @@ class Bridge:
             self.dsp_ota_apply(pl.decode("latin-1"))
         else:
             self.counters["rx_bad"] += 1
+
+    def on_time(self, pl: bytes):
+        """서버 시각 (net_bridge.c): {"t0","t1","t2"} 요청 응답 = NTP 한 번 교환, {"t2"} 만 = 서버가 먼저 보낸 것 (한 방향 지연만큼 늦음)"""
+        try:
+            js = json.loads(pl.decode())
+        except ValueError:
+            return
+        t2 = js.get("t2")
+        if not isinstance(t2, int) or t2 < 1_700_000_000_000:
+            return                                  # 1970 근처·형식 틀림 — 쓰지 않는다
+        with self.lock:
+            up_ms = int((time.monotonic() - self.boot_t) * 1000)
+            t0, t1 = js.get("t0"), js.get("t1")
+            if t0 is None:
+                unix, rtt, kind = t2, -1, "push"
+            elif t0 == self.clock_t0 and isinstance(t1, int):
+                rtt = (up_ms - t0) - (t2 - t1)
+                if -5 <= rtt < 0:
+                    rtt = 0                         # ms 로 내림한 오차 — 같은 밀리초 안에 돌아온 경우
+                if not 0 <= rtt <= 10000:
+                    return                          # 말이 안 되는 왕복 지연 — 버림
+                unix, kind = t2 + rtt // 2, "reply"
+            else:
+                return                              # 내 요청과 짝이 안 맞는 응답
+            self.clock_off_ms = unix - int(time.time() * 1000)
+            self.clock_synced = True
+            self.clock_sync_at = time.monotonic()
+            self.clock_t0 = None
+            self.clock_next_req = self.clock_sync_at + self.o.clock_resync_sec
+            off = self.clock_off_ms
+        self.log(f"time synced ({kind}, rtt {rtt} ms, offset {off} ms)")
+        self.event("time_sync", kind=kind, rtt=rtt, offset=off)
+
+    def clock_tick(self, now):
+        """미동기면 2초마다, 동기됐으면 clock_resync_sec 마다 서버에 시각을 묻는다 (net_bridge.c hb 태스크)"""
+        if not self.has(CAP_CLOCK) or self.o.clock_no_req or now < self.clock_next_req:
+            return
+        with self.lock:
+            t0 = int((now - self.boot_t) * 1000)
+            self.clock_t0 = t0
+            self.clock_next_req = now + 2.0         # 응답이 오면 on_time 이 다음 주기로 바꾼다
+        self.send(T_TIME_REQ, json.dumps({"t0": t0}, separators=(",", ":")).encode(), "time_req")
 
     def ota_confirm(self, by):
         with self.lock:
@@ -716,6 +802,7 @@ class Bridge:
             now = time.monotonic()
             if not self.online:
                 continue
+            self.clock_tick(now)
             if self.ota_pending and now >= self.confirm_deadline:
                 self.log(f"no server contact within {self.o.confirm_sec:.0f}s - rolling back")
                 self.reboot("ota confirm timeout", rollback=True)
@@ -830,8 +917,9 @@ class Bridge:
         line = pl[:199].decode("latin-1").split("\r")[0].split("\n")[0].rstrip(" ")
         self.log("CFG< " + line)
         out, reboot = self.cmd_exec(line)
-        # 응답 끝 표시 줄 ">" (브리지 BR-8) 까지 붙여 보낸다
-        self.send(T_CFG_RESULT, (out + ">\n").encode()[:PAYLOAD_MAX], "cfg", dst=src, seq=seq)
+        if self.has(CAP_CFGJSON):
+            out += ">\n"                            # 응답 끝 표시 줄 (브리지 0.6.0+, BR-8)
+        self.send(T_CFG_RESULT, out.encode()[:PAYLOAD_MAX], "cfg", dst=src, seq=seq)
         if reboot:
             def later():
                 time.sleep(1.0)                         # REBOOT_DELAY_MS
@@ -849,10 +937,51 @@ class Bridge:
             s += "* differs from running config - 'save' then 'reboot' to apply\n"
         return s
 
+    # cfg json 의 키·순서·숫자/문자 구분은 브리지 app_config.c cfg_format_json 과 같다
+    INT_KEYS = ("agv", "pass_len", "server_port", "local_port", "rfid_port", "main_baud", "rfid_baud", "hb_ms")
+
+    def cfg_values(self, c):
+        v = {"agv": self.agv, "ssid": "AGV_TEST", "pass_len": 8, "ip": "dhcp", "mask": "255.255.255.0", "gw": "0.0.0.0", "dns": "auto",
+             "dns2": "auto", "server": self.server_ip, "server_port": self.server[1], "local_port": 50000, "rfid_dst": "off",
+             "rfid_port": 50001, "main_baud": 115200, "rfid_baud": 9600, "hb_ms": 1000}
+        for k, val in c.items():
+            if k in v and k != "agv":
+                v[k] = int(val) if k in self.INT_KEYS and str(val).lstrip("-").isdigit() else val
+        return v
+
+    def dev_name(self):
+        return f"AGVBR-{self.agv:02d}-{self.mac.replace(':', '')[-4:].upper()}"
+
+    def cfg_json(self):
+        with self.lock:
+            d = {"fw": self.fw, "idf": "v6.1", "mac": self.mac, "name": self.dev_name(), "part": self.part, "ota": self.ota_state(),
+                 "state": self.cfg_state(), "differs": self.edit_cfg != self.run_cfg, "cfg": self.cfg_values(self.edit_cfg),
+                 "keys": list(CFG_KEYS)}
+        return json.dumps(d, separators=(",", ":"))
+
+    def stat_json(self):
+        with self.lock:
+            d = {"fw": self.fw, "part": self.part, "ota": self.ota_state(), "cfg": self.cfg_state(), "up": self.up(),
+                 "wifi": {"up": True, "mac": self.mac, "ip": self.o.ip, "rssi": -55, "ch": 6, "bssid": "02:00:00:00:00:01", "disc": 0, "reason": 0},
+                 "net": {"tx": self.counters["tx"], "tx_err": 0, "tx_offline": self.counters["tx_off"], "rx": self.counters["rx"],
+                         "rx_bad": self.counters["rx_bad"], "rx_foreign": self.counters["rx_foreign"]},
+                 "setup": {"on": False, "name": self.dev_name()},
+                 "dsp": {"app": self.dsp_ver, "boot": self.dsp_boot, "build": self.dsp_build, "st": self.state if self.has_part else "nopart",
+                         "staged": {"job": self.stage["job"], "ver": self.stage["ver"]} if self.stage else None},
+                 "uart": {"main": {"rx_frm": 0, "tx_frm": 0, "err": 0, "tx_drop": 0}, "rfid": {"rx_frm": 0, "err": 0}}, "heap": 180000}
+            if self.has(CAP_CLOCK):
+                d["time"] = {"sync": self.clock_synced, "unix": self.clock_now_ms() if self.clock_synced else 0,
+                             "age": int(time.monotonic() - self.clock_sync_at) if self.clock_synced else -1}
+        return json.dumps(d, separators=(",", ":"))
+
     def cmd_exec(self, line: str):
         toks = line.split(None, 2)          # strtok_r(" ") — 값은 줄 끝까지 (공백 있는 SSID)
         cmd = toks[0] if toks else None
+        arg = toks[1] if len(toks) > 1 else ""
         if cmd is None or cmd == "cfg":
+            # 0.6.0 이전 펌웨어는 'cfg json' 의 인자를 무시하고 텍스트를 낸다 (cmd.c)
+            if cmd == "cfg" and arg == "json" and self.has(CAP_CFGJSON):
+                return self.cfg_json() + "\n", False
             return self.cfg_text(), False
         if cmd == "set":
             key = toks[1] if len(toks) > 1 else None
@@ -866,6 +995,12 @@ class Bridge:
                 ok = val.isdigit() and (int(val) == 0 or 100 <= int(val) <= 2000)
                 if ok:
                     self.edit_cfg["hb_ms"] = int(val)
+            elif key == "pass":
+                p = "" if val == "-" else val          # '-' = 비밀번호 없음(오픈 AP), 아니면 8~64자
+                ok = len(p) == 0 or 8 <= len(p) <= 64
+                if ok:
+                    self.edit_cfg["pass"] = p
+                    self.edit_cfg["pass_len"] = len(p)
             elif ok:
                 self.edit_cfg[key] = val
             if ok:
@@ -883,6 +1018,28 @@ class Bridge:
             if self.state == ST_PROGRAMMING:
                 return "busy: mainboard programming - reboot refused, retry when done\n", False
             return "rebooting\n", True
+        if cmd == "discard" and self.has(CAP_CFGJSON):
+            with self.lock:
+                self.edit_cfg = dict(self.run_cfg)
+            return "discarded - edit copy now equals running config\n", False
+        if cmd in ("scan", "nettest") and self.has(CAP_SCAN):
+            if self.state in (ST_PROGRAMMING, ST_DOWNLOADING):
+                return f"busy: mainboard programming/staging - {cmd} refused, retry when done\n", False
+            if cmd == "scan":
+                time.sleep(self.o.scan_sec)             # 실제는 2~3초 블로킹
+                return json.dumps([{"ssid": "AGV_WIFI", "rssi": -48, "ch": 6, "auth": "wpa2"},
+                                   {"ssid": "GUEST", "rssi": -70, "ch": 1, "auth": "open"}], separators=(",", ":")) + "\n", False
+            host = arg
+            out = ""
+            if host and not host.replace(".", "").isdigit():
+                out = f"dns: {host} -> {self.server_ip}\n"
+            return out + f"ping {self.server_ip}: 3/3 ok, avg 4 ms\n", False
+        if cmd == "time" and self.has(CAP_CLOCK):
+            if not self.clock_synced:
+                return "time: not synced\n", False
+            return f"time: unix {self.clock_now_ms()} ms (synced {int(time.monotonic() - self.clock_sync_at)} s ago)\n", False
+        if cmd == "stat" and arg == "json" and self.has(CAP_CFGJSON):
+            return self.stat_json() + "\n", False
         if cmd == "stat":
             return (f"fw={self.fw} part={self.part} ota={self.ota_state()} cfg={self.cfg_state()}\n"
                     f"wifi: UP ip={self.o.ip} rssi=-55 ch=6 bssid=02:00:00:00:00:01\n"
@@ -1380,6 +1537,14 @@ def parse_args(argv=None):
     ap.add_argument("--ota-deaf", action="store_true", help="OTA 로 올라간 새 펌웨어가 서버 패킷을 못 받음 (롤백 시험)")
     ap.add_argument("--up-start", type=int, default=3600, help="처음 up 값 (오래 켜져 있던 브리지 흉내)")
     ap.add_argument("--events", default="", help="사건 기록 파일 (JSON 줄)")
+    ap.add_argument("--clock-wrong-ms", type=int, default=None,
+                    help="(0.8.0+) 시각이 맞춰진 상태로 시작하되 이만큼(ms) 틀림 — 서버가 편차를 보고 시각을 보내 주는지 시험")
+    ap.add_argument("--clock-no-req", action="store_true", help="(0.8.0+) 서버에 시각을 묻지 않음 (서버가 먼저 보내는 경로만 시험)")
+    ap.add_argument("--clock-first-req", type=float, default=1.0, help="(0.8.0+) 부팅 뒤 첫 시각 요청까지 초")
+    ap.add_argument("--clock-resync-sec", type=float, default=600.0, help="(0.8.0+) 동기된 뒤 다시 묻는 주기(초, 실제 600)")
+    ap.add_argument("--scan-sec", type=float, default=0.3, help="(0.7.0+) scan 이 막혀 있는 시간(초, 실제 2~3)")
+    ap.add_argument("--roam-at", type=float, default=None, help="부팅 N초 뒤 다른 AP(BSSID ...:02, ch 11)로 옮겨 감 (Wi-Fi 분석 시험)")
+    ap.add_argument("--disc-at", type=float, default=None, help="부팅 N초 뒤 Wi-Fi 끊김 한 번 (disc 카운터 +1)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--quiet", action="store_true")
     o = ap.parse_args(argv)

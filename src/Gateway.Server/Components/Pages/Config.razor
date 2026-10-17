@@ -1,0 +1,254 @@
+@page "/config"
+@inject CfgStore Cfg
+@inject CfgBulkService Bulk
+@inject AgvRegistry Reg
+@inject IOptions<GatewayOptions> Opt
+@inject IJSRuntime JS
+@implements IDisposable
+
+<PageTitle>호기 설정 · AGV FOTA</PageTitle>
+<h1>호기 설정</h1>
+<p class="muted">
+    브리지 <code>cfg json</code>(0.6.0 이상)으로 읽은 설정 사본입니다. 처음 보인 호기·재부팅·원격 저장 확정 때 자동으로, 그리고 @(Opt.Value.CfgCollectIntervalMin > 0 ? $"{Opt.Value.CfgCollectIntervalMin}분마다" : "수동으로만")
+    읽습니다. <b>기준값</b>과 다른 항목은 붉게 표시됩니다 (호기마다 다른 agv·ip·비밀번호는 비교하지 않음). 비밀번호는 브리지가 길이만 알려 줍니다.
+</p>
+
+<section class="card">
+    <h2>기준값 <span class="muted small">모든 호기가 같아야 하는 항목</span></h2>
+    <div class="form row">
+        @foreach (var k in CfgSnapshot.FleetKeys)
+        {
+            <label>@k <input type="text" class="w-sm" value="@Bl(k)" @onchange="e => bl[k] = e.Value?.ToString() ?? string.Empty" /></label>
+        }
+    </div>
+    <div class="row-buttons">
+        <button class="primary" @onclick="SaveBaseline">기준값 저장</button>
+        <button @onclick="FromFleet" title="수집된 사본의 항목별 최빈값으로 채웁니다">수집된 값의 다수결로 만들기</button>
+        <button @onclick="ClearBaseline">비우기</button>
+        @if (baseMsg is not null) { <span class="msg" role="status">@baseMsg</span> }
+    </div>
+</section>
+
+<section class="card">
+    <h2>수집된 설정 <span class="muted small">@rows.Count 대 · 기준과 다른 호기 @driftCount 대</span></h2>
+    <div class="row-buttons">
+        <button class="primary" @onclick="CollectOnline" disabled="@collecting">@(collecting ? "읽는 중…" : "온라인 호기 지금 읽기")</button>
+        <label class="small"><input type="checkbox" @bind="onlyDrift" /> 기준과 다른 호기만</label>
+        <button @onclick="SelectOnline">온라인 전체 선택</button>
+        <button @onclick="SelectDrift">기준과 다른 호기 선택</button>
+        <button @onclick="() => sel.Clear()">선택 해제</button>
+        <span class="muted small">@sel.Count 대 선택</span>
+        @if (collectMsg is not null) { <span class="msg @(collectErr ? "err" : "")" role="status">@collectMsg</span> }
+    </div>
+    @if (rows.Count == 0) { <div class="empty">아직 수집된 설정이 없습니다. 브리지 0.6.0 이상이 온라인이면 곧 자동으로 채워집니다.</div> }
+    else
+    {
+        <div class="table-wrap"><table class="grid clickable">
+            <thead><tr>
+                <th></th><th>호기</th><th>fw</th><th>상태</th><th>읽은 시각</th><th>ip</th>
+                @foreach (var k in CfgSnapshot.FleetKeys) { <th>@k</th> }
+                <th>pw 길이</th>
+            </tr></thead>
+            <tbody>
+                @foreach (var r in Visible())
+                {
+                    var diffs = Cfg.DriftOf(r.Agv).ToDictionary(d => d.Key);
+                    var on = Reg.Get(r.Agv)?.Online(Opt.Value.OfflineAfterSec) ?? false;
+                    <tr class="@(on ? "" : "off") @(open == r.Agv ? "sel" : "")" @onclick="() => open = open == r.Agv ? null : r.Agv">
+                        <td @onclick:stopPropagation><input type="checkbox" checked="@sel.Contains(r.Agv)" @onchange="e => Toggle(r.Agv, e.Value is true)" aria-label="@r.Agv 호기 선택" /></td>
+                        <td><b>@r.Agv.ToString("D2")</b></td>
+                        <td>@r.Snapshot.Fw</td>
+                        <td class="@(r.Snapshot.Differs ? "warn-text" : "")" title="@(r.Snapshot.Differs ? "저장된 설정이 실행 중인 설정과 다름 — 재부팅하면 바뀝니다" : "")">@r.Snapshot.State@(r.Snapshot.Differs ? " ⚠" : "")</td>
+                        <td class="small" title="@r.TakenAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">@Ago(r.TakenAt)</td>
+                        <td class="mono small">@r.Snapshot.Get("ip")</td>
+                        @foreach (var k in CfgSnapshot.FleetKeys)
+                        {
+                            diffs.TryGetValue(k, out var d);
+                            <td class="small @(d is null ? "" : "bad-text")" title="@(d is null ? "" : $"기준 {d.Expected}")">@r.Snapshot.Get(k)</td>
+                        }
+                        <td class="small">@r.Snapshot.Get("pass_len")</td>
+                    </tr>
+                    @if (open == r.Agv)
+                    {
+                        <tr class="detail"><td colspan="@(CfgSnapshot.FleetKeys.Length + 7)">
+                            <div class="detail-box">
+                                <b>@r.Agv.ToString("D2") 호기 — @r.Snapshot.Name</b>
+                                <span class="muted small"> MAC @r.Snapshot.Mac · @r.Snapshot.Part · idf @r.Snapshot.Idf</span>
+                                <div class="row-buttons small">
+                                    <button @onclick="() => CollectOne(r.Agv)" @onclick:stopPropagation disabled="@(!on)">다시 읽기</button>
+                                    <a href="api/cfg/@r.Agv/restore" target="_blank" rel="noopener" @onclick:stopPropagation>복원용 set 명령 (텍스트)</a>
+                                </div>
+                                <p class="muted small">보드를 바꿔 끼웠을 때 BLE 터미널이나 USB 콘솔에 붙여 넣는 명령입니다. 비밀번호는 되읽을 수 없어 빠지므로 <code>set pass …</code> 는 따로 넣으세요.</p>
+                                <pre class="log small">@string.Join("\n", CfgDrift.RestoreCommands(r.Snapshot))</pre>
+                            </div>
+                        </td></tr>
+                    }
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+<section class="card">
+    <h2>일괄 변경 <span class="muted small">선택한 호기에 같은 설정을 넣고 재부팅 — 묶음 단위로, 실패하면 멈춤</span></h2>
+    <p class="muted small">
+        서버 원격 저장(시험 적용)으로 적용합니다: 새 설정으로 서버에 닿지 못하면 브리지가 <b>180초 뒤 스스로 이전 설정으로 돌아갑니다</b>.
+        한 묶음이 모두 재부팅·확정·확인까지 끝나야 다음 묶음으로 넘어갑니다. 오프라인·번호 충돌·메인보드 작업 중인 호기는 건너뜁니다.
+        비밀번호는 길이로만 확인할 수 있습니다. <b>AGV 가 운행 중인 구역에는 재부팅 시간(수 초~수십 초)동안 통신이 끊깁니다.</b>
+    </p>
+    <div class="form">
+        @for (int i = 0; i < changes.Count; i++)
+        {
+            var c = changes[i];
+            <div class="row-buttons">
+                <select value="@c.Key" @onchange="e => c.Key = e.Value?.ToString() ?? string.Empty" aria-label="바꿀 항목">
+                    @foreach (var k in CfgSnapshot.BulkKeys) { <option value="@k">@k</option> }
+                </select>
+                <input type="@(c.Key == "pass" ? "password" : "text")" value="@c.Value" @onchange="e => c.Value = e.Value?.ToString() ?? string.Empty" placeholder="새 값" aria-label="새 값" autocomplete="off" />
+                <button @onclick="() => changes.Remove(c)">빼기</button>
+            </div>
+        }
+        <div class="row-buttons">
+            <button @onclick="() => changes.Add(new ChangeRow())">항목 추가</button>
+            <button @onclick="FillFromBaseline" title="선택한 호기 중 기준값과 다른 항목을 기준값으로 채웁니다">기준값으로 맞추기</button>
+            <label class="small">한 번에 <input type="number" class="w-sm" min="1" max="50" @bind="batch" /> 대씩</label>
+            <button class="primary" @onclick="StartBulk" disabled="@(Bulk.Running || sel.Count == 0 || changes.Count == 0)">@sel.Count 대에 적용 시작</button>
+            @if (bulkMsg is not null) { <span class="msg @(bulkErr ? "err" : "")" role="alert">@bulkMsg</span> }
+        </div>
+    </div>
+
+    @if (Bulk.Current is { } run)
+    {
+        <h3>진행 <span class="muted small">@run.StartedAt.ToLocalTime().ToString("HH:mm:ss") 시작 · @string.Join(", ", run.Changes.Select(c => $"{c.Key}={c.Shown}"))</span></h3>
+        <div class="state-line @(run.State switch { BulkRunState.Running => "applying", BulkRunState.Done => "uptodate", _ => "error" })" role="status">
+            @(run.State switch { BulkRunState.Running => $"진행 중 — 묶음 {run.CurrentBatch}/{run.BatchCount}", BulkRunState.Done => "완료", BulkRunState.Failed => "실패", _ => "취소" }) · @run.Message
+            @if (run.State == BulkRunState.Running) { <button @onclick="Bulk.Cancel">취소</button> }
+        </div>
+        <div class="table-wrap"><table class="grid">
+            <thead><tr><th>호기</th><th>상태</th><th>내용</th></tr></thead>
+            <tbody>
+                @foreach (var t in run.Targets)
+                {
+                    <tr class="@(t.State == BulkTargetState.Done ? "t-done" : "")">
+                        <td>@t.Agv.ToString("D2")</td>
+                        <td class="@(t.State == BulkTargetState.Failed ? "bad-text" : t.State == BulkTargetState.Skipped ? "muted" : "")">@StateText(t.State)</td>
+                        <td class="small">@t.Message</td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+    }
+</section>
+
+@code {
+    sealed class ChangeRow { public string Key { get; set; } = "hb_ms"; public string Value { get; set; } = ""; }
+
+    List<CfgEntry> rows = [];
+    int driftCount;
+    int? open;
+    bool onlyDrift, collecting, collectErr, bulkErr;
+    string? collectMsg, baseMsg, bulkMsg;
+    int batch = 5;
+    readonly HashSet<int> sel = new();
+    readonly List<ChangeRow> changes = [new()];
+    readonly Dictionary<string, string> bl = new();
+    System.Threading.Timer? timer;
+
+    protected override void OnInitialized()
+    {
+        foreach (var (k, v) in Cfg.Baseline()) bl[k] = v;
+        Load();
+        Cfg.Changed += OnChanged; Bulk.Changed += OnChanged;
+        timer = new System.Threading.Timer(_ => { if (Bulk.Running) OnChanged(); }, null, 2000, 2000);
+    }
+
+    void Load()
+    {
+        rows = Cfg.Snapshots().ToList();
+        driftCount = rows.Count(r => Cfg.DriftOf(r.Agv).Count > 0);
+    }
+    void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+    public void Dispose() { Cfg.Changed -= OnChanged; Bulk.Changed -= OnChanged; timer?.Dispose(); }
+
+    string Bl(string k) => bl.TryGetValue(k, out var v) ? v : "";
+    IEnumerable<CfgEntry> Visible() => onlyDrift ? rows.Where(r => Cfg.DriftOf(r.Agv).Count > 0) : rows;
+    void Toggle(int agv, bool on) { if (on) sel.Add(agv); else sel.Remove(agv); }
+
+    // ───── 기준값 ─────
+    void SaveBaseline()
+    {
+        Cfg.SetBaseline(bl.Where(kv => !string.IsNullOrWhiteSpace(kv.Value)).ToDictionary(kv => kv.Key, kv => kv.Value.Trim()));
+        baseMsg = $"저장했습니다 ({Cfg.Baseline().Count}개 항목)";
+    }
+    void FromFleet()
+    {
+        var n = Cfg.SetBaselineFromFleet();
+        bl.Clear(); foreach (var (k, v) in Cfg.Baseline()) bl[k] = v;
+        baseMsg = n == 0 ? "수집된 설정이 없습니다" : $"다수결로 {n}개 항목을 채웠습니다 — 확인하고 필요하면 고쳐서 저장하세요";
+    }
+    void ClearBaseline() { bl.Clear(); Cfg.SetBaseline(new Dictionary<string, string>()); baseMsg = "기준값을 비웠습니다"; }
+
+    // ───── 수집 ─────
+    async Task CollectOnline()
+    {
+        collecting = true; collectMsg = null; collectErr = false;
+        try
+        {
+            var ids = Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec)).Select(a => a.Id).ToList();
+            var (ok, fail) = await Cfg.CollectManyAsync(ids);
+            collectMsg = $"읽음 {ok}대" + (fail > 0 ? $", 실패 {fail}대 (구 펌웨어·응답 없음 — 호기를 열어 '다시 읽기'로 사유 확인)" : "");
+            collectErr = fail > 0 && ok == 0;
+        }
+        finally { collecting = false; Load(); }
+    }
+    async Task CollectOne(int agv)
+    {
+        var r = await Cfg.CollectAsync(agv);
+        collectMsg = $"{agv:D2} 호기: {r.Message}"; collectErr = !r.Ok;
+        Load();
+    }
+
+    void SelectOnline() { sel.Clear(); foreach (var r in rows) if (Reg.Get(r.Agv)?.Online(Opt.Value.OfflineAfterSec) ?? false) sel.Add(r.Agv); }
+    void SelectDrift() { sel.Clear(); foreach (var r in rows) if (Cfg.DriftOf(r.Agv).Count > 0) sel.Add(r.Agv); }
+
+    // ───── 일괄 변경 ─────
+    void FillFromBaseline()
+    {
+        var keys = sel.SelectMany(a => Cfg.DriftOf(a)).GroupBy(d => d.Key).Select(g => (g.Key, Value: g.First().Expected)).ToList();
+        if (keys.Count == 0) { bulkMsg = "선택한 호기에 기준값과 다른 항목이 없습니다"; bulkErr = false; return; }
+        changes.Clear();
+        foreach (var (k, v) in keys) changes.Add(new ChangeRow { Key = k, Value = v });
+        bulkMsg = null;
+    }
+
+    async Task StartBulk()
+    {
+        bulkMsg = null; bulkErr = false;
+        var list = changes.Where(c => c.Value.Length > 0).Select(c => new BulkChange(c.Key, c.Value.Trim())).ToList();
+        if (CfgBulkService.Check(list, sel.ToList(), batch) is { } bad) { bulkMsg = bad; bulkErr = true; return; }
+        var risky = list.Any(c => c.Key is "server" or "server_port" or "local_port" or "ssid" or "pass" or "mask" or "gw");
+        var text = $"{sel.Count}대 호기의 설정을 바꾸고 재부팅합니다.\n\n" + string.Join("\n", list.Select(c => $"  {c.Key} = {c.Shown}")) +
+                   $"\n\n{batch}대씩 진행하며, 한 묶음이라도 실패하면 멈춥니다." +
+                   (risky ? "\n\n⚠ 네트워크 항목입니다. 새 설정으로 서버에 닿지 못하면 브리지가 180초 뒤 이전 설정으로 돌아갑니다." : "") +
+                   "\n\n계속할까요?";
+        try
+        {
+            if (!await JS.ConfirmAsync(text)) return;
+            Bulk.Start(sel.ToList(), list, batch);
+        }
+        catch (InvalidOperationException e) { bulkMsg = e.Message; bulkErr = true; }
+        catch (JSDisconnectedException) { }
+    }
+
+    static string StateText(BulkTargetState s) => s switch
+    {
+        BulkTargetState.Waiting => "대기", BulkTargetState.Applying => "적용 중", BulkTargetState.Rebooting => "재부팅 대기", BulkTargetState.Verifying => "확인 중",
+        BulkTargetState.Done => "완료", BulkTargetState.Failed => "실패", _ => "건너뜀",
+    };
+
+    static string Ago(DateTime utc)
+    {
+        var s = (DateTime.UtcNow - utc).TotalSeconds;
+        return s < 60 ? $"{(int)s}초 전" : s < 3600 ? $"{(int)(s / 60)}분 전" : s < 86400 ? $"{(int)(s / 3600)}시간 전" : $"{(int)(s / 86400)}일 전";
+    }
+}

@@ -7,7 +7,7 @@ namespace Gateway.Server.Tests;
 public class GatewayDbMigrationTests
 {
     [Fact]
-    public void V1_database_is_migrated_to_v3_and_old_jobs_read_as_immediate()
+    public void V1_database_is_migrated_to_v4_and_old_jobs_read_as_immediate()
     {
         var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
@@ -40,7 +40,7 @@ public class GatewayDbMigrationTests
             var db = new GatewayDb(dir);
             using (var c = db.Open())
             {
-                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='old1'")) Assert.Equal(0L, cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT apply_mode, not_after, approved_at FROM jobs WHERE id='old1'"))
                 using (var r = cmd.ExecuteReader())
@@ -51,8 +51,8 @@ public class GatewayDbMigrationTests
                 }
                 using (var cmd = GatewayDb.Cmd(c, "SELECT stage_job FROM job_targets WHERE job_id='old1'")) Assert.Equal(DBNull.Value, cmd.ExecuteScalar());
             }
-            Assert.Equal(3, GatewayDb.SchemaVersion);
-            // 두 번 열어도(이미 v3) 문제없음
+            Assert.Equal(4, GatewayDb.SchemaVersion);
+            // 두 번 열어도(이미 v4) 문제없음
             _ = new GatewayDb(dir);
 
             var store = new FirmwareStore(dir, db);
@@ -73,13 +73,13 @@ public class GatewayDbMigrationTests
     }
 
     [Fact]
-    public void New_database_starts_at_v3()
+    public void New_database_starts_at_v4()
     {
         using var k = new JobTestKit();
         using var c = k.Db.Open();
         using (var cmd = GatewayDb.Cmd(c, "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('apply_mode','not_after','approved_at','recover')"))
             Assert.Equal(4L, cmd.ExecuteScalar());
-        using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+        using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
     }
 
     [Fact]
@@ -101,7 +101,7 @@ public class GatewayDbMigrationTests
             var db = new GatewayDb(dir);
             using (var c = db.Open())
             {
-                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("3", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='v2job'")) Assert.Equal(0L, cmd.ExecuteScalar());
             }
             var svc = new JobService(Microsoft.Extensions.Options.Options.Create(new Gateway.Server.Options.GatewayOptions { DataDir = dir }),
