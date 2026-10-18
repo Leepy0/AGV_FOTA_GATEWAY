@@ -359,3 +359,10 @@ dialog.confirm .ln.warn { border: 0; border-radius: var(--r-btn); background: va
 .m3-tonal { background: var(--fill); color: var(--pri); filter: none; }
 .m3-text { background: transparent; color: var(--pri); }
 .m3-tonal:hover, .m3-text:hover { background: var(--fill); }
+
+/* 버튼·링크 버튼 글자 세로 가운데, 같은 줄 요소(체크박스·텍스트) 정렬, 필터 가로 배치 */
+button, a.button { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+.row-buttons { align-items: center; }
+.row-buttons label { display: inline-flex; align-items: center; gap: var(--s1); margin: 0; }
+.filters { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); align-items: center; margin: var(--s3) 0; }
+.filters .m3-field { margin: 0; width: 220px; }
