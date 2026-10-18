@@ -5,22 +5,22 @@
 
 <PageTitle>ACS AGV 연결 현황 · AGV FOTA</PageTitle>
 <h1>ACS AGV 연결 현황</h1>
-<p class="muted">agv-info에서 agvType=TAPE인 AGV만 표시합니다. 신규 TAPE API의 agvid와 agv-info의 AGV 코드/ID를 기준으로 병합합니다. 연결 여부는 agvOpcUrl IP와 최근 UDP 출처 IP를 비교합니다.</p>
+<p class="muted">TAPE AGV 만 · 연결 = ACS 의 IP 와 최근 UDP 출처 IP 일치</p>
 <div class="banner @(Inventory.Enabled ? "info" : "")">
-    @(Inventory.Enabled ? $"ACS 목록 동기화: {Inventory.LastResult}" : "ACS 목록 동기화가 꺼져 있습니다. AcsMapInventory.Enabled=true 및 API 주소·인증을 지정하세요.")
+    @(Inventory.Enabled ? $"ACS 목록 동기화: {Inventory.LastResult}" : "ACS 목록 동기화 꺼짐 (AcsMapInventory.Enabled)")
     · 마지막 성공 @(Inventory.LastOk?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
     <button @onclick="Refresh" disabled="@busy">지금 새로고침</button>
 </div>
 @if (error.Length > 0) { <div class="banner err">@error</div> }
 
 <div class="filters">
-    <label>ACS KEY <input @bind="acsKeyFilter" @bind:event="oninput" list="acsKeyOptions" placeholder="전체 또는 직접 입력" /></label>
+    <div class="m3-field"><input @bind="acsKeyFilter" @bind:event="oninput" list="acsKeyOptions" placeholder="전체 또는 직접 입력" /><label>ACS KEY</label></div>
     <datalist id="acsKeyOptions">@foreach (var key in AcsKeys) { <option value="@key" /> }</datalist>
-    <label>Area <input @bind="areaFilter" @bind:event="oninput" list="areaOptions" placeholder="전체 또는 직접 입력" /></label>
+    <div class="m3-field"><input @bind="areaFilter" @bind:event="oninput" list="areaOptions" placeholder="전체 또는 직접 입력" /><label>Area</label></div>
     <datalist id="areaOptions">@foreach (var area in Areas) { <option value="@area" /> }</datalist>
-    <label>Product <select @bind="productFilter"><option value="">전체 제품군</option>@foreach (var p in Products) { <option value="@p">@p</option> }</select></label>
-    <label>상태 <select @bind="statusFilter"><option value="">전체 상태</option>@foreach (var s in Statuses) { <option value="@s">@s</option> }</select></label>
-    <label>검색 <input @bind="textFilter" @bind:event="oninput" placeholder="AGV ID / 이름 / IP" /></label>
+    <div class="m3-field"><select @bind="productFilter"><option value="">전체 제품군</option>@foreach (var p in Products) { <option value="@p">@p</option> }</select><label>Product</label></div>
+    <div class="m3-field"><select @bind="statusFilter"><option value="">전체 상태</option>@foreach (var s in Statuses) { <option value="@s">@s</option> }</select><label>상태</label></div>
+    <div class="m3-field"><input @bind="textFilter" @bind:event="oninput" placeholder="AGV ID / 이름 / IP" /><label>검색</label></div>
     <button @onclick="ClearFilters">필터 초기화</button>
 </div>
 
