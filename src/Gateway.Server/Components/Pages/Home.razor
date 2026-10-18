@@ -10,7 +10,11 @@
 
 <PageTitle>호기 현황 · AGV FOTA</PageTitle>
 <h1>호기 현황</h1>
-<p class="muted">브리지 heartbeat 기준(@(Opt.Value.OfflineAfterSec)초 넘게 없으면 오프라인). 메인보드 열은 브리지 0.5.0 이상이 앱에 물어본 버전(앱 / 부트로더)과 스테이징 상태입니다. 행을 누르면(또는 Tab 으로 옮겨 Enter) 상세가 열립니다.</p>
+<p class="freshness @(Stale ? "stale" : "muted")" role="status">
+    @if (all.Count == 0) { <text>호기 신호를 아직 받지 못했습니다</text> }
+    else if (Stale) { <text>⚠ 마지막 수신 @Ago(lastSeen) — @(Opt.Value.OfflineAfterSec)초 넘게 어느 호기의 신호도 받지 못했습니다. 서버 UDP @Opt.Value.UdpPort 수신과 네트워크를 확인하세요.</text> }
+    else { <text>마지막 수신 @Ago(lastSeen) · 호기 신호 @(Opt.Value.OfflineAfterSec)초 넘게 없으면 오프라인 · 행을 누르면 상세</text> }
+</p>
 
 @if (all.Count == 0)
 {
@@ -21,32 +25,48 @@ else
     @if (conflicts.Count > 0)
     {
         <div class="banner err" role="alert">
-            ⚠ 같은 호기 번호를 쓰는 장치가 둘 있습니다:
-            @foreach (var c in conflicts) { <span class="badge bad" title="충돌 @(c.ConflictCount)회 · 마지막 @Ago(c.ConflictAt)">@c.Id.ToString("D2") 호기 — 사용 중 @c.EndPoint / 새 주소 @c.ConflictEndPoint</span> }
-            <br /><span class="small">처음 붙어 있던 주소로 계속 중계합니다. 충돌이 풀릴 때까지 이 호기는 배포 작업 대상·수동 전송에서 제외됩니다. 한쪽 브리지의 agv 번호를 고치세요.</span>
+            ⚠ <b>호기 번호 충돌</b>
+            @foreach (var c in conflicts) { <span class="badge bad" title="충돌 @(c.ConflictCount)회 · 마지막 @Ago(c.ConflictAt)">@c.Id.ToString("D2") 호기 · @c.EndPoint ↔ @c.ConflictEndPoint</span> }
+            <br /><span class="small">배포·수동 전송 제외 — 한쪽 브리지의 agv 번호를 고치세요</span>
         </div>
     }
-    @if (Rel.Latest is { } latest && all.Count(a => latest.IsOutdated(a.Status?.Fw)) is var oldN and > 0)
+    @if (!relDismissed && Rel.Latest is { } latest && all.Count(a => latest.IsOutdated(a.Status?.Fw)) is var oldN and > 0)
     {
-        <div class="banner info">
-            브리지 새 버전 <b>v@(latest.Version.ToString(3))</b> — 구버전 @oldN 대 (온라인 @all.Count(a => On(a) && latest.IsOutdated(a.Status?.Fw)) 대).
-            <a href="firmware">펌웨어 화면</a> 에서 가져와 배포 작업을 만드세요.
+        <div class="banner info row">
+            <span class="grow">브리지 새 버전 <b>v@(latest.Version.ToString(3))</b> · 구버전 @oldN 대 → <a href="firmware">펌웨어</a></span>
+            <button type="button" @onclick="() => relDismissed = true">닫기</button>
         </div>
     }
     @if (clockBad.Count > 0)
     {
         <div class="banner err" role="alert">
-            ⚠ 브리지 시각이 서버와 @Opt.Value.ClockSkewWarnMs ms 넘게 다르거나 맞춰지지 않은 호기 @clockBad.Count 대:
+            ⚠ <b>시각 어긋남 @clockBad.Count 대</b> (@Opt.Value.ClockSkewWarnMs ms 초과)
             @foreach (var c in clockBad.Take(10)) { <span class="badge bad">@c.Id.ToString("D2") @ClockText(c)</span> }
-            <span class="small">@(Opt.Value.ClockAutoSync ? "서버가 자동으로 시각을 다시 보냅니다(호기당 1분에 1회)." : "자동 보정이 꺼져 있습니다 (Gateway.ClockAutoSync) — 호기 상세의 '시각 동기'로 맞추세요.")</span>
+            <span class="small">@(Opt.Value.ClockAutoSync ? "자동 보정 중" : "자동 보정 꺼짐 — 호기 상세의 [시각 동기]")</span>
+        </div>
+    }
+    @* 개요(요약 카드, 누르면 거름) → 구역 → 목록 → 행을 눌러 상세 *@
+    <div class="kpis">
+        <button type="button" class="kpi @(filter == "all" ? "on" : "")" @onclick='() => filter = "all"'><div class="v">@all.Count</div><div class="l">전체 호기</div></button>
+        <button type="button" class="kpi @(filter == "on" ? "on" : "")" @onclick='() => filter = "on"'><div class="v">@onlineN<small>/ @all.Count</small></div><div class="l">온라인</div></button>
+        <button type="button" class="kpi @(filter == "off" ? "on" : "")" @onclick='() => filter = "off"'><div class="v">@(all.Count - onlineN)</div><div class="l">오프라인</div></button>
+        <button type="button" class="kpi @(attnN > 0 ? "attn" : "") @(filter == "attn" ? "on" : "")" @onclick='() => filter = "attn"' title="충돌·OTA 미확정·시각 편차·프레임 손실·RSSI 약함 등 확인이 필요한 온라인 호기"><div class="v">@(attnN > 0 ? "⚠ " : "")@attnN</div><div class="l">점검 필요</div></button>
+        @if (busyDsp > 0) { <button type="button" class="kpi attn @(filter == "dsp" ? "on" : "")" @onclick='() => filter = "dsp"'><div class="v">@busyDsp</div><div class="l">메인보드 작업 중</div></button> }
+    </div>
+    @if (Groups.Count > 0 && Groups.Tree.Children.Count > 0)
+    {
+        <div class="zones" role="group" aria-label="구역별 요약">
+            @foreach (var z in Groups.Tree.Children)
+            {
+                var zOn = all.Count(a => z.AllAgvs.Contains(a.Id) && On(a));
+                var zAttn = all.Count(a => z.AllAgvs.Contains(a.Id) && On(a) && Issues(a).Count > 0);
+                <button type="button" class="zone @(group == z.Path ? "on" : "")" aria-pressed="@(group == z.Path ? "true" : "false")" @onclick="() => group = group == z.Path ? string.Empty : z.Path">
+                    <b>@z.Name</b><span>온라인 @zOn / @z.Count@(zAttn > 0 ? $" · 점검 {zAttn}" : "")</span>
+                </button>
+            }
         </div>
     }
     <div class="stats">
-        <button class="stat @(filter == "all" ? "on" : "")" @onclick='() => filter = "all"'><b>@all.Count</b> 전체</button>
-        <button class="stat ok @(filter == "on" ? "on" : "")" @onclick='() => filter = "on"'><b>@all.Count(a => On(a))</b> 온라인</button>
-        <button class="stat bad @(filter == "off" ? "on" : "")" @onclick='() => filter = "off"'><b>@all.Count(a => !On(a))</b> 오프라인</button>
-        @if (pending > 0) { <button class="stat warn @(filter == "pending" ? "on" : "")" @onclick='() => filter = "pending"' title="재부팅 후 아직 확정되지 않은 브리지 OTA (PING 으로 확정됨)"><b>@pending</b> OTA 미확정</button> }
-        @if (busyDsp > 0) { <button class="stat warn @(filter == "dsp" ? "on" : "")" @onclick='() => filter = "dsp"'><b>@busyDsp</b> 메인보드 작업 중</button> }
         <span class="stat-group">
             <span class="muted small">브리지 fw</span>
             @foreach (var g in all.Where(On).GroupBy(FwKey).OrderByDescending(g => g.Count()))
@@ -75,7 +95,7 @@ else
     <div class="table-wrap">
         <table class="grid clickable">
             <thead>
-                <tr><th>호기</th><th>구역</th><th>상태</th><th>주소</th><th>브리지 fw</th><th>슬롯</th><th>ota</th><th>cfg</th><th>RSSI</th><th title="브리지 시각 − 서버 시각 (브리지 0.8.0+)">시각 편차</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>MAIN ↑/↓</th><th>손실</th><th>마지막 프레임</th></tr>
+                <tr><th>호기</th><th>구역</th><th>상태</th><th>브리지 fw</th><th>메인보드 앱 / 부트</th><th>스테이징</th><th>RSSI</th><th>점검</th></tr>
             </thead>
             <tbody>
                 @foreach (var a in Visible())
@@ -86,24 +106,17 @@ else
                     <tr class="@(on ? "" : "off") @(sel == a.Id ? "sel" : "")" tabindex="0" aria-expanded="@(sel == a.Id ? "true" : "false")"
                         @onclick="() => Toggle(a.Id)" @onkeydown="e => RowKey(e, a.Id)">
                         <td><b>@a.Id.ToString("D2")</b>@if (conflict) { <span class="badge bad" title="같은 번호 장치: @a.ConflictEndPoint (사용 중 @a.EndPoint)">충돌</span> }</td>
-                        <td class="small ellipsis" title="@(Groups.Get(a.Id)?.Group.Path)">@(Groups.Get(a.Id)?.Group.Path ?? "")</td>
-                        <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : Ago(a.LastSeen))</td>
-                        <td class="mono small">@a.EndPoint?.Address</td>
+                        <td class="zonecell" title="@(Groups.Get(a.Id)?.Group.Path)">@(Zone(Groups.Get(a.Id)?.Group.Path).main)<small>@(Zone(Groups.Get(a.Id)?.Group.Path).rest)</small></td>
+                        <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : $"오프라인 · {Ago(a.LastSeen)}")</td>
                         <td>@st?.Fw</td>
-                        <td>@st?.Part</td>
-                        <td class="@(st?.Ota == "pending" ? "warn-text" : "")" title="@(st?.Ota == "pending" ? "재부팅 후 미확정 — 서버 PING 을 받으면 valid 로 확정" : "")">@st?.Ota</td>
-                        <td>@st?.Cfg @(st?.SetupAp == true ? "(AP)" : "")</td>
-                        <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null ? "" : st.Rssi)</td>
-                        <td class="@(clockBad.Contains(a) ? "bad-text" : "")" title="@ClockTitle(a)">@ClockText(a)</td>
                         <td title="@(st?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 — USB 전체 굽기 필요" : st?.DspState == "" ? "브리지 0.5.0 미만" : "")">@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : st?.DspState == "nopart" ? " ⚠ 파티션 없음" : "")</td>
                         <td>@(st?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {st.StagedJob})" : st?.DspState is "downloading" ? "받는 중" : "")</td>
-                        <td>@a.MainUp / @a.MainDown</td>
-                        <td class="@(a.SeqLoss > 0 ? "warn-text" : "")">@a.SeqLoss</td>
-                        <td class="mono small ellipsis" title="@a.LastFrame">@a.LastFrame</td>
+                        <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null || st.Rssi == 0 ? "" : st.Rssi)</td>
+                        <td>@if (on) { @foreach (var i in Issues(a)) { <span class="badge warn">⚠ @i</span> } }</td>
                     </tr>
                     @if (sel == a.Id)
                     {
-                        <tr class="detail"><td colspan="15">
+                        <tr class="detail"><td colspan="8">
                             <div class="detail-box">
                                 <div class="row-buttons">
                                     <b>@a.Id.ToString("D2") 호기</b>
@@ -142,6 +155,8 @@ else
                                         <dt>마지막 수신</dt><dd>@a.LastSeen.ToLocalTime().ToString("HH:mm:ss") (@Ago(a.LastSeen))</dd>
                                         <dt>가동</dt><dd>@Up(st.UpSeconds)</dd>
                                         <dt>Wi-Fi</dt><dd>ch @st.Channel · @st.Bssid · 끊김 @(st.Disconnects)회 · RSSI @st.Rssi (@Rssi(st.Rssi).text)@(a.LastTag.Length > 0 ? $" · 마지막 태그 {a.LastTag}" : "")</dd>
+                                        <dt>브리지</dt><dd>슬롯 @st.Part · ota <span class="@(st.Ota == "pending" ? "warn-text" : "")" title="@(st.Ota == "pending" ? "재부팅 후 미확정 — 서버 PING 을 받으면 valid 로 확정" : "")">@st.Ota</span> · cfg @st.Cfg@(st.SetupAp ? " (AP)" : "")</dd>
+                                        <dt>프레임</dt><dd>MAIN ↑@a.MainUp / ↓@a.MainDown · 손실 <span class="@(a.SeqLoss > 0 ? "warn-text" : "")">@a.SeqLoss</span>@(a.LastFrame.Length > 0 ? " · 마지막 " : "") <span class="mono">@a.LastFrame</span></dd>
                                         <dt>시각</dt><dd>@ClockTitle(a)@(a.TimeReplies > 0 ? $" · 서버가 시각 요청에 {a.TimeReplies}회 답함" : "")</dd>
                                         <dt>주소</dt><dd class="mono">@st.Ip @(st.Mac.Length > 0 ? $"({st.Mac})" : "") ← @a.EndPoint</dd>
                                         <dt>UART</dt><dd>MAIN rx @st.MainRx / tx @st.MainTx · RFID rx @st.RfidRx · 오류 @st.UartErrors</dd>
@@ -166,7 +181,10 @@ else
     string filter = "all", search = "", group = "";
     int? sel;
     (int agv, string text, bool ok)? result;   // INFO/PING 결과 — 그 호기 상세에서만 보인다
-    int pending, busyDsp;
+    int pending, busyDsp, onlineN, attnN;
+    DateTime lastSeen;   // 가장 최근에 받은 호기 신호
+    bool relDismissed;   // 새 브리지 버전 안내를 이번 화면에서 닫음
+    bool Stale => all.Count > 0 && (DateTime.UtcNow - lastSeen).TotalSeconds > Opt.Value.OfflineAfterSec;
     List<AgvState> conflicts = [];
     /// <summary>온라인이면서 시각 동기를 아는 브리지인데 미동기이거나 편차가 임계를 넘은 호기</summary>
     List<AgvState> clockBad = [];
@@ -182,17 +200,21 @@ else
     void Load()
     {
         all = Reg.Snapshot();
+        lastSeen = all.Count == 0 ? default : all.Max(a => a.LastSeen);
+        onlineN = all.Count(On);
         pending = all.Count(a => On(a) && a.Status?.Ota == "pending");
         busyDsp = all.Count(a => On(a) && a.Status?.DspState is "downloading" or "programming");
         conflicts = all.Where(a => a.InConflict(Opt.Value.OfflineAfterSec)).ToList();
         clockBad = all.Where(a => On(a) && a.Status is { HasClock: true } st && st.UpSeconds >= 30
                                   && (!st.ClockSynced || (a.ClockSkewMs is { } k && BridgeClock.OverThreshold(k, Opt.Value.ClockSkewWarnMs)))).ToList();
+        attnN = all.Count(a => On(a) && Issues(a).Count > 0);
         // 고른 필터의 버튼이 사라졌으면(개수 0, 버전 칩 없어짐) 전체로 되돌린다 — 빈 표만 남지 않게
         bool exists = filter switch
         {
             "all" or "on" or "off" => true,
             "pending" => pending > 0,
             "dsp" => busyDsp > 0,
+            "attn" => attnN > 0,
             _ when filter.StartsWith("fw:") => all.Any(a => On(a) && FwKey(a) == filter[3..]),
             _ when filter.StartsWith("dsp:") => all.Any(a => On(a) && DspKey(a) == filter[4..]),
             _ => false,
@@ -227,7 +249,7 @@ else
     async Task Scan(int agv)
     {
         // 스캔은 STA 연결 중 중계를 2~3초 느리게 한다 — 정지 확인 뒤에만
-        if (!await JS.ConfirmAsync($"{agv:D2} 호기가 정지해 있습니까?\n\nAP 스캔은 2~3초 동안 이 호기의 중계(RFID·ACS 프레임)를 늦출 수 있습니다. 정지 상태에서만 하세요.")) return;
+        if (!await JS.ConfirmAsync($"{agv:D2} 호기 AP 스캔\n⚠ AGV 정지 상태에서만 — 2~3초 동안 중계가 느려집니다", "AP 스캔")) return;
         await Diag(agv, "AP 스캔", "scan");
     }
 
@@ -259,6 +281,27 @@ else
     }
 
     bool On(AgvState a) => a.Online(Opt.Value.OfflineAfterSec);
+    /// <summary>구역 경로를 두 줄로: 위는 끝 두 단계(공정 · 라우트), 아래는 나머지 상위 경로</summary>
+    static (string main, string rest) Zone(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return ("", "");
+        var p = path.Split(" / ");
+        return p.Length <= 2 ? (string.Join(" · ", p), "") : (string.Join(" · ", p[^2..]), string.Join(" / ", p[..^2]));
+    }
+
+    /// <summary>온라인 호기에서 운용자가 볼 만한 이상 징후 (목록 '점검' 열·요약 카드 공통). 색이 아니라 글자로 알린다</summary>
+    List<string> Issues(AgvState a)
+    {
+        var l = new List<string>();
+        if (a.InConflict(Opt.Value.OfflineAfterSec)) l.Add("번호 충돌");
+        if (a.Status?.Ota == "pending") l.Add("OTA 미확정");
+        if (a.Status?.DspState == "nopart") l.Add("파티션 없음");
+        else if (a.Status is { HasDsp: false } m && !string.IsNullOrEmpty(m.DspState)) l.Add("앱 버전 모름");
+        if (clockBad.Contains(a)) l.Add("시각 편차");
+        if (a.SeqLoss > 0) l.Add($"손실 {a.SeqLoss}");
+        if (a.Status is { Rssi: < 0 } s && s.Rssi < -80) l.Add("RSSI 약함");
+        return l;
+    }
 
     List<AgvState> Visible()
     {
@@ -269,6 +312,7 @@ else
             // 버튼·칩의 개수는 온라인 호기만 세므로 거를 때도 온라인만
             "pending" => q.Where(a => On(a) && a.Status?.Ota == "pending"),
             "dsp" => q.Where(a => On(a) && a.Status?.DspState is "downloading" or "programming"),
+            "attn" => q.Where(a => On(a) && Issues(a).Count > 0),
             _ when filter.StartsWith("fw:") => q.Where(a => On(a) && FwKey(a) == filter[3..]),
             _ when filter.StartsWith("dsp:") => q.Where(a => On(a) && DspKey(a) == filter[4..]),
             _ => q,
@@ -308,7 +352,7 @@ else
         return s < 60 ? $"{(int)s}초 전" : s < 3600 ? $"{(int)(s / 60)}분 전" : s < 86400 ? $"{(int)(s / 3600)}시간 전" : $"{(int)(s / 86400)}일 전";
     }
     static string Up(long sec) => sec < 3600 ? $"{sec / 60}분" : sec < 86400 ? $"{sec / 3600}시간 {sec % 3600 / 60}분" : $"{sec / 86400}일 {sec % 86400 / 3600}시간";
-    static (string cls, string text) Rssi(int? r) => r is null or 0 ? ("", "") : r >= -60 ? ("ok-text", "좋음") : r >= -70 ? ("", "보통") : r >= -80 ? ("warn-text", "약함") : ("bad-text", "매우 약함 — AP 위치 확인");
+    static (string cls, string text) Rssi(int? r) => r is null or 0 ? ("", "") : r >= -60 ? ("", "좋음") : r >= -70 ? ("", "보통") : r >= -80 ? ("warn-text", "약함") : ("bad-text", "매우 약함 — AP 위치 확인");
     static string Pretty(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return "(heartbeat 없음)";

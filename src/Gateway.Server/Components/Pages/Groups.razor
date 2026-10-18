@@ -10,18 +10,18 @@
 
 <PageTitle>구역 · AGV FOTA</PageTitle>
 <h1>구역 (호기 소속)</h1>
-<p class="muted">제품군 → 층 → 라인 → 공정(구역) → 라우트(대상 자재) 순서로 호기를 분류합니다. 기존 ACS 에서 받아오거나(스키마 확정 후) 아래에서 직접 넣습니다. 트리의 항목을 누르면 그 아래 호기 전체를 한 번에 배포 대상으로 넘길 수 있습니다.</p>
+<p class="muted">제품군 → 층 → 라인 → 공정 → 라우트 · 항목을 누르면 그 아래 호기 전체를 배포 대상으로</p>
 
-<div class="banner @(Inv.Enabled ? (Inv.FailStreak > 0 ? "err" : "info") : "")" style="@(Inv.Enabled ? "" : "background:#f3f4f6;border-color:#e5e7eb;color:#374151")">
-    ACS 소속 받기: @(Inv.Enabled ? $"켜짐 · {Inv.Target} · 마지막 {Inv.LastTry?.ToLocalTime().ToString("HH:mm:ss") ?? "-"} {Inv.LastResult}" : "꺼짐 (AcsInventory.Enabled=false) — 스키마를 받으면 appsettings.json 의 AcsInventory 섹션을 채우고 켭니다")
-    <span class="row-buttons" style="display:inline-flex;margin:0 0 0 10px">
+<div class="banner @(Inv.Enabled ? (Inv.FailStreak > 0 ? "err" : "info") : "")">
+    ACS 소속 받기: @(Inv.Enabled ? $"켜짐 · {Inv.Target} · 마지막 {Inv.LastTry?.ToLocalTime().ToString("HH:mm:ss") ?? "-"} {Inv.LastResult}" : "꺼짐 (AcsInventory.Enabled)")
+    <span class="row-buttons inline">
         <button @onclick="Preview" disabled="@busy">응답 미리보기</button>
         <button @onclick="Pull" disabled="@(busy || !Inv.Enabled)">지금 받기</button>
     </span>
 </div>
 @if (Inv.Enabled && Inv.LastWarnings.Count > 0)
 {
-    <div class="banner" style="background:#fef3c7;border-color:#fcd34d;color:#92400e">ACS 소속 경고: @string.Join(" · ", Inv.LastWarnings.Take(3))@(Inv.LastWarnings.Count > 3 ? $" … 외 {Inv.LastWarnings.Count - 3}건" : "")</div>
+    <div class="banner warn">ACS 소속 경고: @string.Join(" · ", Inv.LastWarnings.Take(3))@(Inv.LastWarnings.Count > 3 ? $" … 외 {Inv.LastWarnings.Count - 3}건" : "")</div>
 }
 @if (Store.StartupError is { } se) { <div class="banner err">소속 저장소: @se</div> }
 @if (Store.DuplicatePaths is { Count: > 0 } dup) { <div class="banner err">같은 경로의 구역이 둘 이상 있습니다 (선택·배포 대상이 틀릴 수 있음): @string.Join(", ", dup)</div> }
@@ -94,18 +94,18 @@
             <datalist id="lv@(lv)">@foreach (var v in Store.Snapshot().Select(x => x.Group[lv]).Where(v => v.Length > 0).Distinct().OrderBy(v => v)) { <option value="@v" /> }</datalist>
         }
 
-        <h2 style="margin-top:16px">직접 추가</h2>
+        <h2 class="mt-4">직접 추가</h2>
         <div class="form row">
-            <label>호기 <input class="w-sm" @bind="newAgv" placeholder="7" /></label>
-            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <label>@AgvGroup.LevelNames[lv] <input class="w-md" @bind="newVals[lv]" list="lv@(lv)" /></label> }
+            <div class="m3-field w-sm"><input  @bind="newAgv" placeholder="7" /><label>호기</label></div>
+            @for (int i = 0; i < AgvGroup.Levels; i++) { var lv = i; <div class="m3-field w-md"><input placeholder=" "  @bind="newVals[lv]" list="lv@(lv)" /><label>@AgvGroup.LevelNames[lv]</label></div> }
             <button class="primary" @onclick="AddOne">추가</button>
             @if (msg is not null) { <span class="msg @(err ? "err" : "")">@msg</span> }
         </div>
-        <p class="muted small">미접속 호기도 넣을 수 있습니다 (ACS 목록 기준). 같은 호기를 다시 넣으면 덮어씁니다.</p>
+        <p class="muted small">같은 호기를 다시 넣으면 덮어씁니다</p>
 
-        <h2 style="margin-top:16px">CSV 붙여넣기 (일괄)</h2>
+        <h2 class="mt-4">CSV 붙여넣기 (일괄)</h2>
         <textarea class="csv" @bind="csv" rows="5" aria-label="CSV 붙여넣기" placeholder="@CsvPlaceholder"></textarea>
-        <div class="row-buttons"><button @onclick="ImportCsv" disabled="@string.IsNullOrWhiteSpace(csv)">가져오기</button> <span class="muted small">엑셀에서 열을 복사해 붙여 넣어도 됩니다 (탭 구분). 첫 줄 머리글은 건너뜁니다.</span></div>
+        <div class="row-buttons"><button @onclick="ImportCsv" disabled="@string.IsNullOrWhiteSpace(csv)">가져오기</button> <span class="muted small">엑셀에서 복사해 붙여넣기 · 첫 줄 머리글은 건너뜀</span></div>
         @if (csvResult is not null) { <div class="msg @(csvErr ? "err" : "")">@csvResult</div> }
     </section>
 </div>
@@ -179,7 +179,7 @@
     async Task Remove(int agv)
     {
         rowMsg = null;
-        if (!await JS.ConfirmAsync($"{agv:D2} 호기의 소속을 지울까요?")) return;
+        if (!await JS.ConfirmAsync($"{agv:D2} 호기 소속 삭제", "소속 삭제", danger: true)) return;
         try { Store.Remove(agv); }
         catch (Exception e) { rowMsg = $"{agv:D2} 삭제 실패: {e.Message}"; }
     }

@@ -6,11 +6,7 @@
 
 <PageTitle>Wi-Fi 분석 · AGV FOTA</PageTitle>
 <h1>Wi-Fi 분석</h1>
-<p class="muted">
-    브리지 heartbeat 의 RSSI·접속 AP(BSSID)·끊김 횟수를 서버가 이어 보며 끊김과 AP 이동(로밍)을 가려냅니다.
-    위치는 호기가 <b>마지막으로 읽은 바닥 RFID 태그</b>입니다 (태그를 읽은 적이 없으면 "(태그 모름)"). 신호가 -75 dBm 이하이면 '약한 신호'로 셉니다.
-    집계는 @(Opt.Value.WifiFlushSec)초 간격으로 기록되며 @(Opt.Value.WifiKeepDays)일 보관합니다.
-</p>
+<p class="muted">끊김·AP 이동(로밍) 분석 · 위치 = 마지막으로 읽은 RFID 태그 · -75 dBm 이하 = 약한 신호 · @(Opt.Value.WifiKeepDays)일 보관</p>
 
 <div class="stats">
     <span class="muted small">기간</span>
@@ -26,7 +22,7 @@
 </div>
 
 <section class="card">
-    <h2>AP 별 <span class="muted small">접속한 AP 마다의 신호 — 약한 신호 비율이 높거나 끊김이 많은 AP 를 먼저 보세요</span></h2>
+    <h2>AP 별 <span class="muted small">약한 신호·끊김이 많은 AP 가 위</span></h2>
     @if (aps.Count == 0) { <div class="empty">아직 집계가 없습니다. heartbeat 가 쌓이면 30초 안에 나타납니다.</div> }
     else
     {
@@ -53,7 +49,7 @@
 </section>
 
 <section class="card">
-    <h2>위치(RFID 태그) 별 <span class="muted small">끊김 → 약한 신호 비율 순 — 위쪽이 음영·로밍 문제 후보 지점</span></h2>
+    <h2>위치(RFID 태그) 별 <span class="muted small">위쪽 = 음영·로밍 문제 후보</span></h2>
     @if (spots.Count == 0) { <div class="empty">아직 집계가 없습니다.</div> }
     else
     {
@@ -80,7 +76,7 @@
 </section>
 
 <section class="card">
-    <h2>최근 사건 <span class="muted small">끊김(disc 증가)과 AP 이동(BSSID 변경) — 최근 @events.Count 건</span></h2>
+    <h2>최근 사건 <span class="muted small">끊김·AP 이동 · 최근 @events.Count 건</span></h2>
     @if (events.Count == 0) { <div class="empty">사건이 없습니다.</div> }
     else
     {

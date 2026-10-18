@@ -11,7 +11,7 @@
 <h1>펌웨어</h1>
 
 <section class="card">
-    <h2>브리지 새 버전 <span class="muted small">GitHub 릴리스 (bridge.json)</span></h2>
+    <h2>브리지 새 버전</h2>
     @if (Rel.Latest is { } latest)
     {
         var have = Rel.AlreadyImported(latest);
@@ -41,31 +41,29 @@
     }
     @if (Rel.Latest is not null && Rel.Error is not null) { <p class="msg warn">@Rel.Error</p> }
     @if (relMsg is not null) { <div class="msg @(relErr ? "err" : "")">@relMsg</div> }
-    <p class="muted small">@(Rel.LastCheck == default ? "" : $"마지막 확인 {Rel.LastCheck.ToLocalTime():HH:mm:ss} · ")주소 <span class="mono">@Rel.ManifestUrl</span> — 받은 이미지는 sha256·크기·앱 헤더를 확인한 뒤에만 목록에 올립니다.</p>
+    <p class="muted small" title="@Rel.ManifestUrl">@(Rel.LastCheck == default ? "" : $"마지막 확인 {Rel.LastCheck.ToLocalTime():HH:mm:ss}")</p>
 </section>
 
 <section class="card">
     <h2>업로드</h2>
     <div class="form">
-        <label>종류
-            <select @bind="kind" @bind:after="KindChanged">
+        <div class="m3-field"><select @bind="kind" @bind:after="KindChanged">
                 <option value="Dsp">메인보드 DSP (TMS320F2808, .dspfw)</option>
                 <option value="Esp">브리지 ESP32-S3 (agv_wifi_bridge.bin)</option>
-            </select>
-        </label>
+            </select><label>종류</label></div>
         @if (kind == "Dsp")
         {
-            <p class="muted">CCS 빌드 결과를 <code>tools/dsp_pack.py</code> 로 묶은 <b>.dspfw</b> 파일을 올립니다. 버전·CRC 는 파일 헤더에서 읽습니다(버전은 8자 이하 영문·숫자·._-). 브리지 0.5.0 이상이 받아 두었다가 메인보드에 굽습니다.</p>
+            <p class="muted">메인보드 <b>.dspfw</b> (tools/dsp_pack.py 결과) · 버전은 파일에서 읽음</p>
             <label>.dspfw 파일 <InputFile OnChange="e => file = e.File" accept=".dspfw" /></label>
         }
         else
         {
-            <p class="muted">ESP-IDF <code>build/agv_wifi_bridge.bin</code> (앱 이미지만) 을 올립니다. 버전·프로젝트·빌드 시각은 이미지 안의 앱 디스크립터에서 읽어 확인합니다. bootloader·partition-table·merged 이미지는 거부됩니다.</p>
+            <p class="muted">브리지 <b>agv_wifi_bridge.bin</b> (앱 이미지만) · bootloader·merged 이미지는 거부</p>
             <label>agv_wifi_bridge.bin <InputFile OnChange="e => file = e.File" accept=".bin" /></label>
         }
         @if (file is not null) { <div class="muted small">선택: @file.Name (@file.Size.ToString("N0") B)</div> }
-        <label>버전 <input @bind="version" placeholder="비우면 파일에서 읽음 (입력하면 일치 확인)" /></label>
-        <label>메모 <input @bind="notes" placeholder="변경 내용 등 (비우면 빌드 정보)" /></label>
+        <div class="m3-field"><input @bind="version" placeholder="비우면 파일에서 읽음 (입력하면 일치 확인)" /><label>버전</label></div>
+        <div class="m3-field"><input @bind="notes" placeholder="변경 내용 등 (비우면 빌드 정보)" /><label>메모</label></div>
         <button class="primary" @onclick="Upload" disabled="@(busy || file is null)">@(busy ? "업로드 중…" : "업로드")</button>
         @if (msg is not null) { <div class="msg @(err ? "err" : "")">@msg</div> }
         @if (warn is not null) { <div class="msg warn">@warn</div> }
@@ -102,7 +100,7 @@
             </tbody>
         </table>
         </div>
-        @if (list.GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="muted small">⚠ 같은 종류·버전이 여러 개 있습니다. 작업 만들 때 헷갈리지 않도록 오래된 것을 지우세요.</p> }
+        @if (list.GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="msg warn">⚠ 같은 종류·버전이 여러 개 — 오래된 것을 지우세요</p> }
     }
 </section>
 
@@ -176,7 +174,7 @@
         {
             var users = ActiveJobNames(e.Id);
             if (users.Count > 0) { msg = $"작업 {string.Join(", ", users)} 이(가) 쓰는 펌웨어입니다 — 작업을 먼저 취소하세요"; err = true; return; }
-            if (!await JS.ConfirmAsync($"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version} 을(를) 삭제할까요? 파일도 함께 지워집니다.")) return;
+            if (!await JS.ConfirmAsync($"{(e.Kind == FirmwareKind.Dsp ? "메인보드" : "브리지")} {e.Version}  삭제\n파일도 함께 지워집니다", "펌웨어 삭제", danger: true)) return;
             // 확인창이 떠 있는 동안 작업이 생겼을 수 있다 — REST 와 같은 원자적 경로가 사용 여부를 다시 보고 지운다
             if (JobSvc.DeleteFirmwareIfUnused(e.Id, out var inUse)) msg = $"삭제: {e.Version}";
             else if (inUse.Count > 0) { msg = $"그사이 작업 {string.Join(", ", inUse.Select(j => j.Name))} 이(가) 이 펌웨어를 쓰게 되어 지우지 않았습니다"; err = true; }

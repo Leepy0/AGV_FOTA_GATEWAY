@@ -657,7 +657,7 @@ public sealed class JobService : BackgroundService
                 else if (stagePhase) await StageDspAsync(fw!, r, ct);
                 else if (applyPhase) await ApplyDspAsync(fw!, r, job.Recover, ct);
                 else { await StageDspAsync(fw!, r, ct); await ApplyDspAsync(fw!, r, job.Recover, ct); }
-                if (stagePhase) { r.State = TargetState.Staged; r.Percent = 30; Add(r, "스테이징 완료 — 적용 대기 (전 호기 스테이징 뒤 화면에서 '적용 시작')"); }
+                if (stagePhase) { r.State = TargetState.Staged; r.Percent = 30; Add(r, "스테이징 완료 — 승인 대기"); }
                 else { r.State = TargetState.Done; r.Percent = 100; }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
