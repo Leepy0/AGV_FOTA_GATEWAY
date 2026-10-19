@@ -120,8 +120,6 @@ else
                             <div class="detail-box">
                                 <div class="row-buttons">
                                     <b>@a.Id.ToString("D2") 호기</b>
-                                    <button @onclick='() => Do(a.Id, Link.SendInfoRequest, "INFO 요청")' @onclick:stopPropagation>INFO 요청</button>
-                                    <button @onclick='() => Do(a.Id, Link.SendPing, "PING")' @onclick:stopPropagation>PING</button>
                                     <a href="trace?agv=@a.Id" @onclick:stopPropagation>통신 로그</a>
                                     <a href="jobs?agv=@a.Id" @onclick:stopPropagation>이 호기에 배포</a>
                                     <a href="groups?path=@Uri.EscapeDataString(Groups.Get(a.Id)?.Group.Path ?? "")" @onclick:stopPropagation>구역 @(Groups.Get(a.Id) is null ? "(미등록)" : "")</a>

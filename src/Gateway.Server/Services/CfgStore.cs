@@ -34,7 +34,7 @@ public sealed class CfgStore : BackgroundService
     readonly ConcurrentDictionary<int, DateTime> _due = new();
     readonly ConcurrentDictionary<int, DateTime> _lastTry = new();
     public event Action? Changed;
-    TimeSpan _replyTimeout = TimeSpan.FromSeconds(5);
+    TimeSpan _replyTimeout = TimeSpan.FromSeconds(20);   // 화면의 "설정 읽기"와 같은 20초 (5초는 모자랐음)
 
     public CfgStore(GatewayDb db, AgvRegistry reg, BridgeUdpService link, IOptions<GatewayOptions> opt, ILogger<CfgStore> log)
         : this(db, reg, link, link, opt, log) { }
@@ -104,7 +104,9 @@ public sealed class CfgStore : BackgroundService
         if (snap is null)
             return new(false, reply.Text!.StartsWith("{\"err\"", StringComparison.Ordinal)
                 ? $"브리지가 오류를 돌려줌: {reply.Text}"
-                : $"cfg json 을 지원하지 않는 펌웨어 (브리지 0.6.0 이상 필요): {Short(reply.Text!)}");
+                : reply.Text!.TrimStart().StartsWith('{')
+                    ? $"응답 형식을 읽지 못함 (cfg 항목 없음): {Short(reply.Text!)}"
+                    : $"cfg json 을 지원하지 않는 펌웨어 (브리지 0.6.0 이상 필요): {Short(reply.Text!)}");
         var e = new CfgEntry(agv, DateTime.UtcNow, snap);
         lock (_lock) _snaps[agv] = e;
         try

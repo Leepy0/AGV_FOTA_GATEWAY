@@ -216,8 +216,11 @@
         try
         {
             var ids = Reg.Snapshot().Where(a => a.Online(Opt.Value.OfflineAfterSec)).Select(a => a.Id).ToList();
-            var (ok, fail) = await Cfg.CollectManyAsync(ids);
-            collectMsg = $"읽음 {ok}대" + (fail > 0 ? $", 실패 {fail}대 (구 펌웨어·응답 없음 — 호기를 열어 '다시 읽기'로 사유 확인)" : "");
+            string? why = null; int ok = 0, fail = 0;
+            foreach (var chunk in ids.Chunk(4))
+                foreach (var r in await Task.WhenAll(chunk.Select(a => Cfg.CollectAsync(a))))
+                    if (r.Ok) ok++; else { fail++; why ??= r.Message; }
+            collectMsg = $"읽음 {ok}대" + (fail > 0 ? $", 실패 {fail}대 — 예: {why}" : "");
             collectErr = fail > 0 && ok == 0;
         }
         finally { collecting = false; Load(); }

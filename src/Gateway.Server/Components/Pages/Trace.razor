@@ -23,9 +23,9 @@
     <h2>수동 전송</h2>
     <div class="form row">
         <div class="m3-field w-sm"><input  @bind="agv" @bind:event="oninput" placeholder="번호" /><label>호기</label></div>
-        <div class="m3-field w-lg"><input class="mono" @bind="data" placeholder="W1107C001000 00000 또는 <STX>…<ETX> 전체" /><label>프레임</label></div>
+        <div class="m3-field w-lg"><input class="mono" @bind="data" @bind:event="oninput" @onkeydown='e => { if (e.Key == "Enter") _ = Send(); }' placeholder="W1107C001000 00000 또는 <STX>…<ETX> 전체" /><label>프레임</label></div>
         <button @onclick="Send">@(AgvLabel)MAIN_DOWN 전송</button>
-        <div class="m3-field w-lg"><input class="mono" @bind="cfg" placeholder="cfg | stat | set ip 192.168.10.107 | save | reboot" /><label>설정 명령</label></div>
+        <div class="m3-field w-lg"><input class="mono" @bind="cfg" @bind:event="oninput" @onkeydown='e => { if (e.Key == "Enter") _ = SendCfg(); }' placeholder="cfg | stat | set ip 192.168.10.107 | save | reboot" /><label>설정 명령</label></div>
         <button @onclick="SendCfg" disabled="@(!int.TryParse(agv, out _))">@(AgvLabel)CFG_CMD 전송</button>
         @if (msg is not null) { <span class="msg @(err ? "err" : "")">@msg</span> }
     </div>
@@ -41,7 +41,7 @@
     string? msg;
     bool paused, err;
     // 확인 없이 보내도 되는 읽기 전용 설정 명령
-    static readonly string[] ReadOnlyCfg = ["cfg", "stat", "help", "setup", "dsp", "dsp ver"];
+    static readonly string[] ReadOnlyCfg = ["cfg", "stat", "help", "setup", "dsp", "dsp ver", "time", "cfg json", "stat json"];
 
     string AgvLabel => int.TryParse(agv, out var a) && a is >= 1 and <= 99 ? $"{a:D2} 호기에 " : "";
 
