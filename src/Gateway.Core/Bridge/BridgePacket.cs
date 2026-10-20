@@ -58,7 +58,9 @@ public static class BridgePacket
     {
         var s = Encoding.UTF8.GetString(payload).TrimEnd('\n');
         if (s == ">") return "";
-        return s.EndsWith("\n>", StringComparison.Ordinal) ? s[..^2] : s;
+        if (s.EndsWith("\n>", StringComparison.Ordinal)) return s[..^2];
+        // 브리지 0.8.0 의 한 줄 JSON(cfg json·stat json)은 개행 없이 "}>" 로 끝난다
+        return s.EndsWith("}>", StringComparison.Ordinal) || s.EndsWith("]>", StringComparison.Ordinal) ? s[..^1] : s;
     }
 
     public static string TypeName(byte type) => type switch

@@ -33,6 +33,7 @@ public class BridgePacketTests
     [InlineData("cfg\nagv=7\n>\n", "cfg\nagv=7")]                // 여러 줄 본문 유지
     [InlineData(">\n", "")]                                    // 본문 없이 끝 표시만
     [InlineData("{\"fw\":\"0.5.5\"}\n>\n", "{\"fw\":\"0.5.5\"}")]
+    [InlineData("{\"fw\":\"0.8.0\",\"cfg\":{}}>\n", "{\"fw\":\"0.8.0\",\"cfg\":{}}")]   // 개행 없이 붙은 끝 표시
     [InlineData("old firmware text\n", "old firmware text")]   // 끝 표시가 없는 구버전 응답은 그대로
     public void Cfg_result_text_drops_end_marker(string raw, string expected)
         => Assert.Equal(expected, BridgePacket.CfgResultText(System.Text.Encoding.UTF8.GetBytes(raw)));
