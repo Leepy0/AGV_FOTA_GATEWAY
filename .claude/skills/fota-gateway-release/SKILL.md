@@ -38,7 +38,7 @@ python3 tests/e2e/run_e2e.py         # 빌드한 서버 + 가짜 브리지로 �
 
 - `run_e2e.py` 는 임시 데이터 폴더·임의 포트로 서버를 띄운다. `--only 1,3`, `--list`, `--keep`(로그 남기기). 종료 코드 = 실패 시나리오 수. 자세한 것은 `tests/e2e/README.md`.
 - 손으로 보기: `python3 tests/fake_esp.py --agv 7,12,23 --server 127.0.0.1:50000 --listen 50010`(브리지 0.5.2 흉내, 장애 주입 옵션은 `--help`) 을 띄우고
-  `dotnet run --project src/Gateway.Server` → `GET /api/agvs` 에 호기가 보이면 REST(`/api/firmware` 에 `.dspfw`, `/api/jobs`, `/api/jobs/{id}/approve`)로 작업을 돌려 본다.
+  `dotnet run --project src/Gateway.Server` → `GET /api/agvs` 에 호기가 보이면 REST(`/api/firmware` 에 메인보드 패키지 `.dsppkg` — 시험용은 `python3 tests/dsppkg.py app.dspfw -o app.dsppkg`, `/api/jobs`, `/api/jobs/{id}/approve`)로 작업을 돌려 본다.
 - 메인보드 OTA 는 브리지 B안(0x32 스테이징 → 적용 대기·승인 → 0x34 적용 → 0x33 보고)이며 서버는 메인보드와 직접 프레임을 주고받지 않는다.
 
 ## 2. 릴리스 (정식 배포)

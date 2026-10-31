@@ -103,32 +103,176 @@ public class FirmwareStoreTests : IDisposable
         Assert.False(new Job { State = JobState.Cancelled }.IsActive);
     }
 
+    static Task<FirmwareEntry> AddPkg(FirmwareStore st, byte[] pkg, string name = "AGV_Main_2.0.0.dsppkg", string version = "") =>
+        st.AddAsync(FirmwareKind.Dsp, version, "", "", [("pkg", name, new MemoryStream(pkg))]);
+
     [Fact]
     public async Task Dsp_version_longer_than_8_is_rejected()
     {
         var (_, st) = New();
         // 9자 버전 (앱 버전 응답은 8자까지라 굽고 나서도 '버전 다름'이 됨) — 업로드 단계에서 거부
         var img = DspfwImage.BuildApp(new ushort[] { 1, 2, 3 }, "1.2.3-rc1");   // 형식은 정상, 버전만 규칙 위반
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "a.dspfw", new MemoryStream(img))]));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => AddPkg(st, DspPackageBuilder.Build(img)));
+        Assert.Contains("8자 이하", ex.Message);
         Assert.Empty(st.List());
         Assert.Equal("", FwDirs());
     }
 
     [Fact]
-    public async Task Bad_dspfw_message_names_format_crc_and_block_structure()
+    public async Task Bad_dspfw_in_package_message_names_format_crc_and_block_structure()
+    {
+        var (_, st) = New();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => AddPkg(st, BrokenDspfwPackage()));
+        Assert.Contains("블록 구조", ex.Message);
+        Assert.Contains("dsp_pack.py bundle", ex.Message);
+        Assert.Equal("", FwDirs());
+    }
+
+    /// <summary>manifest 는 깨진 바이트로 계산 (sha·크기는 맞고 .dspfw 자체가 틀림)</summary>
+    static byte[] BrokenDspfwPackage()
+    {
+        var img = JobTestKit.DspImage("2.0.0");
+        img[100] ^= 1;
+        var outB = DspPackageBuilder.CoffOut(DspPackageBuilder.DefaultLinkTime);
+        var mapB = System.Text.Encoding.Latin1.GetBytes(DspPackageBuilder.Map("app.out", DspPackageBuilder.DefaultLinkTime));
+        var m = DspPackageBuilder.Manifest(img, "app_2.0.0.dspfw", outB, "app.out", mapB, "app.map", "time");
+        m["ver"] = "2.0.0";
+        return DspPackageBuilder.Zip([("manifest.json", DspPackageBuilder.ManifestBytes(m)), ("app_2.0.0.dspfw", img), ("app.out", outB), ("app.map", mapB)]);
+    }
+
+    // ── 메인보드 패키지(.dsppkg): .out·.map 을 늘 함께 보관 ──
+
+    [Theory]
+    [InlineData("app_2.0.0.dspfw")]
+    [InlineData("app.bin")]
+    [InlineData("app.zip")]
+    public async Task Bare_dspfw_or_other_file_for_dsp_is_rejected_with_package_hint(string name)
     {
         var (_, st) = New();
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "x.dspfw", new MemoryStream(new byte[64]))]));
-        Assert.Contains("블록 구조", ex.Message);
-        Assert.Contains("dsp_pack.py", ex.Message);
+            st.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", name, new MemoryStream(JobTestKit.DspImage("2.0.0")))]));
+        Assert.Contains(".dsppkg", ex.Message);
+        Assert.Contains("dsp_pack.py bundle", ex.Message);
+        Assert.Empty(st.List());
+        Assert.Equal("", FwDirs());
+    }
+
+    [Fact]
+    public async Task Package_upload_stores_dspfw_out_map_and_package_with_slots()
+    {
+        var (db, st) = New();
+        var pkg = JobTestKit.DspPackage("2.0.0", "AGV_Main");
+        var (e, warns) = await st.AddCheckedAsync(FirmwareKind.Dsp, "", "", "", [("pkg", "AGV_Main_2.0.0.dsppkg", new MemoryStream(pkg))]);
+        Assert.Empty(warns);
+        Assert.Equal(("2.0.0", 16, "time", true), (e.Version, e.PkgId.Length, e.LinkCheck, e.HasOriginals));
+        Assert.Equal(["dspfw", "out", "map", "pkg"], e.Files.Select(f => f.Slot));
+        Assert.Equal(["AGV_Main_2.0.0.dspfw", "AGV_Main.out", "AGV_Main.map", "AGV_Main_2.0.0.dsppkg"], e.Files.Select(f => f.FileName));
+        Assert.Equal("dspfw", e.Primary!.Slot);
+        Assert.Equal(JobTestKit.DspImage("2.0.0"), File.ReadAllBytes(st.PathOf(e, e.Primary)));   // 브리지가 받는 파일 = 패키지 안 .dspfw 그대로
+        Assert.Equal(pkg, File.ReadAllBytes(st.PathOf(e, e.FileOf("pkg")!)));
+        foreach (var f in e.Files)
+            Assert.Equal(f.Sha256, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(st.PathOf(e, f)))));
+        Assert.Equal(DspPackage.Read(pkg).Package!.PkgId, e.PkgId);
+
+        // DB: firmware 행에는 주 파일(이전 서버도 읽음), 나머지는 firmware_files
+        using (var c = db.Open())
+        {
+            using (var cmd = GatewayDb.Cmd(c, "SELECT slot, file_name, pkg_id, link_check FROM firmware WHERE id=$id", ("$id", e.Id)))
+            using (var r = cmd.ExecuteReader())
+            {
+                Assert.True(r.Read());
+                Assert.Equal(("dspfw", "AGV_Main_2.0.0.dspfw", e.PkgId, "time"), (r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)));
+            }
+            using (var cmd = GatewayDb.Cmd(c, "SELECT group_concat(slot, ',') FROM (SELECT slot FROM firmware_files WHERE firmware_id=$id ORDER BY slot)", ("$id", e.Id)))
+                Assert.Equal("map,out,pkg", cmd.ExecuteScalar());
+        }
+
+        // 다시 읽어도 같은 파일·슬롯·원본 표시
+        var again = Assert.Single(new FirmwareStore(_dir, db).List());
+        Assert.Equal(e.Files.Select(f => (f.Slot, f.FileName, f.Size, f.Sha256)), again.Files.Select(f => (f.Slot, f.FileName, f.Size, f.Sha256)));
+        Assert.Equal((e.PkgId, "time", true), (again.PkgId, again.LinkCheck, again.HasOriginals));
+        Assert.Contains("2.0.0", st.VersionsWithOriginals());
+    }
+
+    [Fact]
+    public async Task Package_warnings_and_same_package_duplicate_are_reported_not_rejected()
+    {
+        var (_, st) = New();
+        var skipped = DspPackageBuilder.Build(JobTestKit.DspImage("2.0.0"), tzOffsetSec: 12345, linkCheck: "skipped");
+        var (a, w1) = await st.AddCheckedAsync(FirmwareKind.Dsp, "", "", "", [("pkg", "a.dsppkg", new MemoryStream(skipped))]);
+        Assert.Equal("skipped", a.LinkCheck);
+        Assert.True(a.HasOriginals);
+        Assert.Contains(w1, w => w.Contains("건너뛰"));
+        var (b, w2) = await st.AddCheckedAsync(FirmwareKind.Dsp, "", "", "", [("pkg", "b.dsppkg", new MemoryStream(skipped))]);
+        Assert.Equal(a.PkgId, b.PkgId);
+        Assert.Contains(w2, w => w.Contains($"같은 패키지(ID {a.PkgId})"));
+        Assert.Equal(2, st.List().Count);
+    }
+
+    [Fact]
+    public async Task Package_rejections_leave_no_folder_or_row()
+    {
+        var (_, st) = New();
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => AddPkg(st, JobTestKit.DspPackage("2.0.0"), version: "2.0.1"));
+        Assert.Contains("패키지 버전 2.0.0", ex.Message);
+        var noMap = DspPackageBuilder.Zip([("manifest.json", "{}"u8.ToArray())]);
+        ex = await Assert.ThrowsAsync<InvalidOperationException>(() => AddPkg(st, noMap, "x.dsppkg"));
+        Assert.Contains("x.dsppkg: 패키지에 .dspfw 이 없습니다", ex.Message);
+        Assert.Empty(st.List());
+        Assert.Equal("", FwDirs());
+    }
+
+    [Fact]
+    public async Task Short_package_name_is_replaced_and_url_stays_short()
+    {
+        var (_, st) = New();
+        var e = await AddPkg(st, JobTestKit.DspPackage("2.0.0", new string('a', 48)), "한글.dsppkg");   // .dspfw 항목 이름 60자
+        Assert.All(e.Files, f => Assert.True(f.FileName.Length <= FirmwareStore.MaxFileName, f.FileName));
+        Assert.EndsWith(".dsppkg", e.FileOf("pkg")!.FileName);
+        Assert.True(e.FileOf("pkg")!.FileName.Length > 10);
+        var url = $"http://255.255.255.255:65535/fw/{e.Id}/{e.Primary!.FileName}";
+        Assert.True(url.Length <= 199, url.Length.ToString());
+    }
+
+    [Fact]
+    public async Task Delete_removes_both_tables_and_folder()
+    {
+        var (db, st) = New();
+        var e = await AddPkg(st, JobTestKit.DspPackage("2.0.0"));
+        Assert.Equal(3, db.Count("firmware_files"));
+        Assert.True(st.Delete(e.Id));
+        Assert.Equal(0, db.Count("firmware_files"));
+        Assert.Equal(0, db.Count("firmware"));
+        Assert.Equal("", FwDirs());
+        Assert.Empty(new FirmwareStore(_dir, db).List());
+    }
+
+    [Fact]
+    public async Task Failed_second_table_insert_rolls_back_the_firmware_row()
+    {
+        var (db, st) = New();
+        Exec(db, "CREATE TRIGGER no_files BEFORE INSERT ON firmware_files BEGIN SELECT RAISE(FAIL, 'disk full'); END");
+        await Assert.ThrowsAnyAsync<Exception>(() => AddPkg(st, JobTestKit.DspPackage("2.0.0")));
+        Assert.Empty(st.List());
+        Assert.Equal(0, db.Count("firmware"));   // 한 트랜잭션 — firmware 행도 남지 않음
+        Assert.Equal("", FwDirs());
+    }
+
+    [Fact]
+    public async Task Esp_entry_keeps_single_file_and_no_originals_flag()
+    {
+        var (db, st) = New();
+        var e = await AddEsp(st);
+        Assert.Equal(("esp", "", false), (e.Primary!.Slot, e.PkgId, e.HasOriginals));
+        Assert.Single(e.Files);
+        Assert.Equal(0, db.Count("firmware_files"));
     }
 
     [Theory]
     [InlineData("agv_wifi_bridge.bin", "agv_wifi_bridge.bin")]
     [InlineData("../../evil name.bin", "evil_name.bin")]
     [InlineData("한글.dspfw", "dspfw")]
+    [InlineData("AGV Main 1.2.3.dsppkg", "AGV_Main_1.2.3.dsppkg")]
     public void SafeName_cleans(string input, string expected) => Assert.Equal(expected, FirmwareStore.SafeName(input));
 
     [Fact]

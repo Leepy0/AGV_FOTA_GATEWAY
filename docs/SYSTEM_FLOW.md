@@ -96,7 +96,7 @@ Windows 서비스 `AgvFotaGateway` 로 돕니다. 서비스 하나하나의 역�
 | `BridgeUdpService` | UDP 50000 으로 브리지 패킷을 받고 보냅니다. 호기 번호 충돌을 감지하고, cfg=trial·ota=pending 이면 자동 PING 을 보냅니다. UDP 50001 RFID 는 통신 로그에만 남깁니다. UDP 50000 을 열 수 없으면 10초마다 다시 시도하고 화면에 배너를 띄웁니다 |
 | `AgvRegistry` | 호기별 최신 heartbeat·주소·카운터·충돌 상태를 들고 있습니다. 마지막 접속은 2초마다 모아서 DB 에 씁니다 |
 | `JobService` | 배포 작업을 예약·순차 실행합니다. 메인보드 작업은 스테이징 → 적용 대기 → 승인 → 적용으로 나눕니다 |
-| `FirmwareStore` | 업로드한 펌웨어를 검사해 `data/firmware/` 에 둡니다. 브리지가 받아 가도록 `/fw/` 주소로 내줍니다 |
+| `FirmwareStore` | 업로드한 펌웨어를 검사해 `data/firmware/` 에 둡니다. 메인보드는 패키지(`.dsppkg`)로만 받아 `.dspfw`·`.out`·`.map`·패키지를 함께 보관합니다(6.8절). 브리지가 받아 가도록 `/fw/` 주소로 내줍니다(브리지는 `.dspfw` 만) |
 | `AcsRelayService` | ACS TCP 중계. 기본 꺼짐 |
 | `AcsPositionPushService` | 호기 위치를 ACS 로 REST 보고. 기본 꺼짐 |
 | `AcsInventoryPullService` | ACS 에서 호기 소속(구역)을 REST 로 받기. 기본 꺼짐 |
@@ -597,7 +597,7 @@ RFID 리더 보드레이트 기본값은 9600 이며, 현장 리더에 맞는지
 | 정상 기동 알림 | 메인 루프 진입 때 `fwup_boot_ok()` 한 번 |
 | 링커 | 플래시는 `APPHDR`(0x3E8000) · `APPBEGIN`(0x3E8040) · `FLASHAPP`(0x3E8042 – 0x3F3FFF) 만. `codestart` 는 `APPBEGIN` 으로. **RAMM1 길이 0x3FA** (0x7FA – 0x7FF 제외). 예시 `dsp/app/F2808_app_example.cmd` |
 | 버전 | **1~8자, 영문·숫자·`.` `_` `-` 만** (예 `1.2.3`). 앱 응답의 버전 칸이 8자 고정입니다. `dsp_pack.py`·서버 업로드·브리지 스테이징이 모두 규칙을 어긴 이미지를 거부합니다 |
-| 이미지 만들기 | `hex2000 -i -o app.hex app.out --memwidth=16 --romwidth=16` → `python tools/dsp_pack.py pack app.hex -o app_1.2.3.dspfw --ver 1.2.3` |
+| 이미지 만들기 | `python tools/dsp_pack.py bundle app.out --map app.map --ver 1.2.3` → `app_1.2.3.dsppkg`. 패커가 `hex2000 -i … --memwidth=16 --romwidth=16` 을 직접 돌려 `.dspfw` 를 만들고 `.out`·`.map` 과 함께 묶습니다. 게이트웨이에는 이 패키지를 올립니다(`pack app.hex` 는 벤치용) |
 | 첫 설치 | 브리지 0.5.2 의 `dsp/boot` 부트로더(섹터 A)와 재링크한 앱을 JTAG 으로 굽고, 처음 한 번은 브리지로 `.dspfw` 를 적용해 앱 헤더를 채움. 그 전까지는 앱 헤더가 비어 있어 부트로더가 업데이트 모드에서 기다립니다(앱이 돌지 않아 버전 `?`. 앱이 조용하고 버전이 `?` 면 브리지가 바로 HELLO 를 보내므로 일반 적용으로 굽힘) |
 
 자세한 절차는 `AGV_Wifi_Bridge/dsp/README.md`, 설계는 `AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md` 에 있습니다.
@@ -615,8 +615,23 @@ RFID 리더 보드레이트 기본값은 9600 이며, 현장 리더에 맞는지
 | 빈 곳을 0xFFFF 로 채워 복원한 CRC32 = `app_crc` | 만듦 | ✔ | ✔ (`image_bad`) | ✔ |
 | 서버가 준 `crc32`·`size` 와 일치 | — | — | ✔ (`crc_mismatch`, `http_length`) | — |
 
-- 서버는 업로드 때 이 검사를 통과하지 못한 파일을 `… .dspfw 형식·CRC·블록 구조가 틀립니다 (dsp_pack.py 출력 파일을 올리세요)` 로 거부합니다.
+- 서버는 업로드 때 이 검사를 통과하지 못한 `.dspfw` 를 `… .dspfw 형식·CRC·블록 구조가 틀립니다 …` 로 거부합니다. `.dspfw` 는 패키지 안에 들어 있어야 합니다(6.8절).
 - 저장 파일명은 영문·숫자·`._-` 60자 이하로 바뀝니다. 스테이징 URL 이 브리지 한도(199자)를 넘지 않게 하기 위해서입니다.
+
+### 6.8 메인보드 패키지와 원본 보관 (0.7.0)
+
+메인보드 펌웨어는 **`.out`·`.map` 이 든 패키지 `.dsppkg`** 로만 올립니다. 소스를 잃고 `.out`·`.map` 만 남았던 일이 다시 생기지 않게, 게이트웨이가 배포하는 모든 메인보드 빌드의 링크 산출물을 보관합니다. 브리지 프로토콜·`.dspfw` 형식은 그대로입니다.
+
+| 항목 | 내용 |
+|---|---|
+| 패키지 | ZIP 하나에 `manifest.json` · `<stem>_<ver>.dspfw` · `<stem>.out` · `<stem>.map` 정확히 4개 (`dsp_pack.py bundle`) |
+| 서버 검사 | 항목 이름(경로 조작 방지)·개수, 풀면서 크기 한도(`.dspfw` 393,152 B · `.out` 64 MiB · `.map` 16 MiB · manifest 64 KiB), 항목별 sha256·크기, manifest 형식, `.dspfw`(6.7절 + manifest 의 `ver`·`app_len`·`app_crc32`·`build_time`), `.out` 이 C2000 COFF/ELF, `.map` 이 CCS 링커 맵 |
+| 같은 빌드 확인 | `.out` 의 링크 시각과 `.map` 의 `>> Linked` 시각 차이가 15분 단위 시간대 오프셋(±14시간, ±5초)이면 `time`. 시각이 없으면(ELF 등) `.map` 의 출력 파일 이름 = `.out` 이름이면 `name`. 패커가 건너뛰면 `skipped`(받되 경고) |
+| 보관 | `data/firmware/{id}/` 에 `.dspfw`(주 파일, 브리지가 받음)·`.out`·`.map`·패키지 그대로. DB `firmware` 행은 주 파일, 나머지는 `firmware_files` |
+| 패키지 ID | `manifest.json` 의 sha256 앞 16자. 같은 ID 를 다시 올리면 경고 |
+| 원본 없음 표시 | 펌웨어 목록 **원본** `⚠ 없음 (이전 등록)`, 배포 작업의 경고 줄, 호기 현황 메인보드 열 `⚠원본`(그 앱 버전의 패키지 항목이 없음)과 위쪽 안내줄(버전별 대수, 닫기 가능 — 점검 필요 수에는 넣지 않음) |
+
+- 0.7.0 전에 `.dspfw` 만 올린 항목은 그대로 배포됩니다(원본 `⚠ 없음`). 게이트웨이를 0.6.x 로 되돌려도 `firmware` 행이 주 파일을 그대로 갖고 있어 배포는 됩니다(보관 파일은 0.6.x 화면에 보이지 않을 뿐).
 
 ---
 
@@ -801,24 +816,25 @@ ACS 응답이 이상할 때의 안전장치:
 ## 10. 데이터
 
 ![SQLite 표](images/diagrams/db-er.png)
-*SQLite 표(스키마 v3). firmware 1:N jobs 1:N job_targets(삭제 시 함께 지움), agv_groups·agv_last_seen·agv_positions 는 호기 번호로 이어진다. v2 열(jobs.apply_mode·not_after·approved_at, job_targets.stage_job)과 v3 열 jobs.recover(복구 적용 0·1)를 보인다. 실제 외래 키는 job_targets → jobs 하나다.*
+*SQLite 표(그림은 스키마 v3 기준). firmware 1:N jobs 1:N job_targets(삭제 시 함께 지움), agv_groups·agv_last_seen·agv_positions 는 호기 번호로 이어진다. v2 열(jobs.apply_mode·not_after·approved_at, job_targets.stage_job)과 v3 열 jobs.recover(복구 적용 0·1)를 보인다. v4 의 Wi-Fi·호기 설정 표와 v5 의 firmware_files(firmware 1:N, 메인보드 .out·.map·패키지)는 아래 표에 있다.*
 
 | 위치 (`data\` 아래) | 내용 |
 |---|---|
 | `gateway.db` (+ `-wal`, `-shm`) | SQLite 데이터베이스(WAL 모드) |
-| `firmware\{id}\` | 업로드한 펌웨어 파일. 목록·해시는 DB `firmware` 표 |
+| `firmware\{id}\` | 업로드한 펌웨어 파일(메인보드는 `.dspfw`·`.out`·`.map`·`.dsppkg`). 목록·해시는 DB `firmware`·`firmware_files` 표 |
 | `logs\gateway-yyyyMMdd.log` | 서버 로그, 14일 보관 |
 | `update\` | 받은 서버 업데이트, `apply-update.bat`, `apply.log`, `skip-auto.txt` |
 
 | 표 | 내용 |
 |---|---|
-| `firmware` | 펌웨어 목록 (종류 `Dsp`·`Esp`, 버전, 파일 이름, 크기, SHA-256) |
+| `firmware` | 펌웨어 목록 (종류 `Dsp`·`Esp`, 버전, 주 파일 이름·크기·SHA-256, **패키지 ID `pkg_id`**, **연결 확인 `link_check`** — 이전 등록은 둘 다 빈 값) |
+| `firmware_files` | 주 파일 밖의 보관 파일 (`slot` = `out`·`map`·`pkg`, 이름, 크기, SHA-256). 펌웨어를 지우면 함께 지움 (v5) |
 | `jobs` | 배포 작업 (펌웨어, 예약 시각, 실패 시 중단, 상태, **적용 방식 `apply_mode`**, **마감 시각 `not_after`**, **승인 시각 `approved_at`**, **복구 적용 `recover`**) |
 | `job_targets` | 작업의 호기별 결과 (상태, 진행률, 이전·이후 버전, 로그, **스테이징 작업 번호 `stage_job`**) |
 | `agv_groups` | 호기 소속 5단계와 출처 |
 | `agv_positions` | 호기별 최신 위치 (이력 없음) |
 | `agv_last_seen` | 호기별 마지막 접속, 버전, heartbeat 원문 |
-| `meta` | 스키마 버전 (`schema_version` = 3) |
+| `meta` | 스키마 버전 (`schema_version` = 5) |
 
 | 값 | 저장되는 글자 |
 |---|---|
@@ -827,7 +843,7 @@ ACS 응답이 이상할 때의 안전장치:
 | 호기 상태 `job_targets.state` | `Waiting` · `Running` · `Staged`(스테이징됨, 적용 대기) · `Done` · `Failed` · `Skipped` |
 
 - `data\` 위치는 `Gateway.DataDir`(기본 `data`, 실행 파일 기준)로 바꿉니다.
-- 스키마 변경은 서버가 시작할 때 `meta.schema_version` 을 보고 단계별로 적용합니다. v1 → v2 → v3 는 열만 추가하고, 예전 작업 기록은 `apply_mode='Immediate'`·`recover=0` 으로 읽힙니다. `GET /api/db` 의 `schema` 가 3 이면 끝난 것입니다.
+- 스키마 변경은 서버가 시작할 때 `meta.schema_version` 을 보고 단계별로 적용합니다. v1 → v2 → v3 는 열만 추가하고, 예전 작업 기록은 `apply_mode='Immediate'`·`recover=0` 으로 읽힙니다. v4 는 Wi-Fi·호기 설정 표, v5 는 `firmware.pkg_id`·`link_check` 열과 `firmware_files` 표를 더합니다(기존 펌웨어는 원본 없음). `GET /api/db` 의 `schema` 가 5 이면 끝난 것입니다.
 - **JSON 자동 이전**: 이전 버전의 `data\jobs.json`, `data\firmware\index.json`, `data\agv_groups.json` 은 첫 실행 때 DB 에 옮기고 `.migrated` 로 이름을 바꿉니다. 서비스 기동은 막지 않고, 실패 원인은 `data\logs` 에 남습니다.
   - `firmware\index.json`·`agv_groups.json` 은 한 트랜잭션으로 옮기고, 성공했을 때만 이름을 바꿉니다. 실패하면 원본을 두고 다음 기동 때 다시 시도합니다.
   - `jobs.json` 은 모든 작업을 DB 에 쓴 뒤에만 이름을 바꿉니다. 파일을 읽지 못했거나 한 건이라도 쓰지 못하면 원본을 두고(로그 `jobs.json 이전: 일부를 DB 에 쓰지 못함 (원본 보존, …)`), 다음 기동 때 DB 에 없는 작업만 다시 옮깁니다. 그래도 첫 실행 전에 `data\` 를 백업해 둡니다.
@@ -865,7 +881,7 @@ ACS 응답이 이상할 때의 안전장치:
 **펌웨어** — 펌웨어를 올리고 목록을 관리합니다.
 
 ![펌웨어](images/screens/04-firmware.png)
-*메인보드 1.0.3 은 작업이 쓰고 있어('사용 중 2 (적용 대기 1)') 삭제 버튼이 꺼져 있다. 버전은 파일에서 읽고, .dspfw 는 블록·CRC·버전 규칙까지 검사한다(6.7절).*
+*메인보드 1.0.3 은 작업이 쓰고 있어('사용 중 2 (적용 대기 1)') 삭제 버튼이 꺼져 있다. 버전은 파일에서 읽고, .dspfw 는 블록·CRC·버전 규칙까지 검사한다(6.7절). 0.7.0 부터 메인보드는 패키지로 올리고, 목록에 원본(.out·.map) 열과 내려받기 링크가 있다(6.8절, 캡처는 0.6).*
 
 **배포 작업** — 작업을 만들고, 적용을 승인하고, 진행·결과를 봅니다. (7절의 캡처 05·15·13·06·07 참고)
 
@@ -925,7 +941,7 @@ ACS 응답이 이상할 때의 안전장치:
 | OTA 대기·재전송 시간 | `src/Gateway.Core/Fota/OtaTimeouts.cs` |
 | 서버 ↔ 브리지 송신 인터페이스 | `src/Gateway.Core/Fota/IAgvLink.cs` |
 | 배포 작업 예약·실행·승인 | `src/Gateway.Server/Services/JobService.cs` |
-| 펌웨어 업로드·검사·보관 | `src/Gateway.Server/Services/FirmwareStore.cs` |
+| 펌웨어 업로드·검사·보관 | `src/Gateway.Server/Services/FirmwareStore.cs`, 메인보드 패키지 검사 `src/Gateway.Core/Fota/DspPackage.cs` |
 | ACS TCP 중계, F·R 차단·허용 IP 규칙 | `src/Gateway.Server/Services/AcsRelayService.cs`, `src/Gateway.Core/Acs/AcsRelayPolicy.cs` |
 | ACS 위치 보고 | `src/Gateway.Server/Services/AcsPositionPushService.cs`, `src/Gateway.Core/Acs/AcsPositionMapper.cs`, `AcsRestPublisher.cs` |
 | ACS 소속 받기, 반영 규칙(삭제 보류) | `src/Gateway.Server/Services/AcsInventoryPullService.cs`, `src/Gateway.Core/Acs/AcsInventoryMapper.cs`, `src/Gateway.Core/Groups/AcsMerge.cs` |
@@ -970,7 +986,7 @@ ACS 응답이 이상할 때의 안전장치:
 | 브리지 ↔ 부트로더 프로토콜 | `dsp/common/bootproto.c`, `bootproto.h` |
 | 앱 헤더·CRC·주소 상수 | `dsp/common/dsp_image.c`, `dsp_image.h` |
 | 앱에 넣는 OTA 지원 코드 | `dsp/app/app_fwupdate.c`, `app_fwupdate.h`, 링커 예시 `dsp/app/F2808_app_example.cmd` |
-| `.dspfw` 만들기 | `tools/dsp_pack.py` |
+| `.dsppkg`(메인보드 패키지)·`.dspfw` 만들기 | `tools/dsp_pack.py bundle` (`pack` 은 벤치용 .dspfw 만) |
 | PC 에서 직접 굽기 (벤치) | `tools/dsp_flash.py` |
 | 벤치 서버 (UDP 명령) | `tools/BridgeTest.cs` |
 | 브리지 USB 굽기 | `tools/flash.bat`, `tools/flash.sh` |

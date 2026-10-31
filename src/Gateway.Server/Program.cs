@@ -25,8 +25,10 @@ builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(Updat
 builder.Services.Configure<AcsApiOptions>(builder.Configuration.GetSection(AcsApiOptions.Section));
 builder.Services.Configure<AcsInventoryOptions>(builder.Configuration.GetSection(AcsInventoryOptions.Section));
 builder.Services.Configure<AcsMapInventoryOptions>(builder.Configuration.GetSection(AcsMapInventoryOptions.Section));
-builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 64L * 1024 * 1024);
-builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = 64L * 1024 * 1024);
+// 업로드 본문 한도: 메인보드 패키지(.dsppkg, .out 이 커서 최대 96 MiB) + multipart 머리 여유. 기본값(Kestrel 30MB·폼 128MB)에 기대지 않고 명시
+const long MaxUploadBody = Gateway.Core.Fota.DspPackage.MaxPackageBytes + 4L * 1024 * 1024;
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = MaxUploadBody);
+builder.Services.Configure<KestrelServerOptions>(o => o.Limits.MaxRequestBodySize = MaxUploadBody);
 // REST 요청 본문·인자 해석 실패를 예외로 받아 /api 미들웨어가 400 + 사유로 돌려준다 (기본은 빈 400 → HTML 오류 페이지)
 builder.Services.Configure<RouteHandlerOptions>(o => o.ThrowOnBadRequest = true);
 
@@ -95,7 +97,7 @@ app.UseWhen(c => c.Request.Path.StartsWithSegments("/api"), b => b.Use(ApiGuard.
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
 
-// ───── 브리지 OTA 파일 서비스 (ESP 가 HTTP GET 으로 받아 감) ─────
+// ───── 펌웨어 파일 (브리지가 주 파일 .dspfw·.bin 을 HTTP GET 으로 받아 감. 화면의 .out·.map·.dsppkg 내려받기도 같은 주소) ─────
 app.MapGet("/fw/{id}/{file}", (string id, string file, FirmwareStore fw) =>
 {
     var e = fw.Get(id);
@@ -127,7 +129,7 @@ api.MapPost("/agvs/{agv:int}/time", (int agv, BridgeUdpService link, AgvRegistry
 api.MapGet("/firmware", (FirmwareStore fw) => fw.List());
 api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
 {
-    // multipart: kind=dsp|esp, version, project, notes, 파일 하나 (dsp: .dspfw, esp: agv_wifi_bridge.bin)
+    // multipart: kind=dsp|esp, version, project, notes, 파일 하나 (dsp: 패키지 .dsppkg — .dspfw 단독은 400, esp: agv_wifi_bridge.bin)
     if (!req.HasFormContentType) return Results.BadRequest("multipart/form-data 로 보내세요 (kind, version, notes, 파일)");
     IFormCollection form;
     try { form = await req.ReadFormAsync(); }
@@ -140,8 +142,9 @@ api.MapPost("/firmware", async (HttpRequest req, FirmwareStore fw) =>
     var files = form.Files.Select(f => (f.Name, f.FileName, f.OpenReadStream())).ToList();
     try
     {
-        var e = await fw.AddAsync(kind, form["version"].ToString(), form["project"].ToString(), form["notes"].ToString(), files);
-        return Results.Ok(e);
+        var (e, warnings) = await fw.AddCheckedAsync(kind, form["version"].ToString(), form["project"].ToString(), form["notes"].ToString(), files);
+        // GET /api/firmware 의 항목 + 등록 경고(패키지 검사·같은 패키지 중복, 저장하지 않음)
+        return Results.Ok(new { e.Id, e.Kind, e.Version, e.Project, e.Notes, e.UploadedAt, e.Files, e.PkgId, e.LinkCheck, e.HasOriginals, e.FilesText, Warnings = warnings });
     }
     catch (InvalidOperationException ex) { return Results.BadRequest(ex.Message); }
     finally { foreach (var (_, _, s) in files) s.Dispose(); }
@@ -316,7 +319,7 @@ api.MapPost("/acs/inventory/preview", async (AcsInventoryPullService p) =>
 api.MapGet("/db", (GatewayDb db) => new
 {
     db.Path, Size = db.FileSize, Schema = GatewayDb.SchemaVersion,
-    Tables = new { firmware = db.Count("firmware"), jobs = db.Count("jobs"), job_targets = db.Count("job_targets"), agv_groups = db.Count("agv_groups"), agv_positions = db.Count("agv_positions"), agv_last_seen = db.Count("agv_last_seen") },
+    Tables = new { firmware = db.Count("firmware"), firmware_files = db.Count("firmware_files"), jobs = db.Count("jobs"), job_targets = db.Count("job_targets"), agv_groups = db.Count("agv_groups"), agv_positions = db.Count("agv_positions"), agv_last_seen = db.Count("agv_last_seen") },
 });
 api.MapGet("/db/backup", (GatewayDb db) => Results.File(db.Backup(), "application/octet-stream", $"gateway-{DateTime.Now:yyyyMMdd-HHmm}.db"));
 api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, channel = u.Channel, time = DateTime.UtcNow }));

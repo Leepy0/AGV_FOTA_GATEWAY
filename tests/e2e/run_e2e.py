@@ -33,6 +33,7 @@ FAKE = os.path.join(ROOT, "tests", "fake_esp.py")
 sys.dont_write_bytecode = True   # 저장소에 __pycache__ 를 남기지 않음
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import fake_esp as fk  # noqa: E402  (이미지 생성 도우미)
+import dsppkg  # noqa: E402  (메인보드 패키지 .dsppkg 생성 도우미)
 
 DEFAULT_DLL = os.path.join(ROOT, "src", "Gateway.Server", "bin", "Release", "net10.0", "AgvFotaGateway.dll")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 사내 프록시 환경변수 무시 (127.0.0.1)
@@ -217,6 +218,14 @@ class Api:
         except ValueError:
             return b.decode(errors="replace")
 
+    def get_bytes(self, path, timeout=15):
+        """본문을 해석하지 않고 그대로 (/fw 파일 받기)"""
+        try:
+            with OPENER.open(urllib.request.Request(self.base + path), timeout=timeout) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
     def get(self, path):
         st, body = self.call("GET", path)
         check(st == 200, f"GET {path} → {st} {body}")
@@ -277,7 +286,9 @@ class Ctx:
         self.wait(ok, timeout, f"호기 {ids} 온라인{'·메인보드 버전 확인' if need_dsp else ''}")
 
     def upload_dsp(self, ver, seed=1, words=700):
-        st, body = self.api.upload("dsp", f"agv_{ver}.dspfw", fk.build_dspfw(fk.test_code(words, seed), ver))
+        """메인보드 펌웨어는 패키지(.dsppkg: .dspfw + 합성 .out·.map)로만 올린다"""
+        pkg = dsppkg.build(fk.build_dspfw(fk.test_code(words, seed), ver), stem="agv")
+        st, body = self.api.upload("dsp", f"agv_{ver}.dsppkg", pkg)
         check(st == 200, f"메인보드 펌웨어 {ver} 업로드 실패: {st} {body}")
         return body
 
@@ -536,7 +547,7 @@ def s7_deadline_input(ctx):
 
 
 def s8_upload_reject(ctx):
-    """.dspfw 업로드 검사: 버전 9자·블록 깨짐·헤더 버전 불일치 거부, 잘못된 프로젝트 ESP 이미지 거부"""
+    """메인보드 패키지 업로드 검사: .dspfw 단독·.map 없음·링크 시각 다름·버전 9자·블록 깨짐·헤더 버전 불일치 400, 다른 프로젝트 ESP 400, 정상 패키지는 .out·.map 보관"""
     code = fk.test_code(700, 8)
     good = fk.build_dspfw(code, "1.8.0")
     nine = fk.build_dspfw(code, "1.8.0.001")
@@ -546,19 +557,46 @@ def s8_upload_reject(ctx):
     broken = fk.wrap_dspfw(bytes(body), "1.8.0")
     check(fk.stage_check(broken)[0] == "image_bad" and fk.stage_check(nine)[0] == "ver_invalid", "시험 이미지 준비 오류")
     mism = fk.build_dspfw(code, "1.8.0", file_ver="1.8.1")
-    cases = [("버전 9자", "dsp", "a9.dspfw", nine), ("블록 깨짐", "dsp", "bad.dspfw", broken), ("헤더 버전 불일치", "dsp", "m.dspfw", mism),
-             ("다른 프로젝트", "esp", "x.bin", fk.build_esp_app("0.9.0", "other_proj"))]
+
+    def pkg_of(img, ver_name="1.8.0"):
+        """형식이 틀린 .dspfw 도 담기 (manifest 는 파일 헤더 버전·앱 헤더 값 그대로)"""
+        out_b, map_b = dsppkg.coff_out(dsppkg.DEFAULT_LINK_TIME), dsppkg.map_text("agv.out", dsppkg.DEFAULT_LINK_TIME + 9 * 3600)
+        n = f"agv_{ver_name}.dspfw"
+        m = dsppkg.manifest(img, n, out_b, "agv.out", map_b, "agv.map", "time")
+        return dsppkg.zip_entries([("manifest.json", dsppkg.manifest_bytes(m)), (n, img), ("agv.out", out_b), ("agv.map", map_b)])
+
+    pk = dsppkg.build(good, stem="agv")
+    with __import__("zipfile").ZipFile(__import__("io").BytesIO(pk)) as z:
+        no_map = dsppkg.zip_entries([(n, z.read(n)) for n in z.namelist() if not n.endswith(".map")])
+    cases = [("bare .dspfw", "dsp", "ok.dspfw", good, ".dsppkg"),
+             (".map 없음", "dsp", "nomap.dsppkg", no_map, ".map 이 없습니다"),
+             ("링크 시각 다름", "dsp", "time.dsppkg", dsppkg.build(good, stem="agv", tz=100), "링크 시각"),
+             ("버전 9자", "dsp", "a9.dsppkg", pkg_of(nine, "1.8.0.001"), "8자"),
+             ("블록 깨짐", "dsp", "bad.dsppkg", pkg_of(broken), "블록 구조"),
+             ("헤더 버전 불일치", "dsp", "m.dsppkg", pkg_of(mism), "블록 구조"),
+             ("다른 프로젝트", "esp", "x.bin", fk.build_esp_app("0.9.0", "other_proj"), "프로젝트")]
     wrong = []
-    for name, kind, fn, data in cases:
+    for name, kind, fn, data, want in cases:
         st, resp = ctx.api.upload(kind, fn, data)
-        if st != 400:
-            wrong.append(f"{name} → {st} {str(resp)[:80]}")
-    st, resp = ctx.api.upload("dsp", "ok.dspfw", good)
-    check(st == 200, f"정상 이미지 업로드 실패 {st} {resp}")
+        if st != 400 or want not in str(resp):
+            wrong.append(f"{name} → {st} {str(resp)[:100]}")
+    st, resp = ctx.api.upload("dsp", "agv_1.8.0.dsppkg", pk)
+    check(st == 200, f"정상 패키지 업로드 실패 {st} {resp}")
     check(not wrong, "거부되지 않음: " + "; ".join(wrong))
-    st, resp = ctx.api.upload("dsp", "ok2.dspfw", good, headers={"Origin": "http://evil.example"})
+    check(resp["pkgId"] == dsppkg.pkg_id(pk) and resp["linkCheck"] == "time" and resp["hasOriginals"] is True,
+          f"패키지 정보: {resp.get('pkgId')} {resp.get('linkCheck')} {resp.get('hasOriginals')}")
+    slots = {f["slot"]: f["fileName"] for f in resp["files"]}
+    check(set(slots) == {"dspfw", "out", "map", "pkg"}, f"보관 파일 {slots}")
+    fw = next(e for e in ctx.api.get("/api/firmware") if e["id"] == resp["id"])
+    check(fw["hasOriginals"] and fw["pkgId"] == resp["pkgId"] and len(fw["files"]) == 4, f"GET /api/firmware: {fw}")
+    for slot, want in (("dspfw", good), ("pkg", pk), ("out", dsppkg.coff_out(dsppkg.DEFAULT_LINK_TIME))):
+        st, got = ctx.api.get_bytes(f"/fw/{resp['id']}/{slots[slot]}")
+        check(st == 200 and got == want, f"/fw {slot} {st} — 내용이 {'같음' if got == want else '다름'}")
+    st, _ = ctx.api.upload("dsp", "agv_1.8.0.dsppkg", pk)   # 같은 패키지 다시 — 거부는 아님(경고)
+    check(st == 200, f"같은 패키지 재업로드 {st}")
+    st, resp = ctx.api.upload("dsp", "ok2.dsppkg", pk, headers={"Origin": "http://evil.example"})
     check(st == 403, f"다른 출처 업로드 {st}")
-    return "버전 9자·블록 깨짐·헤더 버전 불일치·다른 프로젝트 400, 정상 200, 다른 출처 403"
+    return ".dspfw 단독·.map 없음·링크 시각 다름·버전 9자·블록 깨짐·헤더 버전 불일치·다른 프로젝트 400, 정상 패키지 200(.out·.map 보관), 다른 출처 403"
 
 
 def s9_recover(ctx):
@@ -787,7 +825,7 @@ SCENARIOS = [
     (5, "브리지 OTA 자동 확정·done 유실", s5_bridge_ota),
     (6, "호기 번호 충돌", s6_dup_id),
     (7, "마감 시각·잘못된 입력 400", s7_deadline_input),
-    (8, ".dspfw 업로드 거부", s8_upload_reject),
+    (8, "메인보드 패키지 업로드 검사 (.dspfw 단독 거부)", s8_upload_reject),
     (9, "멈춘 앱 복구 적용 (recover:true)", s9_recover),
     (10, "수동 전송 F/R·다른 출처 403", s10_manual_guard),
     (11, "원격 설정 trial → saved", s11_cfg_trial),

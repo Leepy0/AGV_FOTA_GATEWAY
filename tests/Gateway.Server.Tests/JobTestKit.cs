@@ -142,10 +142,13 @@ sealed class JobTestKit : IDisposable
     /// <summary>블록·app_crc 검사를 통과하는 작은 앱 이미지 (dsp_pack.py pack() 과 같은 형식)</summary>
     public static byte[] DspImage(string ver) => DspfwImage.BuildApp(Enumerable.Range(0, 200).Select(i => (ushort)(i * 7)).ToArray(), ver);
 
-    public FirmwareEntry AddDsp(string ver = "2.0.0", string fileName = "app.dspfw")
+    /// <summary>DspImage 를 담은 패키지 (.dsppkg, 합성 .out·.map — 규격 v1)</summary>
+    public static byte[] DspPackage(string ver, string stem = "app") => DspPackageBuilder.Build(DspImage(ver), stem);
+
+    public FirmwareEntry AddDsp(string ver = "2.0.0", string fileName = "app.dsppkg")
     {
         if (!DspVersion.IsValid(ver)) return AddLegacyDsp(ver, fileName);
-        return Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", fileName, new MemoryStream(DspImage(ver)))]).GetAwaiter().GetResult();
+        return Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("pkg", fileName, new MemoryStream(DspPackage(ver)))]).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -155,7 +158,7 @@ sealed class JobTestKit : IDisposable
     FirmwareEntry AddLegacyDsp(string ver, string fileName)
     {
         var e = AddDsp("legacy", fileName);
-        File.WriteAllBytes(Store.PathOf(e, e.Files.First()), DspImage(ver));
+        File.WriteAllBytes(Store.PathOf(e, e.Primary!), DspImage(ver));
         using (var c = Db.Open()) GatewayDb.Exec(c, "UPDATE firmware SET version=$v WHERE id=$id", ("$v", ver), ("$id", e.Id));
         Store = new FirmwareStore(Dir, Db);
         Svc = NewService();

@@ -11,13 +11,14 @@
 | 브리지 `dsp_st=nopart` (dspfw 파티션 없음 → `no_partition` 거부) | `AGV_Wifi_Bridge/main/dsp_ota.c` | `JobService` 가 작업 시작 전에 거부, 호기 현황 ⚠ 표시 |
 | **메인보드 OTA B안** DSP_OTA_START(0x32) → DSP_OTA_RESULT(0x33) / DSP_OTA_APPLY(0x34) | `AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md`, `main/dsp_ota.c` | `Gateway.Core/Fota/DspOtaClient.cs` (재전송, heartbeat 판정, 오류 안내 `BridgeErrors`) |
 | 브리지 자체 OTA OTA_START(0x30) → OTA_RESULT(0x31) | `AGV_Wifi_Bridge/main/ota.c` | `Gateway.Core/Fota/EspOtaClient.cs` |
+| 메인보드 패키지 `.dsppkg` (ZIP: manifest.json + .dspfw + .out + .map, 규격 v1) | `AGV_Wifi_Bridge/tools/dsp_pack.py bundle` | `Gateway.Core/Fota/DspPackage.cs` (항목 이름·개수, 풀면서 크기 한도, sha256·크기, manifest, .out COFF/ELF C2000, .map, .map↔.out 링크 시각·이름 확인), 시험용 생성기 `tests/dsppkg.py` |
 | `.dspfw` 이미지 파일 (헤더 32B + 앱 헤더 + 블록) | `AGV_Wifi_Bridge/tools/dsp_pack.py`, `dsp/common/dsp_image.c` | `Gateway.Core/Fota/DspfwImage.cs` (블록 주소 오름차순·겹침 없음·`app_crc` 까지 검사 — 브리지 `dap_image_check_blocks`·`dsp_pack.py unpack` 과 같은 규칙), `DspVersion.cs` (1~8자) |
 | 브리지 프레임 제한: ETX(0x03) 프레이밍, 256B | `AGV_Wifi_Bridge/main/uart_bridge.h` | `AgvFrame.BridgeFrameMax` |
 | AGV↔ACS 프레임 (STX, BCC, ETX, 종류/PAN/MSG/AGV) | AGV 통신 프로토콜 레퍼런스 | `Gateway.Core/Agv/AgvFrame.cs` |
 | ACS TCP 소켓 | **미확인** — 기존 ZigBee 게이트웨이 규격 필요 | `Gateway.Server/Services/AcsRelayService.cs` (프레임 그대로 통과한다고 가정), 하향 `F`·`R` 차단·허용 IP `Gateway.Core/Acs/AcsRelayPolicy.cs` |
 | ACS 호기 소속 REST (GET, 응답 형식 **미확정** — 임시 매핑) | 기존 ACS 서버 | `Gateway.Core/Acs/AcsInventoryMapper.cs`, `Gateway.Core/Groups/AcsMerge.cs`, `appsettings AcsInventory.Fields` ([ACS_API.md](ACS_API.md)) |
 | 서버 업데이트 출처 (GitHub 릴리스 매니페스트·API) | GitHub | `Gateway.Core/Update/UpdateFeed.cs` (https 의 github.com · api.github.com 만), 교체 배치 `SelfUpdateScript.cs` |
-| 서버 데이터베이스 (SQLite `data/gateway.db`, 스키마 v3) | 이 저장소 | `Gateway.Server/Data/GatewayDb.cs` (Migrate 에 버전 단계 추가로만 변경) |
+| 서버 데이터베이스 (SQLite `data/gateway.db`, 스키마 v5) | 이 저장소 | `Gateway.Server/Data/GatewayDb.cs` (Migrate 에 버전 단계 추가로만 변경) |
 
 ## 브리지와의 약속
 
@@ -255,12 +256,15 @@
 
 | 요청 | 내용 | 응답 |
 |---|---|---|
-| `GET /api/firmware` | 목록 | 200 |
-| `POST /api/firmware` | `multipart/form-data` 필수. `kind` = `dsp`(빈 값도) 또는 `esp`, 파일 하나, 선택 `version`·`project`·`notes` | 200 / 400 |
-| `DELETE /api/firmware/{id}` | 삭제. 끝나지 않은 작업(대기·실행 중·적용 대기)이 쓰면 거부 | 200 / 404 / 409 (본문에 작업 이름) |
-| `GET /fw/{id}/{file}` | 브리지가 받아 가는 파일 | 200 / 404 |
+| `GET /api/firmware` | 목록. 항목: `id`·`kind`·`version`·`project`·`notes`·`uploadedAt`·`files[]`(`slot`·`fileName`·`size`·`sha256`)·`pkgId`·`linkCheck`·`hasOriginals`·`filesText` | 200 |
+| `POST /api/firmware` | `multipart/form-data` 필수. `kind` = `dsp`(빈 값도) 또는 `esp`, 파일 하나, 선택 `version`·`project`·`notes`. **메인보드는 패키지 `.dsppkg`**(96 MiB 까지), 브리지는 `agv_wifi_bridge.bin`. 응답은 목록 항목 + `warnings[]`(패키지 검사 경고·같은 패키지 중복, 저장 안 함) | 200 / 400 |
+| `DELETE /api/firmware/{id}` | 삭제 (보관 파일 모두). 끝나지 않은 작업(대기·실행 중·적용 대기)이 쓰면 거부 | 200 / 404 / 409 (본문에 작업 이름) |
+| `GET /fw/{id}/{file}` | 저장된 파일 — 브리지는 주 파일(`.dspfw`·`.bin`)만 받고, 화면은 `.out`·`.map`·`.dsppkg` 내려받기에 씀 | 200 / 404 |
 
-업로드 400 사유: 폼이 아님, `kind` 잘못됨, 파일 없음, `.dspfw` 형식·CRC·블록 구조 오류, 메인보드 버전이 1~8자 `[0-9A-Za-z._-]` 가 아님, 입력 버전과 파일 버전이 다름, ESP 이미지가 아님·프로젝트가 `agv_wifi_bridge` 가 아님. 저장 파일명은 영문·숫자·`._-` 60자 이하로 바뀝니다.
+- `files[].slot`: `dspfw`(메인보드 주 파일, 브리지가 받음) · `esp`(브리지 주 파일) · `out` · `map` · `pkg`(올린 `.dsppkg` 그대로). 주 파일이 맨 앞.
+- `pkgId`: `manifest.json` 바이트의 sha256 앞 16자. `linkCheck`: `time`(링크 시각 일치) · `name`(출력 파일 이름 일치) · `skipped`(패커가 건너뜀 — 경고). 0.7.0 전에 `.dspfw` 만 올린 항목과 브리지는 둘 다 `""`, `hasOriginals: false`.
+
+업로드 400 사유: 폼이 아님, `kind` 잘못됨, 파일 없음, **메인보드에 `.dsppkg` 가 아닌 파일**(`.dspfw` 단독 포함 — `메인보드 펌웨어는 .out·.map 이 든 패키지(.dsppkg)로 올립니다 — dsp_pack.py bundle …`), 패키지 구조(항목 4개·이름 규칙·크기 한도·sha256·manifest 형식), `.dspfw` 형식·CRC·블록 구조 오류, 메인보드 버전이 1~8자 `[0-9A-Za-z._-]` 가 아님, manifest 와 `.dspfw` 헤더 불일치, `.out` 이 TI C2000 COFF/ELF 가 아님, `.map` 이 CCS 링커 맵이 아님, `.map`↔`.out` 링크 시각·이름 불일치, manifest `link_check` 와 서버 판정 불일치, 입력 버전과 파일 버전이 다름, ESP 이미지가 아님·프로젝트가 `agv_wifi_bridge` 가 아님. 저장 파일명은 영문·숫자·`._-` 60자 이하로 바뀝니다. 패키지 규격은 브리지 저장소 `dsp_pack.py bundle` 문서와 같습니다.
 
 ### 그 밖
 
@@ -272,7 +276,7 @@
 | `GET /api/acs/status` · `POST /api/acs/push` · `GET /api/acs/preview` | ACS 위치 보고 |
 | `GET /api/groups` · `/api/groups/list` · `/api/groups/agvs?path=` · `/api/groups/export.csv`, `POST /api/groups/import`, `GET·PUT·DELETE /api/agvs/{n}/group` | 구역 ([ACS_API.md](ACS_API.md)) |
 | `GET /api/acs/inventory/status`, `POST /api/acs/inventory/preview` · `/pull` | ACS 소속 받기 |
-| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 4)·백업 |
+| `GET /api/db` · `GET /api/db/backup` | DB 정보(`schema` = 5)·백업 |
 
 ## 메인보드(AGV) OTA 결정 (2026-10-09, 2026-10-10 점검 반영)
 

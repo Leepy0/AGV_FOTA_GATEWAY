@@ -115,7 +115,7 @@ public static class DspfwImage
             next = addr + (uint)nw;
         }
         if (Crc32Words(flat) != appCrc) return null;
-        return new DspfwInfo(ver, crc, file.Length);
+        return new DspfwInfo(ver, crc, file.Length) { AppLen = appLen, AppCrc32 = appCrc, BuildTime = hdr[8] | ((uint)hdr[9] << 16) };
     }
 
     /// <summary>
@@ -170,6 +170,11 @@ public static class DspfwImage
 /// <summary>Crc32 = 본문 CRC (DSP_OTA_START 의 crc32), Size = 파일 전체 길이 (size)</summary>
 public sealed record DspfwInfo(string Version, uint Crc32, int Size)
 {
+    /// <summary>앱 헤더 app_len(워드)·app_crc32·build_time — 패키지(.dsppkg) manifest 와 대조할 때</summary>
+    public uint AppLen { get; init; }
+    public uint AppCrc32 { get; init; }
+    public uint BuildTime { get; init; }
+
     /// <summary>버전이 메인보드 규칙(1~8자 [0-9A-Za-z._-])에 맞는지 — 업로드는 이것이 false 면 거부해야 한다</summary>
     public bool VersionValid => DspVersion.IsValid(Version);
 }

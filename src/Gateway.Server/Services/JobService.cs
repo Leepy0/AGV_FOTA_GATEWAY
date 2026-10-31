@@ -748,7 +748,8 @@ public sealed class JobService : BackgroundService
 
     async Task<(FirmwareFile file, DspfwInfo img)> LoadDspImageAsync(FirmwareEntry fw, CancellationToken ct)
     {
-        var file = fw.Files.First();
+        // 주 파일(.dspfw)만 — 패키지로 올린 펌웨어는 .out·.map·.dsppkg 도 함께 있다
+        var file = fw.FileOf(FirmwareStore.SlotDspfw) ?? throw new InvalidOperationException($"메인보드 펌웨어 {fw.Version} 에 .dspfw 가 없습니다 — 다시 올리세요");
         var img = DspfwImage.Parse(await File.ReadAllBytesAsync(_fw.PathOf(fw, file), ct))
                   ?? throw new InvalidOperationException($"저장된 {file.FileName}: .dspfw 형식·CRC·블록 구조가 틀립니다 (dsp_pack.py 출력 파일을 다시 올리세요)");
         return (file, img);
@@ -955,7 +956,7 @@ public sealed class JobService : BackgroundService
                 throw new InvalidOperationException("브리지가 이전 업데이트를 확정하지 못함 (ota=pending 유지, PING 10초) — 새 펌웨어는 부팅 180초 안에 PING 으로 확정해야 하며, " +
                                                     "서버가 heartbeat 의 ota=pending 을 보면 5초마다 자동 PING 한다. 재부팅하면 이전 펌웨어로 롤백되니 호기 현황에서 확정(valid)을 확인한 뒤 다시 배포");
         }
-        var file = fw.Files.First();
+        var file = fw.FileOf(FirmwareStore.SlotEsp) ?? throw new InvalidOperationException($"브리지 펌웨어 {fw.Version} 에 .bin 이 없습니다 — 다시 올리세요");
         var url = $"{BaseUrlFor(r.Agv)}/fw/{Uri.EscapeDataString(fw.Id)}/{Uri.EscapeDataString(file.FileName)}";
         if (url.Length > EspUrlMax) throw new InvalidOperationException($"OTA URL 이 {url.Length}자 — 브리지 한도 {EspUrlMax}자 초과 (펌웨어 파일명을 줄여 다시 올리세요)");
         var client = new EspOtaClient(_link, _reg.StatusOf);

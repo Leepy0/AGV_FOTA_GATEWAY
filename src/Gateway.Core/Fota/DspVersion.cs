@@ -23,5 +23,6 @@ public static partial class DspVersion
         return Head(reported) == Head(expected);
     }
 
-    static string Head(string v) { v = v.Trim(); return v.Length > MaxLength ? v[..MaxLength] : v; }
+    /// <summary>비교 기준 (앞 8자) — 버전 집합을 만들어 Matches 와 같은 규칙으로 찾을 때</summary>
+    public static string Head(string v) { v = v.Trim(); return v.Length > MaxLength ? v[..MaxLength] : v; }
 }

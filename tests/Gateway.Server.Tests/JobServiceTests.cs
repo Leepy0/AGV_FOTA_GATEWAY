@@ -298,6 +298,28 @@ public class JobServiceTests
         if (err == "app_no_fwup") Assert.Contains("JTAG", j.Results[0].Message);
     }
 
+    // ── 0.7.0: 패키지로 올린 펌웨어는 파일이 여럿 — 브리지에는 늘 .dspfw (주 파일)만 ──
+
+    [Fact]
+    public async Task Package_firmware_stages_the_dspfw_slot_not_the_package_or_out()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        Assert.Equal(4, fw.Files.Count);
+        // 파일 순서가 바뀌어도(.dsppkg 가 맨 앞) dspfw 를 고른다
+        fw.Files.Reverse();
+        Assert.Equal("pkg", fw.Files[0].Slot);
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Done, j.Results[0].State);
+        var start = Assert.Single(k.Link.Sent, s => s.kind == "START");
+        Assert.Contains($"/fw/{fw.Id}/app_2.0.0.dspfw\"", start.json);
+        var img = Gateway.Core.Fota.DspfwImage.Parse(JobTestKit.DspImage("2.0.0"))!;
+        Assert.Contains($"\"size\":{img.Size}", start.json);
+        Assert.Contains($"\"crc32\":{img.Crc32}", start.json);
+    }
+
     // ── C-02·T-03: 9자 이상 버전도 앞 8자로 맞춰 봄 ──
 
     [Fact]

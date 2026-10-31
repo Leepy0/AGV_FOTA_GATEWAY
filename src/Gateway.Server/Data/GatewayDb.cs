@@ -3,14 +3,14 @@ using Microsoft.Data.Sqlite;
 namespace Gateway.Server.Data;
 
 /// <summary>
-/// 서버 데이터베이스 — SQLite 파일 하나 ({DataDir}/gateway.db, WAL). 펌웨어 목록·배포 작업·호기 소속·최근 위치·마지막 접속을 담는다.
+/// 서버 데이터베이스 — SQLite 파일 하나 ({DataDir}/gateway.db, WAL). 펌웨어 목록(+ 펌웨어별 보관 파일)·배포 작업·호기 소속·최근 위치·마지막 접속을 담는다.
 /// 펌웨어 파일 자체는 {DataDir}/firmware/ 에 그대로 둔다 (DB 에는 경로·해시만).
 /// 각 저장소는 메모리에 캐시를 두고 바뀔 때 바로 써 넣는다(write-through) — 읽기는 DB 를 거치지 않는다.
 /// 스키마 변경은 Migrate() 의 버전 단계로만 (기존 열은 지우지 않는다).
 /// </summary>
 public sealed class GatewayDb
 {
-    public const int SchemaVersion = 4;
+    public const int SchemaVersion = 5;
     public string Path { get; }
     readonly string _cs;
 
@@ -146,6 +146,22 @@ public sealed class GatewayDb
                 CREATE TABLE IF NOT EXISTS cfg_baseline(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 """);
             Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '4')");
+            tx.Commit();
+        }
+        if (ver < 5)
+        {
+            // v5: 메인보드 패키지(.dsppkg) — 펌웨어마다 .out·.map·패키지 파일을 함께 보관(원본 분실 재발 방지).
+            // firmware 행의 기존 열에는 계속 주 파일(dspfw·esp)을 둔다 → 이전 서버로 되돌려도(자체 업데이트 롤백) 배포는 그대로 된다.
+            // 나머지 파일은 firmware_files 에. 기존 행은 pkg_id='' (이전 등록, 원본 없음)
+            using var tx = c.BeginTransaction();
+            AddColumn(c, "firmware", "pkg_id", "TEXT NOT NULL DEFAULT ''");
+            AddColumn(c, "firmware", "link_check", "TEXT NOT NULL DEFAULT ''");
+            Exec(c, """
+                CREATE TABLE IF NOT EXISTS firmware_files(
+                    firmware_id TEXT NOT NULL REFERENCES firmware(id) ON DELETE CASCADE, slot TEXT NOT NULL, file_name TEXT NOT NULL,
+                    size INTEGER NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(firmware_id, slot));
+                """);
+            Exec(c, "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '5')");
             tx.Commit();
         }
     }

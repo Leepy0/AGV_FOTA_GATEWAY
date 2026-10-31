@@ -149,7 +149,7 @@ public class JobSaveAndCancelTests
             using var tx = locker.BeginTransaction();
             GatewayDb.Exec(locker, "DELETE FROM jobs WHERE id='x'");   // 쓰기 잠금
             del = Task.Run(() => k.Svc.DeleteFirmwareIfUnused(a.Id, out _));
-            add = Task.Run(() => k.Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("dspfw", "c.dspfw", new MemoryStream(JobTestKit.DspImage("1.0.2")))]));
+            add = Task.Run(() => k.Store.AddAsync(FirmwareKind.Dsp, "", "", "", [("pkg", "c.dsppkg", new MemoryStream(JobTestKit.DspPackage("1.0.2")))]));
             await Task.Delay(300);
             create = Task.Run(() => k.Svc.Create("", b.Id, [7], DateTime.UtcNow.AddHours(1), true));   // 작업 lock 안에서 펌웨어 조회
             await Task.Delay(300);

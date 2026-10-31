@@ -7,7 +7,7 @@ namespace Gateway.Server.Tests;
 public class GatewayDbMigrationTests
 {
     [Fact]
-    public void V1_database_is_migrated_to_v4_and_old_jobs_read_as_immediate()
+    public void V1_database_is_migrated_to_latest_and_old_jobs_read_as_immediate()
     {
         var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
@@ -40,7 +40,7 @@ public class GatewayDbMigrationTests
             var db = new GatewayDb(dir);
             using (var c = db.Open())
             {
-                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("5", cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='old1'")) Assert.Equal(0L, cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT apply_mode, not_after, approved_at FROM jobs WHERE id='old1'"))
                 using (var r = cmd.ExecuteReader())
@@ -51,8 +51,8 @@ public class GatewayDbMigrationTests
                 }
                 using (var cmd = GatewayDb.Cmd(c, "SELECT stage_job FROM job_targets WHERE job_id='old1'")) Assert.Equal(DBNull.Value, cmd.ExecuteScalar());
             }
-            Assert.Equal(4, GatewayDb.SchemaVersion);
-            // 두 번 열어도(이미 v4) 문제없음
+            Assert.Equal(5, GatewayDb.SchemaVersion);
+            // 두 번 열어도(이미 최신) 문제없음
             _ = new GatewayDb(dir);
 
             var store = new FirmwareStore(dir, db);
@@ -73,13 +73,72 @@ public class GatewayDbMigrationTests
     }
 
     [Fact]
-    public void New_database_starts_at_v4()
+    public void New_database_starts_at_v5()
     {
         using var k = new JobTestKit();
         using var c = k.Db.Open();
         using (var cmd = GatewayDb.Cmd(c, "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('apply_mode','not_after','approved_at','recover')"))
             Assert.Equal(4L, cmd.ExecuteScalar());
-        using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
+        using (var cmd = GatewayDb.Cmd(c, "SELECT COUNT(*) FROM pragma_table_info('firmware') WHERE name IN ('pkg_id','link_check')"))
+            Assert.Equal(2L, cmd.ExecuteScalar());
+        Assert.Equal(0, k.Db.Count("firmware_files"));
+        using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("5", cmd.ExecuteScalar());
+    }
+
+    [Fact]
+    public async Task V4_database_gets_firmware_files_and_legacy_dsp_row_stays_deployable()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig5-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            // v4 DB 흉내: 새 DB 에서 v5 열·표를 빼고 버전을 4 로, 0.6.x 가 올린 .dspfw 단독 행 하나 + 그 파일
+            var db0 = new GatewayDb(dir);
+            var img = JobTestKit.DspImage("1.0.3");
+            using (var c = db0.Open())
+                GatewayDb.Exec(c, """
+                    DROP TABLE firmware_files;
+                    ALTER TABLE firmware DROP COLUMN pkg_id;
+                    ALTER TABLE firmware DROP COLUMN link_check;
+                    UPDATE meta SET value='4' WHERE key='schema_version';
+                    INSERT INTO firmware(id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256)
+                    VALUES('legacy1', 'Dsp', '1.0.3', 'agv-dsp', '0.6 업로드', '2026-10-20T00:00:00.0000000Z', 'dspfw', 'app_1.0.3.dspfw', $size, 'AB');
+                    """, ("$size", img.Length));
+            Directory.CreateDirectory(Path.Combine(dir, "firmware", "legacy1"));
+            File.WriteAllBytes(Path.Combine(dir, "firmware", "legacy1", "app_1.0.3.dspfw"), img);
+            SqliteConnection.ClearAllPools();
+
+            var db = new GatewayDb(dir);
+            using (var c = db.Open())
+            {
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("5", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT pkg_id || '|' || link_check || '|' || file_name FROM firmware WHERE id='legacy1'"))
+                    Assert.Equal("||app_1.0.3.dspfw", cmd.ExecuteScalar());
+            }
+            Assert.Equal(0, db.Count("firmware_files"));
+            var store = new FirmwareStore(dir, db);
+            var e = Assert.Single(store.List());
+            Assert.Equal(("1.0.3", "", "", false), (e.Version, e.PkgId, e.LinkCheck, e.HasOriginals));
+            Assert.Equal(("dspfw", "app_1.0.3.dspfw"), (Assert.Single(e.Files).Slot, e.Primary!.FileName));
+            Assert.DoesNotContain("1.0.3", store.VersionsWithOriginals());
+
+            // 이전 등록도 그대로 배포된다 (주 파일 dspfw)
+            var reg = new AgvRegistry();
+            var link = new FakeBridges(reg);
+            link.Add(7);
+            var svc = new JobService(Microsoft.Extensions.Options.Options.Create(new Gateway.Server.Options.GatewayOptions { DataDir = dir, OfflineAfterSec = 5, PublicBaseUrl = "http://10.0.0.1:8080" }),
+                                     store, reg, link, db, Microsoft.Extensions.Logging.Abstractions.NullLogger<JobService>.Instance)
+            { NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1), SaveRetryGap = TimeSpan.Zero };
+            var j = svc.Create("", e.Id, [7], null, true, ApplyMode.Immediate);
+            svc.Tick();
+            await svc.LastRun.WaitAsync(TimeSpan.FromSeconds(20));
+            Assert.Equal(JobState.Done, j.State);
+            Assert.Contains(link.Sent, s => s.kind == "START" && s.json.Contains("/fw/legacy1/app_1.0.3.dspfw"));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
     }
 
     [Fact]
@@ -101,7 +160,7 @@ public class GatewayDbMigrationTests
             var db = new GatewayDb(dir);
             using (var c = db.Open())
             {
-                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("4", cmd.ExecuteScalar());
+                using (var cmd = GatewayDb.Cmd(c, "SELECT value FROM meta WHERE key='schema_version'")) Assert.Equal("5", cmd.ExecuteScalar());
                 using (var cmd = GatewayDb.Cmd(c, "SELECT recover FROM jobs WHERE id='v2job'")) Assert.Equal(0L, cmd.ExecuteScalar());
             }
             var svc = new JobService(Microsoft.Extensions.Options.Options.Create(new Gateway.Server.Options.GatewayOptions { DataDir = dir }),

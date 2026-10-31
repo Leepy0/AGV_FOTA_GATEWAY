@@ -4,6 +4,7 @@
 @inject AgvGroupStore Groups
 @inject IOptions<GatewayOptions> Opt
 @inject BridgeReleaseService Rel
+@inject FirmwareStore Fws
 @inject ICfgChannel Ch
 @inject IJSRuntime JS
 @implements IDisposable
@@ -35,6 +36,16 @@ else
         <div class="banner info row">
             <span class="grow">브리지 새 버전 <b>v@(latest.Version.ToString(3))</b> · 구버전 @oldN 대 → <a href="firmware">펌웨어</a></span>
             <button type="button" @onclick="() => relDismissed = true">닫기</button>
+        </div>
+    }
+    @if (!origDismissed && NoOriginalByVersion() is { Count: > 0 } noOrig)
+    {
+        @* 원본 없는 메인보드 버전 — 점검 필요 수에는 넣지 않는다 (처음엔 전 호기가 해당돼 다른 경고를 가림) *@
+        <div class="banner info row">
+            <span class="grow">⚠ 메인보드 원본(.out·.map) 없는 버전
+                @foreach (var g in noOrig.Take(8)) { <span class="badge warn" title="@NoOriginalTitle">@g.ver · @g.n 대</span> }
+                → <a href="firmware">펌웨어</a> 에 패키지(.dsppkg)로 올리세요</span>
+            <button type="button" @onclick="() => origDismissed = true">닫기</button>
         </div>
     }
     @if (clockBad.Count > 0)
@@ -109,7 +120,7 @@ else
                         <td class="zonecell" title="@(Groups.Get(a.Id)?.Group.Path)">@(Zone(Groups.Get(a.Id)?.Group.Path).main)<small>@(Zone(Groups.Get(a.Id)?.Group.Path).rest)</small></td>
                         <td><span class="dot @(on ? "ok" : "bad")"></span>@(on ? "온라인" : $"오프라인 · {Ago(a.LastSeen)}")</td>
                         <td>@st?.Fw</td>
-                        <td title="@(st?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 — USB 전체 굽기 필요" : st?.DspState == "" ? "브리지 0.5.0 미만" : "")">@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : st?.DspState == "nopart" ? " ⚠ 파티션 없음" : "")</td>
+                        <td title="@(st?.DspState == "nopart" ? "브리지에 dspfw 파티션 없음 — USB 전체 굽기 필요" : st?.DspState == "" ? "브리지 0.5.0 미만" : on && NoOriginal(a) ? NoOriginalTitle : "")">@(st is null || string.IsNullOrEmpty(st.DspState) ? "-" : $"{(st.HasDsp ? st.Dsp : "?")} / {st.DspBoot}")@(st?.DspState == "programming" ? " ⟳ 프로그래밍" : st?.DspState == "nopart" ? " ⚠ 파티션 없음" : "")@if (on && NoOriginal(a)) { <span class="warn-text"> ⚠원본</span> }</td>
                         <td>@(st?.StagedVer is { Length: > 0 } sv ? $"{sv} (job {st.StagedJob})" : st?.DspState is "downloading" ? "받는 중" : "")</td>
                         <td class="@Rssi(st?.Rssi).cls" title="@Rssi(st?.Rssi).text">@(st is null || st.Rssi == 0 ? "" : st.Rssi)</td>
                         <td>@if (on) { @foreach (var i in Issues(a)) { <span class="badge warn">⚠ @i</span> } }</td>
@@ -187,10 +198,20 @@ else
     /// <summary>온라인이면서 시각 동기를 아는 브리지인데 미동기이거나 편차가 임계를 넘은 호기</summary>
     List<AgvState> clockBad = [];
     System.Threading.Timer? timer;
+    /// <summary>.out·.map 을 보관한 메인보드 버전(앞 8자) — Load 에서 한 번 만들고 행마다 찾는다 (행마다 저장소를 뒤지지 않게)</summary>
+    HashSet<string> withOriginals = [];
+    const string NoOriginalTitle = "게이트웨이에 이 메인보드 버전의 .out·.map 이 없습니다 — 패키지(.dsppkg)로 올리세요 (소스를 잃으면 복구할 원본이 없음)";
+    /// <summary>메인보드 앱 버전을 아는데 그 버전의 원본(.out·.map)을 게이트웨이가 갖고 있지 않음</summary>
+    bool NoOriginal(AgvState a) => a.Status is { HasDsp: true } s && !withOriginals.Contains(DspVersion.Head(s.Dsp));
+    bool origDismissed;
+    /// <summary>원본 없는 메인보드 버전별 온라인 호기 수 (많은 순)</summary>
+    List<(string ver, int n)> NoOriginalByVersion() =>
+        all.Where(a => On(a) && NoOriginal(a)).GroupBy(a => DspVersion.Head(a.Status!.Dsp))
+           .Select(g => (g.Key, g.Count())).OrderByDescending(x => x.Item2).ToList();
 
     protected override void OnInitialized()
     {
-        Reg.Changed += OnChanged; Groups.Changed += OnChanged; Rel.Changed += OnChanged;
+        Reg.Changed += OnChanged; Groups.Changed += OnChanged; Rel.Changed += OnChanged; Fws.Changed += OnChanged;
         timer = new System.Threading.Timer(_ => OnChanged(), null, 2000, 2000);   // 오프라인 표시 갱신
         if (!string.IsNullOrEmpty(Group)) group = Group;
         Load();
@@ -198,6 +219,7 @@ else
     void Load()
     {
         all = Reg.Snapshot();
+        withOriginals = Fws.VersionsWithOriginals();
         lastSeen = all.Count == 0 ? default : all.Max(a => a.LastSeen);
         onlineN = all.Count(On);
         pending = all.Count(a => On(a) && a.Status?.Ota == "pending");
@@ -220,7 +242,7 @@ else
         if (!exists) filter = "all";
     }
     void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
-    public void Dispose() { Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; Rel.Changed -= OnChanged; timer?.Dispose(); }
+    public void Dispose() { Reg.Changed -= OnChanged; Groups.Changed -= OnChanged; Rel.Changed -= OnChanged; Fws.Changed -= OnChanged; timer?.Dispose(); }
 
     // ───── 시각 ─────
     string ClockText(AgvState a)
