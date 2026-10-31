@@ -34,6 +34,8 @@ public sealed class FirmwareEntry
     public string LinkCheck { get; set; } = "";
     /// <summary>이 메인보드 버전의 .out·.map 을 게이트웨이가 보관하고 있는지 (원본 분실 대비)</summary>
     public bool HasOriginals => PkgId.Length > 0 && FileOf(FirmwareStore.SlotOut) is not null && FileOf(FirmwareStore.SlotMap) is not null;
+    /// <summary>패키지(.dsppkg)와 풀어낸 .dspfw·.out·.map 이 모두 있는가 — 메인보드 작업은 이것만 만들 수 있다 (브리지가 패키지를 받아 보관해야 굽는다)</summary>
+    public bool HasPackage => HasOriginals && FileOf(FirmwareStore.SlotPkg) is not null && FileOf(FirmwareStore.SlotDspfw) is not null;
     /// <summary>브리지가 받아 가는 파일 (DSP .dspfw, ESP .bin) — 작업 실행기는 이것만 쓴다</summary>
     [JsonIgnore] public FirmwareFile? Primary => FileOf(Kind == FirmwareKind.Dsp ? FirmwareStore.SlotDspfw : FirmwareStore.SlotEsp) ?? Files.FirstOrDefault();
     public FirmwareFile? FileOf(string slot) => Files.FirstOrDefault(f => f.Slot == slot);
@@ -56,6 +58,8 @@ public sealed class FirmwareStore
     public const int MaxFileName = 60;
     public const string SlotDspfw = "dspfw", SlotEsp = "esp", SlotOut = "out", SlotMap = "map", SlotPkg = "pkg";
     /// <summary>메인보드 업로드는 패키지만 — .dspfw 만 올리면 이 안내로 거부</summary>
+    /// <summary>원본(패키지) 없는 이전 등록 메인보드 펌웨어로 작업을 만들 때 (UI·REST 공통)</summary>
+    public const string NoPackageDeploy = "원본(.out·.map) 패키지가 없는 펌웨어는 배포할 수 없습니다 — 패키지로 다시 올리세요";
     public const string PackageOnly = "메인보드 펌웨어는 .out·.map 이 든 패키지(.dsppkg)로 올립니다 — dsp_pack.py bundle (AGV_Wifi_Bridge tools)";
 
     /// <summary>목록이 바뀌면 (등록·삭제) — 화면 갱신용</summary>
@@ -202,6 +206,8 @@ public sealed class FirmwareStore
                 e.Files.Add(new FirmwareFile { Slot = slot, FileName = fn, Size = d.Length, Sha256 = sha.ToUpperInvariant() });
                 toWrite.Add((fn, d));
             }
+            if (bytes.Length > DspPkgRef.MaxBytes)
+                warnings.Add($"패키지가 {bytes.Length:N0}B — 브리지 보관 한도 {DspPkgRef.MaxBytes:N0}B 를 넘어 배포할 수 없습니다 (.out·.map 을 줄여 다시 만드세요)");
             if (FindPackage(pkg.PkgId) is { } same)
                 warnings.Add($"같은 패키지(ID {pkg.PkgId})가 이미 등록되어 있습니다 — v{same.Version}, {same.UploadedAt.ToLocalTime():yyyy-MM-dd HH:mm} 업로드. 내용이 같으니 하나만 남기세요");
         }

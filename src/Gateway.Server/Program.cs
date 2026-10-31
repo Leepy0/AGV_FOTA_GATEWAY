@@ -113,6 +113,9 @@ api.MapGet("/agvs", (AgvRegistry reg, IOptions<GatewayOptions> o) =>
         a.Id, Online = a.Online(o.Value.OfflineAfterSec), EndPoint = a.EndPoint?.ToString(), a.LastSeen,
         Fw = a.Status?.Fw, Part = a.Status?.Part, Ota = a.Status?.Ota, Rssi = a.Status?.Rssi, Cfg = a.Status?.Cfg,
         Dsp = a.Status?.Dsp, DspBoot = a.Status?.DspBoot, DspState = a.Status?.DspState, a.Status?.StagedJob, a.Status?.StagedVer,
+        // 패키지 보관 (브리지 0.9.0+, 구 브리지는 null): PkgSt "ok"|"nopart", DspPkg = 메인보드에 적용된 패키지 {id, ver}, StagedPkg = 스테이징과 짝인 패키지 ID
+        PkgSt = a.Status is { PkgState.Length: > 0 } ps ? ps.PkgState : null,
+        DspPkg = a.Status?.DspPkgId is { } pid ? new { Id = pid, Ver = a.Status.DspPkgVer } : null, a.Status?.StagedPkg,
         a.MainUp, a.MainDown, a.SeqLoss, a.LastFrame, a.StatusRaw,
         Conflict = a.InConflict(o.Value.OfflineAfterSec), ConflictEndPoint = a.ConflictEndPoint?.ToString(), a.ConflictAt, a.ConflictCount,
         // 시각 동기 (브리지 0.8.0+): 편차 ms(+ = 브리지가 앞섬), 미동기·구 펌웨어는 null

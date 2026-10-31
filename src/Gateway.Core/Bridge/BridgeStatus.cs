@@ -1,12 +1,14 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Gateway.Core.Fota;
 
 namespace Gateway.Core.Bridge;
 
 /// <summary>
 /// 브리지 heartbeat(STATUS 0x10) 또는 INFO(0x12) JSON. 모르는 필드는 무시하고 Raw 에 원문을 둔다.
 /// 메인보드 필드(브리지 0.5.0+): dsp(앱 버전), dspb(부트로더 버전), dsp_build, dsp_st(idle/downloading/staged/programming),
-/// staged {job, ver} 또는 null.
+/// staged {job, ver[, pkg]} 또는 null.
+/// 패키지 보관(브리지 0.9.0+): pkg_st("ok"/"nopart", 구 브리지는 ""), dsp_pkg {id, ver}(메인보드에 적용된 패키지) 또는 null, staged.pkg(스테이징과 짝인 패키지 ID).
 /// </summary>
 public sealed record BridgeStatus(
     string Fw, string Part, string Ota, long UpSeconds, int Rssi, int Channel, string Bssid,
@@ -14,8 +16,16 @@ public sealed record BridgeStatus(
     long Heap, string Cfg, bool SetupAp,
     string Dsp, string DspBoot, string DspBuild, string DspState, long? StagedJob, string? StagedVer,
     string Mac, string Ip, string Raw,
-    long TsMs = 0, long TsyncAgeSec = 0, bool HasClock = false, int Reason = 0)
+    long TsMs = 0, long TsyncAgeSec = 0, bool HasClock = false, int Reason = 0,
+    string PkgState = "", string? DspPkgId = null, string? DspPkgVer = null, string? StagedPkg = null)
 {
+    /// <summary>패키지 보관을 아는 브리지(0.9.0+)인지 — pkg_st 가 있다</summary>
+    public bool HasPkgArchive => PkgState.Length > 0;
+    /// <summary>브리지에 패키지 파티션(dsppkg)이 없음 — USB 로 파티션 표를 다시 구워야 함</summary>
+    public bool PkgNoPart => PkgState == "nopart";
+    /// <summary>브리지가 보관한 패키지(메인보드에 적용된 것)가 있고 그 버전이 실행 중인 메인보드 앱 버전과 같음 — .out·.map 이 브리지에 있다</summary>
+    public bool HasArchivedOriginals => DspPkgId is { Length: > 0 } && HasDsp && !string.IsNullOrEmpty(DspPkgVer) && DspVersion.Matches(Dsp, DspPkgVer);
+
     /// <summary>시각 동기를 아는 브리지(0.8.0+)이고 시각을 서버에서 받아 맞춘 상태 — heartbeat 의 ts(UTC unix ms)가 믿을 만함</summary>
     public bool ClockSynced => HasClock && TsMs >= BridgeClock.MinPlausibleUnixMs;
 
@@ -26,11 +36,19 @@ public sealed record BridgeStatus(
         {
             using var d = JsonDocument.Parse(raw);
             var r = d.RootElement;
-            long? stagedJob = null; string? stagedVer = null;
+            long? stagedJob = null; string? stagedVer = null, stagedPkg = null;
             if (r.TryGetProperty("staged", out var st) && st.ValueKind == JsonValueKind.Object)
             {
                 stagedJob = Num(st, "job");
                 stagedVer = Str(st, "ver");
+                if (Str(st, "pkg") is { Length: > 0 } sp) stagedPkg = sp;
+            }
+            string? pkgId = null, pkgVer = null;
+            if (r.TryGetProperty("dsp_pkg", out var dp) && dp.ValueKind == JsonValueKind.Object)
+            {
+                pkgId = Str(dp, "id");
+                pkgVer = Str(dp, "ver");
+                if (pkgId.Length == 0) pkgId = null;
             }
             return new BridgeStatus(
                 Str(r, "fw"), Str(r, "part"), Str(r, "ota"), Num(r, "up"), (int)Num(r, "rssi"), (int)Num(r, "ch"), Str(r, "bssid"),
@@ -38,7 +56,8 @@ public sealed record BridgeStatus(
                 Num(r, "heap"), Str(r, "cfg"), Num(r, "ap") != 0 || Num(r, "setup") != 0,
                 Str(r, "dsp"), Str(r, "dspb"), Str(r, "dsp_build"), Str(r, "dsp_st"), stagedJob, stagedVer,
                 Str(r, "mac"), Str(r, "ip"), raw,
-                Num(r, "ts"), Num(r, "tsync"), r.TryGetProperty("tsync", out _), (int)Num(r, "reason"));
+                Num(r, "ts"), Num(r, "tsync"), r.TryGetProperty("tsync", out _), (int)Num(r, "reason"),
+                Str(r, "pkg_st"), pkgId, pkgId is null ? null : pkgVer, stagedPkg);
         }
         catch (JsonException)
         {

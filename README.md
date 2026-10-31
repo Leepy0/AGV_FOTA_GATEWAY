@@ -1,9 +1,9 @@
 # AGV FOTA Gateway
 
 AGV 의 Wi-Fi 브리지(ESP32-S3)와 메인보드 DSP(TMS320F2808) 펌웨어를 **웹 화면에서 올리고, 대상 호기와 시각을 정해 순차 배포**하는 서버입니다.
-메인보드 OTA 는 브리지의 B안(브리지가 `.dspfw` 를 받아 두었다가 상주 부트로더로 굽는 방식)을 씁니다. 브리지 0.5.0 이상에서 되고, 이번 릴리스(게이트웨이 v0.3.0)의 기준은 브리지 **v0.5.2** 입니다.
+메인보드 OTA 는 브리지의 B안(브리지가 `.dspfw` 를 받아 두었다가 상주 부트로더로 굽는 방식)을 씁니다. 브리지 0.5.0 이상에서 되고, 이번 릴리스(게이트웨이 v0.7.0)의 짝 브리지는 **v0.9.0** 입니다(ESP32-S3 N16, 16MB).
 메인보드 작업은 기본으로 **전 호기 스테이징 → 적용 대기 → AGV 정지 확인 후 '적용 시작' → 한 대씩 적용** 순서로 흐릅니다.
-메인보드 펌웨어는 0.7.0 부터 **`.out`·`.map` 이 든 패키지 `.dsppkg`(브리지 저장소 `dsp_pack.py bundle`)로만** 올립니다. 게이트웨이가 배포하는 모든 메인보드 빌드의 링크 산출물을 보관해 소스를 잃어도 복구할 수 있게 하고, 원본이 없는 버전으로 도는 호기는 호기 현황에 `⚠원본` 으로 표시합니다. 브리지는 지금처럼 `.dspfw` 만 받습니다.
+메인보드 펌웨어는 0.7.0 부터 **`.out`·`.map` 이 든 패키지 `.dsppkg`(브리지 저장소 `dsp_pack.py bundle`)로만** 올립니다. 게이트웨이가 배포하는 모든 메인보드 빌드의 링크 산출물을 보관해 소스를 잃어도 복구할 수 있게 하고, 원본이 없는 버전으로 도는 호기는 호기 현황에 `⚠원본` 으로 표시합니다. 브리지(0.9.0)는 `.dspfw` 와 함께 **패키지도 받아 flash 에 보관**하고(START 의 `pkg_*`), 짝 패키지가 없으면 메인보드를 굽지 않습니다. 그래서 원본이 없는 이전 등록 펌웨어로는 메인보드 작업을 만들 수 없고, 패키지 파티션이 없는 브리지는 호기 현황에 `⚠ 패키지 파티션 없음` 으로 뜹니다(USB 로 파티션 표 다시 굽기, [DEPLOY.md](docs/DEPLOY.md) 3-1).
 ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (브리지가 서버 IP 하나로만 통신하기 때문).
 
 ![전체 구성](docs/images/diagrams/architecture.png)
@@ -33,7 +33,7 @@ ACS(교통제어) TCP 소켓 중계도 같은 프로세스에 들어갑니다 (�
 | `src/Gateway.Core` | 브리지 UDP 패킷·heartbeat·번호 충돌 판정·seq 손실, AGV 프레임(BCC, ACS 화이트리스트, 하향 F·R 차단), `.dspfw` 파서(블록·`app_crc` 검사)·버전 규칙, 메인보드 패키지 `.dsppkg` 검사(`DspPackage`), 메인보드 OTA(B안)·브리지 OTA 클라이언트(재전송·heartbeat 판정), 업데이트 피드·교체 배치 |
 | `src/Gateway.Server` | ASP.NET Core + Blazor Server (.NET 10). 브리지 UDP 서비스, 호기 레지스트리, ACS 중계, 펌웨어 저장소, 작업 실행기(스테이징·적용 대기·승인), 화면 9개(호기 현황·구역·펌웨어·배포 작업·호기 설정·Wi-Fi 분석·통신 로그·서버 업데이트·설정), 파일 로그, SQLite 데이터베이스(`data/gateway.db`, 스키마 v5 — 펌웨어 목록·보관 파일·작업·소속·최근 위치·마지막 접속·Wi-Fi 분석·호기 설정), 서버 자체 업데이트, REST API |
 | `tests/Gateway.Core.Tests` · `tests/Gateway.Server.Tests` | xUnit — 프로토콜 벡터, 패킷/프레임 왕복, `.dspfw`(브리지 기준 이미지 대조), 메인보드·브리지 OTA 단계·재전송·실패, 작업 실행기·DB 마이그레이션, API 검사 |
-| `tests/fake_esp.py` | 가짜 브리지 — 브리지 0.5.2 흉내, 장애 주입 옵션 (`python3 tests/fake_esp.py --help`) |
+| `tests/fake_esp.py` | 가짜 브리지 — 브리지 0.5.2 흉내 + 패키지 보관(0.9.0, `--legacy-pkg`·`--nopkgpart`), 장애 주입 옵션 (`python3 tests/fake_esp.py --help`) |
 | `tests/dsppkg.py` | 시험용 메인보드 패키지 생성기 — `.dspfw` + 합성 `.out`·`.map` (표준 라이브러리만, 실제 패키지는 `dsp_pack.py bundle`) |
 | `tests/e2e/` | 종단 시험 `run_e2e.py`, 가짜 브리지 자체 시험 `test_fake_esp.py` ([README](tests/e2e/README.md)) |
 | `deploy/` | `start.bat`, `install-service.bat`, `uninstall-service.bat` (CP949 저장) |

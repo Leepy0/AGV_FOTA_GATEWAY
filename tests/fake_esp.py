@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""가짜 브리지 (AGV_Wifi_Bridge 0.5.2 흉내) — 하드웨어 없이 게이트웨이 서버를 시험한다. 표준 라이브러리만 쓴다.
+"""가짜 브리지 (AGV_Wifi_Bridge 0.5.2 흉내 + 패키지 보관 0.9.0) — 하드웨어 없이 게이트웨이 서버를 시험한다. 표준 라이브러리만 쓴다.
 
   python3 tests/fake_esp.py --agv 7 --server 127.0.0.1:50000 [--listen 50010] [--dsp 1.0.0] [--fail-at erase]
   python3 tests/fake_esp.py --agv 7,12,23 --server 127.0.0.1:50000 --listen 50010     # 여러 호기 (포트 50010, 50011, 50012)
   python3 tests/fake_esp.py --agv 7 --dup-id ...                                       # 같은 번호의 두 번째 장치 (충돌 시험)
+  python3 tests/fake_esp.py --agv 7 --nopkgpart ...                                    # 패키지(dsppkg) 파티션 없음 (pkg_st=nopart)
+  python3 tests/fake_esp.py --agv 7 --legacy-pkg ...                                   # 패키지 보관을 모르는 브리지 0.8.0 (pkg_* 무시)
 
 실제 브리지 코드(main/net_bridge.c·dsp_ota.c·ota.c·app_config.c·cmd.c, 0.5.2)와 맞춘 동작
 - 패킷: [A5 5A 01][type][agv][flags 0][seq u16][len u16] + payload(≤1024). 타입별 seq 는 0 부터, 오프라인·유실이어도 증가.
@@ -12,16 +14,22 @@
   원격 설정(cfg=trial)을 확정. MAIN_DOWN·OTA_START·CFG_CMD·DSP_OTA_START/APPLY 는 호기 번호가 다르면 버림, PING·INFO_REQ 는 받음.
 - heartbeat(STATUS) hb_ms 마다, 필드 순서도 같게: fw, mac, part, ota(valid/pending/busy), up, rssi, ch, bssid, disc, reason,
   m_rx, m_tx, r_rx, u_err, n_off, n_err, heap, cfg(saved/trial/default), setup, dsp, dspb, dsp_build,
-  dsp_st(idle/downloading/staged/programming/nopart), staged{job,ver}|null.  INFO_REQ → INFO{agv,mac,ip,fw,part,ota,cfg,setup,up,dsp…}.
-- DSP_OTA_START {url,ver,crc32,size,job,apply,recover}: url 199자 초과 url_too_long, http 아님 bad_request, 호스트 ≠ 서버 IP url_host
+  dsp_st(idle/downloading/staged/programming/nopart), staged{job,ver[,pkg]}|null, [패키지 보관] pkg_st(ok/nopart), dsp_pkg{id,ver}|null.
+  INFO_REQ → INFO{agv,mac,ip,fw,part,ota,cfg,setup,up,dsp…, pkg_st, dsp_pkg}.
+- DSP_OTA_START {url,ver,crc32,size,job,apply,recover,pkg_url,pkg_size,pkg_sha256,pkg_id}: url 199자 초과 url_too_long, http 아님 bad_request,
+  호스트 ≠ 서버 IP url_host, [패키지 보관(기본)] pkg_* 가 하나라도 없거나 형식이 틀리면 no_pkg, pkg_url 199자 초과 pkg_url_too_long·호스트 pkg_url_host
   (여기까지는 수신 문맥이라 3회 간격 없이). 큐(2칸)가 차면 busy. 처리 태스크: 같은 job 이 스테이징돼 있으면 staged 재보고,
   최근 10분 안의 같은 job 결과가 있으면 그 결과 재보고(다시 받지 않음), 굽는 중이면 busy, 브리지 OTA 중이면 esp_ota_busy.
+  [패키지 보관] 패키지 파티션이 없으면 pkg_nopart, pkg_size 가 6,287,360 초과면 pkg_too_big. 패키지를 먼저 HTTP 로 받아 크기(pkg_size)·sha256
+  (pkg_sha256)을 확인(pkg_size/pkg_sha, 접속·받기 실패 pkg_http, 리다이렉트 호스트 pkg_url_host) → 이어서 .dspfw. download pct 는 (패키지 + .dspfw)
+  합계 바이트 기준 20% 단위. 둘 다 끝나야 짝 패키지가 staged.pkg 로 보임. 새 패키지를 받기 시작하면 이전 스테이징의 짝 패키지는 사라짐(슬롯 덮어씀).
   다운로드: 실제 HTTP(리다이렉트 3회까지, 리다이렉트 호스트도 검사) → 길이(http_length)·머리 검사(파일 헤더 magic·길이 image_crc,
   앱 헤더 magic·hdr_crc16·app_len image_crc, 앱 헤더 버전 = 파일 헤더 버전·1~8자 [0-9A-Za-z._-] 아니면 ver_invalid) →
   기존 스테이징 지움(받는 동안 staged=null) → 4KB 조각마다 download(pct, 20% 단위) → 전체 검사(파일 CRC image_crc,
   블록 크기·주소·순서와 복원 CRC = app_crc 아니면 image_bad) → crc32 인자와 다르면 crc_mismatch → staged(100, ver) 3회(300ms 간격).
   apply:1 이면 이어서 적용. 실패하면 이전 스테이징이 남아 있으면 복원.
-- DSP_OTA_APPLY {job,recover}: 같은 job 을 굽는 중이면 무시. 최근 같은 job 적용 결과가 있으면 재보고. 스테이징이 있는데 job 이 다르면
+- DSP_OTA_APPLY {job,recover}: [패키지 보관] 메인보드를 지우기 전에 스테이징한 .dspfw 와 짝인 패키지(dspfw_crc 일치)가 없으면 fail no_pkg(스테이징 유지).
+  적용 성공(done) 뒤 dsp_pkg={id,ver}, staged 짝 패키지는 비워짐. 같은 job 을 굽는 중이면 무시. 최근 같은 job 적용 결과가 있으면 재보고. 스테이징이 있는데 job 이 다르면
   fail job_mismatch(ver=스테이징 버전). 스테이징이 없으면 start(job 0, ver "") → fail not_staged(job 0, ver "").
   start(0, ver) → [esp OTA 중이면 esp_ota_busy, 스테이징 재검사 실패면 stage_invalid/image_bad] → enter → 앱에 U:
   OK 면 부트로더로, NG 면 app_ng_NN. 무응답이면: 직전 3초 안에 앱 프레임이 있었으면(앱은 살아 있으나 업데이트 진입 미지원 구 앱)
@@ -37,7 +45,8 @@
   begin ESP_ERR_OTA_VALIDATE_FAILED, 프로젝트 ≠ agv_wifi_bridge 면 project mismatch) → progress{pct,bytes}(10% 단위) →
   done{ver,bytes} 3회(300ms 간격, 비동기) → 0.8초 뒤 재부팅: 다른 슬롯(part)·fw=이미지 app_desc 버전·ota=pending·up 0부터·seq 0부터.
   180초(--confirm-sec) 안에 서버 패킷을 못 받으면(또는 확정 전에 다시 재부팅하면) 이전 슬롯·버전으로 롤백(ota=valid).
-- CFG_CMD: cfg / set <key> <value> / save / reboot / stat / setup / dsp [ver|apply] / help (응답 문구도 같게).
+- CFG_CMD: cfg / set <key> <value> / save / reboot / stat / setup / dsp [ver|apply|pkg] / help (응답 문구도 같게).
+  dsp 한 줄에 pkg=<id>(<ver>) staged_pkg=<id|-> 가 붙고, dsp pkg 는 두 슬롯(STAGED/APPLIED/empty, id, ver, size, seq, job)을 보인다.
   서버에서 온 save = 확인 대기 저장. reboot(메인보드 굽는 중이면 거부) → 1초 뒤 재부팅 → cfg=trial →
   180초 안에 서버 패킷을 받으면 saved, 못 받으면 이전 설정으로 되돌리고 다시 재부팅. 바꾼 hb_ms 는 재부팅 뒤 적용.
 
@@ -49,6 +58,8 @@
   wait_power 10초 간격·60초, 앱 기동 확인 1초×8, 최종 보고 300ms 간격)은 실제 값.
 - 브리지 OTA 는 실제 플래시 쓰기·서명 검증 없이 앱 이미지 머리(0xE9, app_desc magic, project_name, version)만 본다.
   HTTP 오류는 모두 'begin ESP_FAIL' 로 보고한다.
+- 패키지 보관은 --fw 버전과 무관하게 기본으로 켜져 있다(0.9.0 동작) — 끄려면 --legacy-pkg. 패키지 슬롯은 A/B 두 개를 단순화(적용된 것 + 스테이징 하나,
+  seq·job 은 표시용)하고 flash 에 쓰는 대신 메모리에 둔다(재부팅해도 유지). 패키지 바이트는 풀지 않고 sha256 만 본다(실제 브리지와 같음).
 - RSSI·카운터·heap 은 고정값/대략값, 설정 AP·BLE(setup)·RFID 는 없다. --legacy 는 0.4.x 를 대략 흉내(mac·dsp 필드 없음,
   0x32/0x34 무시, 최종 보고 1회).
 - 같은 job 의 중복 처리는 실제와 같지만 큐 경쟁(처리 끝 직전 도착)의 타이밍은 파이썬 스레드 기준이다.
@@ -60,7 +71,7 @@
   --drop-rx START:1,APPLY:1        받은 명령을 버림(하향 유실). 이름: START APPLY OTA PING INFO CFG MAIN
   --loss P / --rx-loss P           상향/하향 패킷을 확률 P 로 버림
   --mute-after-cmd SEC             job 마다 처음 받은 DSP START·APPLY 뒤 SEC 초 동안 상향 전부 유실(서버 재전송 유도 → 중복 처리 시험)
-  --fail-at STAGE[:N]              download(flash_write) enter(uart_busy) hello(no_bootloader) erase write(write_timeout) header(write_header)
+  --fail-at STAGE[:N]              download(flash_write) pkg(패키지 쓰기 pkg_flash_write) enter(uart_busy) hello(no_bootloader) erase write(write_timeout) header(write_header)
                                     verify app(굽기 뒤 앱 무응답 → app_no_reply) ver(ver_mismatch) ota(브리지 OTA finish 실패). N 회만(기본 계속)
   --app-u ok|noreply|ng:NN         메인보드 앱의 U(업데이트 진입) 응답
   --nodsp [mute|boot]              앱이 버전에 응답하지 않음(dsp='?'). mute = 구 앱(U 도 무응답, 전원 재투입해야 부트로더), boot = 앱 없음(부트로더 대기 중)
@@ -68,10 +79,13 @@
                                     --nodsp mute 와 함께 쓰면 멈춘 앱(복구 적용 대상), --app-u noreply 와 함께 쓰면 버전 조회에는 응답했지만
                                     U 에 침묵하는 앱(app_no_reply 뒤 dsp '?' 전환 시험)
   --nopart / --legacy              dspfw 파티션 없음(dsp_st=nopart) / 0.4.x 브리지
+  --nopkgpart / --legacy-pkg       패키지(dsppkg) 파티션 없음(pkg_st=nopart → START pkg_nopart, 적용 no_pkg) / 패키지 보관을 모르는 0.8.0 브리지
+                                    (pkg_* 무시, pkg_st·dsp_pkg·staged.pkg 없음, 적용에 짝 패키지 불필요)
   --dup-id                         각 호기마다 같은 번호·다른 MAC 의 두 번째 장치를 --dup-delay 초 뒤에 띄움 (포트 +100)
   --events FILE                    받은 명령·굽기·재부팅 등을 JSON 줄로 기록 (종단 시험이 검사)
 """
 import argparse
+import hashlib
 import json
 import queue
 import random
@@ -134,6 +148,8 @@ HDR_WORDS, VER_WORDS, BLOCK_WORDS = 64, 32, 128
 FILE_HDR_LEN = 32
 PEEK_LEN = FILE_HDR_LEN + HDR_WORDS * 2
 PART_SIZE, STAGE_HDR_LEN = 0x60000, 64
+PKG_SLOT_SIZE, PKG_HDR_LEN = 0x600000, 0x1000
+PKG_MAX = PKG_SLOT_SIZE - PKG_HDR_LEN              # 6,287,360 — 넘으면 pkg_too_big
 HTTP_BUF = 4096
 DAP_VER_MAX = 8
 
@@ -441,6 +457,13 @@ class Bridge:
         self.nvs_cfg = dict(self.run_cfg)
         # 메인보드 (상태 기계): mode app=앱 동작(F 응답), mute=앱 동작하지만 F 무응답(구 앱), boot=부트로더 업데이트 모드(앱 없음)
         self.has_part = not opts.nopart
+        # 패키지 보관 (브리지 0.9.0): pkg_on = 아는 브리지, pkg_part = dsppkg 파티션 있음
+        self.pkg_on = not opts.legacy and not opts.legacy_pkg
+        self.pkg_part = not opts.nopkgpart
+        self.pkg_stage = None               # 스테이징 .dspfw 와 짝인 패키지 {id,size,sha,dspfw_crc,job,ver,slot,seq}
+        self.pkg_stage_flash = None         # flash 에 남은 것 (재부팅 시 복원)
+        self.pkg_applied = None             # 메인보드에 적용된 패키지 {id,ver,size,job,slot,seq}
+        self.pkg_seq = 0
         self.board = "app" if opts.nodsp is None else opts.nodsp
         self.board_ver = opts.dsp if self.board != "boot" else None
         self.board_boot = opts.dspb
@@ -549,7 +572,13 @@ class Bridge:
     def dsp_json(self):
         st = self.state if self.has_part else "nopart"
         staged = {"job": self.stage["job"], "ver": self.stage["ver"]} if self.stage else None
-        return {"dsp": self.dsp_ver, "dspb": self.dsp_boot, "dsp_build": self.dsp_build, "dsp_st": st, "staged": staged}
+        if staged and self.pkg_on and self.pkg_stage:
+            staged["pkg"] = self.pkg_stage["id"]
+        d = {"dsp": self.dsp_ver, "dspb": self.dsp_boot, "dsp_build": self.dsp_build, "dsp_st": st, "staged": staged}
+        if self.pkg_on:
+            d["pkg_st"] = "ok" if self.pkg_part else "nopart"
+            d["dsp_pkg"] = {"id": self.pkg_applied["id"], "ver": self.pkg_applied["ver"]} if self.pkg_applied else None
+        return d
 
     def ota_state(self):
         return "busy" if self.ota_busy else "pending" if self.ota_pending else "valid"
@@ -627,6 +656,7 @@ class Bridge:
             if not first:
                 self.up_offset = 0
             self.stage = self.stage_flash if self.has_part else None
+            self.pkg_stage = self.pkg_stage_flash
             self.state = ST_STAGED if self.stage else ST_IDLE
             self.recent = None
             self.cur_start = self.cur_apply = 0
@@ -1056,15 +1086,40 @@ class Bridge:
             if arg == "apply":
                 self.dsp_ota_apply("{}")
                 return "apply requested - progress goes to server (DSP_OTA_RESULT)\n", False
+            if arg == "pkg" and self.pkg_on:
+                return self.pkg_format(), False
             return self.dsp_format(), False
         if cmd == "help":
-            return "cfg | set <key> <value> | save | reboot | stat | setup [on|off] | dsp [ver|apply]\n", False
+            return "cfg | set <key> <value> | save | reboot | stat | setup [on|off] | dsp [ver|apply%s]\n" % ("|pkg" if self.pkg_on else ""), False
         return f"unknown command '{cmd}' - type help\n", False
 
     def dsp_format(self):
         st = self.state if self.has_part else "nopart (USB reflash needed)"
         sv, sj = (self.stage["ver"], self.stage["job"]) if self.stage else ("-", 0)
-        return f"dsp : app={self.dsp_ver} boot={self.dsp_boot} build={self.dsp_build} state={st} staged={sv}(job {sj}) pan=1\n"
+        pk = ""
+        if self.pkg_on:
+            a = self.pkg_applied
+            pk = f" pkg={a['id']}({a['ver']}) staged_pkg={self.pkg_stage['id'] if self.pkg_stage else '-'}" if a else \
+                 f" pkg=- staged_pkg={self.pkg_stage['id'] if self.pkg_stage else '-'}"
+        return f"dsp : app={self.dsp_ver} boot={self.dsp_boot} build={self.dsp_build} state={st} staged={sv}(job {sj}) pan=1{pk}\n"
+
+    def pkg_format(self):
+        """dsp pkg: 두 슬롯의 상태 (읽기 전용)"""
+        if not self.pkg_part:
+            return "dsp pkg: no dsppkg partition (USB reflash needed)\n"
+        rows = {0: "empty", 1: "empty"}
+        info = {}
+        if self.pkg_applied:
+            rows[self.pkg_applied["slot"]] = "APPLIED"
+            info[self.pkg_applied["slot"]] = self.pkg_applied
+        if self.pkg_stage:
+            rows[self.pkg_stage["slot"]] = "STAGED"
+            info[self.pkg_stage["slot"]] = self.pkg_stage
+        out = ""
+        for n in (0, 1):
+            i = info.get(n)
+            out += f"slot{n}: {rows[n]}" + (f" id={i['id']} ver={i['ver']} size={i['size']} seq={i['seq']} job={i['job']}" if i else "") + "\n"
+        return out
 
     # ───── 메인보드 OTA: 보고 (dsp_ota.c) ─────
     def report(self, job, stage, pct=-1, ver=None, err=None):
@@ -1145,14 +1200,37 @@ class Bridge:
             self.log("staging url host is not the configured server: " + url)
             self.report_final(job, "fail", err="url_host", gap=False)
             return
+        pkg = None
+        if self.pkg_on:
+            pkg, perr = self.parse_pkg(js)
+            if perr:
+                self.log("staging package fields rejected: " + perr)
+                self.report_final(job, "fail", err=perr, gap=False)
+                return
         c = {"type": "START", "job": job, "url": url, "ver": json_str(js, "ver", 16)[1], "crc32": json_u32(js, "crc32"),
              "size": json_u32(js, "size"), "apply": json_u32(js, "apply") != 0, "recover": json_u32(js, "recover") == 1,
-             "epoch": self.epoch}
+             "pkg": pkg, "epoch": self.epoch}
         self.maybe_mute("START", job)
         try:
             self.q.put_nowait(c)
         except queue.Full:
             self.report_final(job, "fail", err="busy", gap=False)
+
+    def parse_pkg(self, js: str):
+        """START 의 pkg_url·pkg_size·pkg_sha256·pkg_id (브리지 0.9.0) → (dict, None) 또는 (None, 오류). 하나라도 없거나 형식이 틀리면 no_pkg"""
+        rc, purl = json_str(js, "pkg_url", 200)
+        if rc == JSON_TOO_LONG:
+            return None, "pkg_url_too_long"
+        psize = json_u32(js, "pkg_size")
+        rs, sha = json_str(js, "pkg_sha256", 65)
+        ri, pid = json_str(js, "pkg_id", 17)
+        hexd = "0123456789abcdef"
+        if (rc != JSON_OK or not purl.startswith("http") or psize == 0 or rs != JSON_OK or len(sha) != 64 or any(ch not in hexd for ch in sha)
+                or ri != JSON_OK or len(pid) != 16 or any(ch not in hexd for ch in pid)):
+            return None, "no_pkg"
+        if not url_host_is(purl, self.server_ip):
+            return None, "pkg_url_host"
+        return {"url": purl, "size": psize, "sha": sha, "id": pid}, None
 
     def dsp_ota_apply(self, js: str):
         job = json_u32(js, "job")
@@ -1230,24 +1308,77 @@ class Bridge:
         self.log(f"main board app {self.dsp_ver} boot {self.dsp_boot} build {self.dsp_build}")
         return True
 
-    def download(self, c, epoch):
-        url = c["url"]
-        resp = None
+    def http_open(self, url):
+        """실제 HTTP GET (리다이렉트 3회까지, 리다이렉트 호스트도 검사) → (응답, None) 또는 (None, 오류 이름)"""
         for redirects in range(4):
             try:
-                resp = _OPENER.open(urllib.request.Request(url), timeout=10)
-                break
+                return _OPENER.open(urllib.request.Request(url), timeout=10), None
             except urllib.error.HTTPError as e:
                 if e.code in (301, 302, 303, 307, 308) and redirects < 3:
                     url = urllib.parse.urljoin(url, e.headers.get("Location", ""))
                     if not url_host_is(url, self.server_ip):
-                        return "url_host"
+                        return None, "url_host"
                     continue
-                return "http_status"
+                return None, "http_status"
             except Exception:
-                return "http_open"
-        if resp is None:
-            return "http_status"
+                return None, "http_open"
+        return None, "http_status"
+
+    def dl_progress(self, job, total, state):
+        """download 보고: 누적 바이트 기준 20% 단위 (패키지 + .dspfw 합계)"""
+        pct = state["done"] * 100 // total if total else 100
+        if tdiv(pct, 20) != tdiv(state["last"], 20):
+            state["last"] = pct
+            self.report(job, "download", pct)
+
+    def download_pkg(self, c, epoch, total, state):
+        """패키지(.dsppkg)를 받아 슬롯에 기록 (브리지 0.9.0). 오류 이름 또는 None. 성공해도 짝 .dspfw 가 끝나야 staged.pkg 로 보인다"""
+        p = c["pkg"]
+        resp, err = self.http_open(p["url"])
+        if err:
+            return "pkg_url_host" if err == "url_host" else "pkg_http"
+        with resp:
+            if resp.status != 200:
+                return "pkg_http"
+            clen = int(resp.headers.get("Content-Length") or -1)
+            if clen != p["size"]:
+                return "pkg_size"
+            try:
+                data = resp.read()
+            except Exception:
+                return "pkg_http"
+        # 쓸 슬롯(적용된 것 아닌 쪽)을 지움 — 이전 스테이징의 짝 패키지는 여기서 사라진다
+        with self.lock:
+            self.pkg_stage = None
+            self.pkg_stage_flash = None
+        self.event("pkg_download", job=c["job"], url=p["url"], size=len(data), id=p["id"])
+        chunks = [data[i:i + HTTP_BUF] for i in range(0, len(data), HTTP_BUF)]
+        for ch in chunks:
+            self.sleep(self.sim(self.o.dl_sec) * len(ch) / max(1, total), epoch)
+            if self.take_fail("pkg"):
+                return "pkg_flash_write"
+            state["done"] += len(ch)
+            self.dl_progress(c["job"], total, state)
+        if len(data) != p["size"]:
+            return "pkg_size"
+        if hashlib.sha256(data).hexdigest() != p["sha"]:
+            return "pkg_sha"
+        return None
+
+    def download(self, c, epoch):
+        url = c["url"]
+        total_pkg = 0
+        # 패키지 먼저 (브리지 0.9.0) — 진행 보고의 분모는 패키지 + .dspfw 바이트
+        state = {"done": 0, "last": -1}
+        if self.pkg_on:
+            total_pkg = c["pkg"]["size"]
+            total = total_pkg + (c["size"] or 0)
+            err = self.download_pkg(c, epoch, total, state)
+            if err:
+                return err
+        resp, err = self.http_open(url)
+        if err:
+            return err
         with resp:
             if resp.status != 200:
                 return "http_status"
@@ -1269,18 +1400,17 @@ class Bridge:
             self.stage_flash = None
         self.event("download", job=c["job"], url=c["url"])
         chunks = [data[i:i + HTTP_BUF] for i in range(0, len(data), HTTP_BUF)]
-        pos, last = 0, -1
+        total = total_pkg + clen
+        pos = 0
         for ch in chunks:
-            self.sleep(self.sim(self.o.dl_sec) / len(chunks), epoch)
+            self.sleep(self.sim(self.o.dl_sec) * len(ch) / max(1, total), epoch)
             if self.take_fail("download"):
                 return "flash_write"
             if pos + len(ch) > clen:
                 return "http_overrun"
             pos += len(ch)
-            pct = pos * 100 // clen
-            if tdiv(pct, 20) != tdiv(last, 20):
-                last = pct
-                self.report(c["job"], "download", pct)
+            state["done"] = total_pkg + pos
+            self.dl_progress(c["job"], total, state)
         if pos != clen:
             return "http_short"
         err, fcrc, ah = stage_check(data)
@@ -1291,6 +1421,14 @@ class Bridge:
         with self.lock:
             self.stage = {"job": c["job"], "ver": ah["ver"], "data": data, "ah": ah}
             self.stage_flash = self.stage
+            if self.pkg_on:
+                # 둘 다 끝났으니 패키지 슬롯 bit0 → 0 (dspfw_crc = 스테이징한 .dspfw 의 파일 CRC). 적용된 슬롯의 반대편에 쓴다
+                p = c["pkg"]
+                self.pkg_seq += 1
+                slot = 1 - self.pkg_applied["slot"] if self.pkg_applied else 0
+                self.pkg_stage = {"id": p["id"], "size": p["size"], "sha": p["sha"], "dspfw_crc": fcrc, "job": c["job"], "ver": ah["ver"],
+                                  "slot": slot, "seq": self.pkg_seq}
+                self.pkg_stage_flash = self.pkg_stage
         return None
 
     def handle_cmd(self, c, epoch):
@@ -1309,6 +1447,12 @@ class Bridge:
             else:
                 if self.state == ST_PROGRAMMING:
                     self.report_final(c["job"], "fail", err="busy")
+                    return
+                if self.pkg_on and not self.pkg_part:
+                    self.report_result(c["job"], False, "fail", err="pkg_nopart")
+                    return
+                if self.pkg_on and c["pkg"]["size"] > PKG_MAX:
+                    self.report_result(c["job"], False, "fail", err="pkg_too_big")
                     return
                 self.state = ST_DOWNLOADING
                 err = "esp_ota_busy" if self.ota_busy else self.download(c, epoch)
@@ -1346,11 +1490,16 @@ class Bridge:
             if self.ota_busy:
                 self.state = ST_STAGED
                 return "esp_ota_busy"
-        err, _fcrc, ah = stage_check(self.stage["data"])
+        err, fcrc, ah = stage_check(self.stage["data"])
         if err:
             self.state = ST_STAGED
             return "stage_invalid" if err == "image_crc" else err
-        self.event("apply", job=job, recover=recover, board=self.board, dsp=self.dsp_ver)
+        # 브리지 0.9.0: 메인보드를 지우기 전에 짝 패키지(dspfw_crc 일치)가 있어야 한다 — 없으면 메인보드 그대로
+        ps = self.pkg_stage
+        if self.pkg_on and (not self.pkg_part or ps is None or ps["dspfw_crc"] != fcrc):
+            self.state = ST_STAGED
+            return "no_pkg"
+        self.event("apply", job=job, recover=recover, board=self.board, dsp=self.dsp_ver, pkg=ps["id"] if ps else None)
         erased = [False]
         err = self.program(job, ah, True, recover, erased, epoch)
         n = 1
@@ -1377,6 +1526,12 @@ class Bridge:
             self.stage = None
             self.stage_flash = None
             self.state = ST_IDLE
+            if self.pkg_on and ps:
+                # 적용됨(APPLIED) — 이전에 적용돼 있던 슬롯은 지난 것(OLD)이 된다
+                self.pkg_applied = {"id": ps["id"], "ver": ah["ver"], "size": ps["size"], "job": ps["job"], "slot": ps["slot"], "seq": ps["seq"]}
+                self.pkg_stage = None
+                self.pkg_stage_flash = None
+                self.event("pkg_applied", job=job, id=ps["id"], ver=ah["ver"])
         return None
 
     def hello(self, epoch, tries=3, timeout=1.5):
@@ -1519,6 +1674,8 @@ def parse_args(argv=None):
     ap.add_argument("--fail-at", default="", help="STAGE[:N] 단계 실패 주입")
     ap.add_argument("--nopart", action="store_true", help="dspfw 파티션 없음")
     ap.add_argument("--legacy", action="store_true", help="0.4.x 브리지 (mac·dsp 필드 없음)")
+    ap.add_argument("--nopkgpart", action="store_true", help="패키지(dsppkg) 파티션 없음 (pkg_st=nopart, 메인보드 스테이징·적용 거부)")
+    ap.add_argument("--legacy-pkg", action="store_true", help="패키지 보관을 모르는 브리지 0.8.0 (pkg_* 무시, 새 필드 없음, 적용에 패키지 불필요)")
     ap.add_argument("--cfg", choices=("saved", "default"), default="saved", help="시작 설정 상태")
     ap.add_argument("--dup-id", action="store_true", help="같은 번호·다른 MAC 의 두 번째 장치도 띄움 (포트 +100)")
     ap.add_argument("--dup-delay", type=float, default=2.0)

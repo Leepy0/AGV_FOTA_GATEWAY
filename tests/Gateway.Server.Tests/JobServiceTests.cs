@@ -579,4 +579,190 @@ public class JobServiceTests
         Assert.Equal(TargetState.Failed, j.Results[1].State);
         Assert.DoesNotContain("IPv4", j.Results[1].Message);                       // 오프라인 실패에는 붙이지 않음
     }
+    // ───── 0.7.0 + 브리지 0.9.0: 브리지가 패키지를 받아 보관한다 — START 에 pkg_* 가 항상 실린다 ─────
+
+    [Fact]
+    public async Task Start_carries_the_stored_package_url_size_sha256_and_id()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        var pkgFile = fw.FileOf("pkg")!;
+        var pkgBytes = File.ReadAllBytes(k.Store.PathOf(fw, pkgFile));
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Done, j.Results[0].State);
+        var start = Assert.Single(k.Link.Sent, s => s.kind == "START");
+        using var d = System.Text.Json.JsonDocument.Parse(start.json);
+        var r = d.RootElement;
+        Assert.Equal($"http://10.0.0.1:8080/fw/{fw.Id}/{pkgFile.FileName}", r.GetProperty("pkg_url").GetString());
+        Assert.Equal(pkgBytes.Length, r.GetProperty("pkg_size").GetInt64());
+        Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pkgBytes)).ToLowerInvariant(), r.GetProperty("pkg_sha256").GetString());
+        Assert.Equal(fw.PkgId, r.GetProperty("pkg_id").GetString());
+        Assert.Matches("^[0-9a-f]{16}$", fw.PkgId);
+        // .dspfw 쪽 필드는 그대로
+        Assert.Contains($"/fw/{fw.Id}/app_2.0.0.dspfw", r.GetProperty("url").GetString());
+        Assert.Contains(j.Results[0].Log, l => l.Contains("패키지 " + fw.PkgId));
+    }
+
+    [Fact]
+    public async Task Bridge_reports_the_applied_package_after_the_job()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        var j = k.Svc.Create("", fw.Id, [7], null, true);
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.AwaitingApproval, j.State);
+        Assert.Equal(fw.PkgId, k.Reg.Get(7)!.Status!.StagedPkg);                 // 스테이징과 짝인 패키지
+        Assert.Null(k.Reg.Get(7)!.Status!.DspPkgId);
+        k.Svc.Approve(j.Id);
+        await k.TickAndWaitAsync();
+        var st = k.Reg.Get(7)!.Status!;
+        Assert.Equal((fw.PkgId, "2.0.0", true), (st.DspPkgId, st.DspPkgVer, st.HasArchivedOriginals));
+        Assert.Null(st.StagedPkg);
+    }
+
+    [Fact]
+    public void Legacy_entry_without_package_cannot_get_a_job()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var legacy = k.AddNoPackageDsp("1.0.3");
+        Assert.False(legacy.HasPackage);
+        var ex = Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", legacy.Id, [7], null, true, ApplyMode.Immediate));
+        Assert.Equal("원본(.out·.map) 패키지가 없는 펌웨어는 배포할 수 없습니다 — 패키지로 다시 올리세요", ex.Message);
+        Assert.Empty(k.Svc.List());
+        // 복구 적용도 마찬가지
+        Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", legacy.Id, [7], null, true, ApplyMode.Immediate, null, true));
+        // 패키지로 올린 같은 버전은 된다
+        var fw = k.AddDsp("1.0.3");
+        Assert.True(fw.HasPackage);
+        k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+    }
+
+    [Fact]
+    public void Entry_missing_out_or_package_slot_cannot_get_a_job()
+    {
+        using var k = new JobTestKit();
+        var fw = k.AddDsp("2.0.0");
+        fw.Files.RemoveAll(f => f.Slot == "pkg");
+        Assert.False(fw.HasPackage);
+        Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", fw.Id, [7], null, true));
+        var fw2 = k.AddDsp("2.0.1");
+        fw2.Files.RemoveAll(f => f.Slot == "map");
+        Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", fw2.Id, [7], null, true));
+    }
+
+    [Fact]
+    public void Package_over_the_bridge_slot_limit_cannot_get_a_job()
+    {
+        using var k = new JobTestKit();
+        var fw = k.AddDsp("2.0.0");
+        fw.FileOf("pkg")!.Size = Gateway.Core.Fota.DspPkgRef.MaxBytes + 1;
+        var ex = Assert.Throws<InvalidOperationException>(() => k.Svc.Create("", fw.Id, [7], null, true));
+        Assert.Contains("보관 한도", ex.Message);
+        fw.FileOf("pkg")!.Size = Gateway.Core.Fota.DspPkgRef.MaxBytes;
+        k.Svc.Create("", fw.Id, [7], null, true);
+    }
+
+    [Fact]
+    public async Task Bridge_without_package_partition_fails_fast_before_start_with_a_hint()
+    {
+        using var k = new JobTestKit();
+        k.Link.NoPkgPart.Add(7);
+        k.Link.Add(7); k.Link.Add(8);
+        var fw = k.AddDsp("2.0.0");
+        var j = k.Svc.Create("", fw.Id, [7, 8], null, false, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("패키지(dsppkg) 파티션이 없음", j.Results[0].Message);
+        Assert.Contains("파티션 표", j.Results[0].Message);
+        Assert.DoesNotContain(k.Link.Sent, s => s.agv == 7);                       // 7호기에는 아무것도 보내지 않음
+        Assert.Equal(TargetState.Done, j.Results[1].State);                        // 다른 호기는 진행 (stopOnFailure=false)
+    }
+
+    [Fact]
+    public async Task Bridge_package_errors_get_operator_hints()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        foreach (var (err, word) in new[] { ("no_pkg", "짝 패키지"), ("pkg_sha", "sha256"), ("pkg_too_big", "한도"), ("pkg_http", "HTTP 포트") })
+        {
+            k.Link.StageFailErr = err;
+            var j = k.Svc.Create("", fw.Id, [7], null, false, ApplyMode.Immediate);
+            await k.TickAndWaitAsync();
+            Assert.Equal(TargetState.Failed, j.Results[0].State);
+            Assert.Contains(err, j.Results[0].Message);
+            Assert.Contains(word, j.Results[0].Message);
+        }
+    }
+
+    [Fact]
+    public async Task Apply_refused_with_no_pkg_leaves_the_target_uncommitted()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        var j = k.Svc.Create("", fw.Id, [7], null, true);                         // 승인 모드: 스테이징까지
+        await k.TickAndWaitAsync();
+        Assert.Equal(JobState.AwaitingApproval, j.State);
+        k.Link.ApplyFailErr = "no_pkg";                                           // 브리지가 짝 패키지를 못 찾음 — 메인보드를 지우기 전에 거부
+        k.Svc.Approve(j.Id);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("no_pkg", j.Results[0].Message);
+        Assert.Contains("새 작업으로 다시 배포", j.Results[0].Message);
+        Assert.False(j.Results[0].Committed);                                     // 굽기 전 거부 — 취소 뒤 추적 대상이 아님
+    }
+
+    [Fact]
+    public async Task Bridge_080_without_pkg_archive_is_refused_before_any_command()
+    {
+        // 패키지 보관은 필수 — 보관을 모르는 0.9.0 미만 브리지에는 START 를 보내지 않는다 (메인보드 그대로)
+        using var k = new JobTestKit();
+        k.Link.Legacy08 = true;
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("0.9.0 이상", j.Results[0].Message);
+        Assert.Empty(k.Link.Sent);
+    }
+
+    [Fact]
+    public async Task Corrupted_stored_package_is_not_sent()
+    {
+        using var k = new JobTestKit();
+        k.Link.Add(7);
+        var fw = k.AddDsp("2.0.0");
+        var path = k.Store.PathOf(fw, fw.FileOf("pkg")!);
+        var bytes = File.ReadAllBytes(path);
+        bytes[bytes.Length / 2] ^= 0xFF;
+        File.WriteAllBytes(path, bytes);
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("파일 손상", j.Results[0].Message);
+        Assert.Empty(k.Link.Sent);
+    }
+
+    [Fact]
+    public async Task Too_long_package_url_fails_before_start_even_when_the_dspfw_url_fits()
+    {
+        // 패키지 파일명(최대 60자)이 .dspfw 이름보다 길면 pkg_url 만 199자를 넘을 수 있다
+        using var k = new JobTestKit("http://10.0.0.1:8080/" + new string('p', 100));
+        k.Link.Add(7);
+        var longName = new string('n', 53) + ".dsppkg";
+        var fw = k.AddDsp("2.0.0", longName);
+        Assert.Equal(60, fw.FileOf("pkg")!.FileName.Length);
+        var j = k.Svc.Create("", fw.Id, [7], null, true, ApplyMode.Immediate);
+        await k.TickAndWaitAsync();
+        Assert.Equal(TargetState.Failed, j.Results[0].State);
+        Assert.Contains("패키지 URL", j.Results[0].Message);
+        Assert.Contains("199자", j.Results[0].Message);
+        Assert.Empty(k.Link.Sent);
+    }
 }

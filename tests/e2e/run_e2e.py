@@ -13,11 +13,13 @@
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import random
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -346,6 +348,19 @@ def result(j, agv):
     return next(r for r in j["results"] if r["agv"] == agv)
 
 
+def check_pkg_start(ctx, fw, start):
+    """DSP_OTA_START 에 패키지 필드가 항상 실린다 (브리지 0.9.0 이 보관): 주소·크기·sha256(소문자 hex)·ID 가 저장된 패키지와 같은지"""
+    pk = next(f for f in fw["files"] if f["slot"] == "pkg")
+    st, data = ctx.api.get_bytes(f"/fw/{fw['id']}/{pk['fileName']}")
+    check(st == 200, f"/fw 패키지 받기 {st}")
+    want = {"pkg_url": f"{ctx.server.base}/fw/{fw['id']}/{pk['fileName']}", "pkg_size": len(data),
+            "pkg_sha256": hashlib.sha256(data).hexdigest(), "pkg_id": fw["pkgId"]}
+    got = {k: start.get(k) for k in want}
+    check(got == want, f"START 의 pkg_* 가 다름\n  기대 {want}\n  실제 {got}")
+    check(dsppkg.pkg_id(data) == start["pkg_id"], "pkg_id 가 패키지 manifest 의 해시 앞 16자가 아님")
+    return len(data)
+
+
 # ───────── 시나리오 ─────────
 
 def s1_approve(ctx):
@@ -366,6 +381,11 @@ def s1_approve(ctx):
               f"[{i}] heartbeat staged={a[i]['stagedJob']}/{a[i]['stagedVer']} ≠ 작업 {r['stageJob']}")
         check(a[i]["dsp"] == "1.0.0", f"[{i}] 승인 전에 메인보드가 바뀜 ({a[i]['dsp']})")
         check(not f.rx("APPLY", i), f"[{i}] 승인 전에 APPLY 를 보냄")
+        # 브리지(0.9.0)가 패키지도 받아 스테이징과 짝으로 보관: 스테이징 때 pkg_* 를 보내고, heartbeat 의 staged.pkg 가 그 ID, 아직 적용 전이라 dsp_pkg 는 비어 있음
+        check_pkg_start(ctx, fw, f.rx("START", i)[0]["json"])
+        check(a[i]["stagedPkg"] == fw["pkgId"] and a[i]["pkgSt"] == "ok" and a[i]["dspPkg"] is None,
+              f"[{i}] 승인 전 heartbeat stagedPkg={a[i]['stagedPkg']} pkgSt={a[i]['pkgSt']} dspPkg={a[i]['dspPkg']}")
+        check(len(f.ev("pkg_download", i)) == 1 and f.ev("pkg_download", i)[0]["id"] == fw["pkgId"], f"[{i}] 패키지를 받지 않음")
     st, body = ctx.api.post(f"/api/jobs/{j['id']}/approve")
     check(st == 200, f"승인 실패 {st} {body}")
     j = ctx.wait_job(j["id"], {"Done"}, 150)
@@ -379,7 +399,11 @@ def s1_approve(ctx):
         applies = {e["json"]["job"] for e in f.rx("APPLY", i)}
         check(starts == {r["stageJob"]} and applies == {r["stageJob"]}, f"[{i}] job 번호 불일치 START {starts} APPLY {applies} 작업 {r['stageJob']}")
         check(len(f.ev("erase", i)) == 1, f"[{i}] 굽기 {len(f.ev('erase', i))}회")
-    return f"3대 스테이징→승인→적용 Done, job 번호 {[result(j, i)['stageJob'] for i in ids]} 스테이징·적용 동일, heartbeat dsp 1.1.0"
+        # 적용 뒤: 보관 패키지(dsp_pkg)가 이 패키지·이 버전, 스테이징 짝은 비워짐
+        ctx.wait(lambda: ctx.agv(i)["dspPkg"] == {"id": fw["pkgId"], "ver": "1.1.0"}, 5, f"[{i}] heartbeat dsp_pkg")
+        check(ctx.agv(i)["stagedPkg"] is None, f"[{i}] 적용 뒤에도 stagedPkg={ctx.agv(i)['stagedPkg']}")
+    return (f"3대 스테이징→승인→적용 Done, job 번호 {[result(j, i)['stageJob'] for i in ids]} 스테이징·적용 동일, heartbeat dsp 1.1.0, "
+            f"START 에 pkg_* (패키지 {fw['pkgId']}), 스테이징 중 staged.pkg·적용 뒤 dsp_pkg 일치")
 
 
 def s2_immediate(ctx):
@@ -397,7 +421,9 @@ def s2_immediate(ctx):
     check(len(f.ev("erase", 21)) == 1, "굽기 횟수")
     start = f.rx("START", 21)[0]["json"]
     check(start.get("apply") == 0, f"START apply={start.get('apply')} (서버는 스테이징·적용을 나눠 보냄)")
-    return f"상태 {sorted(seen)} → Done, dsp 1.2.0"
+    size = check_pkg_start(ctx, fw, start)
+    ctx.wait(lambda: ctx.agv(21)["dspPkg"] == {"id": fw["pkgId"], "ver": "1.2.0"}, 5, "작업 뒤 heartbeat dsp_pkg = 이 패키지")
+    return f"상태 {sorted(seen)} → Done, dsp 1.2.0, START 에 pkg_* ({size:,}B), 작업 뒤 heartbeat dsp_pkg={fw['pkgId']}"
 
 
 def s3_lost_final(ctx):
@@ -817,6 +843,91 @@ def s16_wifi(ctx):
     return f"로밍 {roam['fromBssid'][-2:]}→{roam['toBssid'][-2:]} (ch {roam['channel']}) · 끊김 기록 · AP {len(aps)}곳 집계"
 
 
+def s17_package_archive(ctx):
+    """패키지 보관(브리지 0.9.0): 패키지 파티션 없는 브리지는 START 전에 빠르게 실패·0.8.0 브리지는 START 전에 거부(패키지 보관 필수)·브리지가 패키지를 못 받으면 안내·원본 없는 이전 등록은 작업 생성 거부"""
+    fa = ctx.fake("s17a", [94], "--nopkgpart")
+    fb = ctx.fake("s17b", [95], "--legacy-pkg")
+    fc = ctx.fake("s17c", [96], "--fail-at", "pkg")
+    ctx.wait_online([94, 95, 96])
+    a = ctx.agvs()
+    check((a[94]["pkgSt"], a[94]["dspPkg"]) == ("nopart", None), f"[94] pkgSt={a[94]['pkgSt']} dspPkg={a[94]['dspPkg']}")
+    check((a[95]["pkgSt"], a[95]["dspPkg"], a[95]["stagedPkg"]) == (None, None, None), f"[95] 0.8.0 인데 새 필드: {a[95]}")
+    fw = ctx.upload_dsp("1.17.0", seed=94)
+
+    # (1) 패키지 파티션 없음: 브리지에 아무것도 보내지 않고 바로 실패 + 파티션 표 안내
+    t0 = time.monotonic()
+    j = ctx.create_job(fw, [94], "Immediate", name="e2e nopart")
+    j = ctx.wait_job(j["id"], {"Failed"}, 30)
+    r = result(j, 94)
+    fast = time.monotonic() - t0
+    check("패키지(dsppkg) 파티션이 없음" in r["message"] and "파티션 표" in r["message"], f"[94] 안내 없음: {r['message']}")
+    check(not fa.rx("START", 94) and not fa.ev("pkg_download", 94), "[94] 파티션 없는 브리지에 START 를 보냄")
+    check(fast < 15, f"[94] 빠른 실패가 아님 ({fast:.1f}초)")
+
+    # (2) 0.8.0 브리지: 패키지 보관을 못 하므로 START 를 보내지 않고 바로 실패 (패키지 보관 필수) — 메인보드 그대로
+    j = ctx.create_job(fw, [95], "Immediate", name="e2e legacy bridge")
+    j = ctx.wait_job(j["id"], {"Failed"}, 30)
+    r = result(j, 95)
+    check("0.9.0 이상" in r["message"], f"[95] 미지원 안내: {r['message']}")
+    check(not fb.rx("START", 95) and ctx.agv(95)["dsp"] == "1.0.0", f"[95] 0.8.0 브리지에 START 를 보냄 / dsp={ctx.agv(95)['dsp']}")
+
+    # (3) 브리지가 패키지를 flash 에 못 씀(pkg_flash_write) → 메인보드 건드리지 않고 실패 + 패키지 안내 (.dspfw 는 받지도 않음)
+    j = ctx.create_job(fw, [96], "Immediate", name="e2e pkg write fail")
+    j = ctx.wait_job(j["id"], {"Failed"}, 60)
+    r = result(j, 96)
+    check("pkg_flash_write" in r["message"] and "패키지(.dsppkg)를 받아 보관하지 못함" in r["message"], f"[96] 안내: {r['message']}")
+    check(not fc.ev("download", 96) and not fc.ev("erase", 96) and ctx.agv(96)["dsp"] == "1.0.0", "[96] 메인보드·스테이징을 건드림")
+
+    # (4) 원본 없는 이전 등록(.dspfw 만, 0.6.x 가 올린 v4 행)은 작업을 만들 수 없다 — 따로 띄운 서버의 데이터 폴더에 그 행을 직접 넣는다
+    legacy_msg = legacy_entry_rejected(ctx)
+    return (f"[94] nopart → START 없이 {fast:.1f}초 만에 실패(파티션 표 안내)·[95] 0.8.0 브리지는 START 없이 거부(0.9.0 이상 안내)·"
+            f"[96] pkg_flash_write 안내·이전 등록 거부: {legacy_msg}")
+
+
+def legacy_entry_rejected(ctx):
+    """v4 형태의 이전 등록(.dspfw 만, pkg_id 없음) → 목록에는 보이되(hasOriginals·hasPackage false) POST /api/jobs 는 400, 패키지로 올린 같은 버전은 된다"""
+    dotnet = find_dotnet()
+    work = tempfile.mkdtemp(prefix="gw-e2e-legacy-")
+    srv = Server(ctx.server.dll, work, ctx.server.offline_sec)
+    try:
+        srv.start(dotnet)
+        srv.stop()                                                   # DB 를 만들었으니 닫고, 이전 등록 행을 넣는다
+        img = fk.build_dspfw(fk.test_code(700, 3), "1.0.3")
+        fid, fname = "legacy1", "app_1.0.3.dspfw"
+        os.makedirs(os.path.join(srv.data, "firmware", fid), exist_ok=True)
+        with open(os.path.join(srv.data, "firmware", fid, fname), "wb") as fh:
+            fh.write(img)
+        con = sqlite3.connect(os.path.join(srv.data, "gateway.db"))
+        try:
+            con.execute("INSERT INTO firmware(id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256, pkg_id, link_check) "
+                        "VALUES(?, 'Dsp', '1.0.3', 'agv-dsp', '0.6 업로드', '2026-10-20T00:00:00.0000000Z', 'dspfw', ?, ?, ?, '', '')",
+                        (fid, fname, len(img), hashlib.sha256(img).hexdigest().upper()))
+            con.commit()
+        finally:
+            con.close()
+        srv.start(dotnet)
+        api = Api(srv.base)
+        old = next((e for e in api.get("/api/firmware") if e["id"] == fid), None)
+        check(old is not None and old["hasOriginals"] is False and old["pkgId"] == "", f"이전 등록이 목록에 안 보임: {old}")
+        st, body = api.post("/api/jobs", {"firmwareId": fid, "targets": [7], "applyMode": "Immediate"})
+        want = "원본(.out·.map) 패키지가 없는 펌웨어는 배포할 수 없습니다 — 패키지로 다시 올리세요"
+        check(st == 400 and body == want, f"이전 등록으로 작업 생성: {st} {body}")
+        check(api.get("/api/jobs") == [], "거부했는데 작업이 생김")
+        st, body = api.post("/api/jobs", {"firmwareId": fid, "targets": [7], "applyMode": "Approve", "recover": True})
+        check(st == 400 and body == want, f"복구 적용도 거부해야 함: {st} {body}")
+        # 같은 버전을 패키지로 올리면 작업을 만들 수 있다
+        pkg = dsppkg.build(img, stem="app")
+        st, up = api.upload("dsp", "app_1.0.3.dsppkg", pkg)
+        check(st == 200, f"패키지 업로드 {st} {up}")
+        st, body = api.post("/api/jobs", {"firmwareId": up["id"], "targets": [7], "applyMode": "Immediate"})
+        check(st == 200, f"패키지로 올린 펌웨어는 작업이 만들어져야 함: {st} {body}")
+        api.post(f"/api/jobs/{body['id']}/cancel")
+        return "400 " + want
+    finally:
+        srv.stop()
+        shutil.rmtree(work, ignore_errors=True)
+
+
 SCENARIOS = [
     (1, "메인보드 Approve 3대", s1_approve),
     (2, "메인보드 Immediate", s2_immediate),
@@ -834,6 +945,7 @@ SCENARIOS = [
     (14, "원격 진단 cfg/wait (cfg json·stat json·scan·nettest)", s14_diag),
     (15, "호기 설정 수집·기준값·드리프트·일괄 변경", s15_cfg_fleet),
     (16, "Wi-Fi 분석 (로밍·끊김·AP 집계)", s16_wifi),
+    (17, "패키지 보관 (nopart 빠른 실패·0.8.0 브리지·패키지 쓰기 실패·이전 등록 작업 거부)", s17_package_archive),
 ]
 
 

@@ -9,6 +9,7 @@
 | 브리지 heartbeat(0x10)·INFO(0x11/0x12), `mac`·`dsp`·`dspb`·`dsp_st`·`staged` | `AGV_Wifi_Bridge/main/net_bridge.c`, `dsp_ota.c` dsp_ota_status_json | `Gateway.Core/Bridge/BridgeStatus.cs` (INFO 와 heartbeat 를 합쳐 보관) |
 | 호기 endpoint·번호 충돌 판정 | 이 저장소 (결정 2A) | `Gateway.Core/Bridge/BridgeOrigin.cs`, `Gateway.Server/Services/BridgeUdpService.cs` |
 | 브리지 `dsp_st=nopart` (dspfw 파티션 없음 → `no_partition` 거부) | `AGV_Wifi_Bridge/main/dsp_ota.c` | `JobService` 가 작업 시작 전에 거부, 호기 현황 ⚠ 표시 |
+| 브리지 패키지 보관(0.9.0, ESP32-S3 N16): START 의 `pkg_*`, 상태 `pkg_st`·`dsp_pkg`·`staged.pkg`, 파티션 `dsppkg` 없음 = `pkg_st=nopart` (`pkg_nopart` 거부) | `AGV_Wifi_Bridge/docs/ESP_PKG_ARCHIVE_SPEC.md` | `DspOtaClient.StartJson`·`DspPkgRef`, `BridgeStatus` (`PkgState`·`DspPkgId`·`DspPkgVer`·`StagedPkg`), `JobService` 사전 검사, 호기 현황 `보관 패키지` |
 | **메인보드 OTA B안** DSP_OTA_START(0x32) → DSP_OTA_RESULT(0x33) / DSP_OTA_APPLY(0x34) | `AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md`, `main/dsp_ota.c` | `Gateway.Core/Fota/DspOtaClient.cs` (재전송, heartbeat 판정, 오류 안내 `BridgeErrors`) |
 | 브리지 자체 OTA OTA_START(0x30) → OTA_RESULT(0x31) | `AGV_Wifi_Bridge/main/ota.c` | `Gateway.Core/Fota/EspOtaClient.cs` |
 | 메인보드 패키지 `.dsppkg` (ZIP: manifest.json + .dspfw + .out + .map, 규격 v1) | `AGV_Wifi_Bridge/tools/dsp_pack.py bundle` | `Gateway.Core/Fota/DspPackage.cs` (항목 이름·개수, 풀면서 크기 한도, sha256·크기, manifest, .out COFF/ELF C2000, .map, .map↔.out 링크 시각·이름 확인), 시험용 생성기 `tests/dsppkg.py` |
@@ -39,6 +40,7 @@
 | `mac` | heartbeat 에도 들어감(`fw` 바로 뒤, STA MAC, INFO 와 같은 소문자 `xx:xx:xx:xx:xx:xx`). 게이트웨이는 번호 충돌 판정에 쓴다 |
 | `hb_ms` (설정) | 0(끔, 디버그용) 또는 100~2000ms 만. 범위 밖은 `set`·설정 페이지가 거부, 예전 저장값은 부팅 때 기본값 1000 으로 |
 | `dsp` · `dspb` · `dsp_build` · `staged.ver` | JSON 이스케이프해서 보냄 |
+| `pkg_st` · `dsp_pkg` · `staged.pkg` (브리지 0.9.0+) | `pkg_st` = `"ok"` \| `"nopart"`(`dsppkg` 파티션 없음 — USB 로 파티션 표를 다시 구워야 함). `dsp_pkg` = 메인보드에 적용된 패키지 `{"id":"<16hex>","ver":"1.2.3"}` 또는 `null`. `staged` 객체에는 짝 패키지가 있을 때만 `"pkg":"<16hex>"`. heartbeat·INFO 둘 다. 0.8.0 이하는 세 필드 모두 없음 |
 | `dspb` | 메인보드 부트로더 버전(앱의 버전 응답·부트로더 HELLO 응답에서). 0.5.2 의 `dsp/boot` 는 `1.1.0`, 0.5.1 이전 소스는 `1.0.0`. 아직 모르면 `?`, 앱이 알려 주지 않으면 `-`. 앱 버전이 `?` 로 바뀌어도 마지막 값을 유지 |
 | `dsp` | `U000`·`V000` 에 앱이 답하지 않으면(`app_no_reply`, 버전 조회 무응답) `?` 로 바뀜. `?` 인 동안 60초마다 다시 물어 앱이 살아 있으면 돌아옴 |
 
@@ -60,9 +62,19 @@
 
 | 패킷 | 필드 | 비고 |
 |---|---|---|
-| DSP_OTA_START (0x32) | `url` (199자 이하), `ver`, `crc32`, `size`, `job`, `apply` (0 = 스테이징만, 1 = 받은 뒤 바로 적용), `recover` (선택, `apply:1` 과 함께) | 게이트웨이는 늘 `apply:0` 을 보낸다 |
+| DSP_OTA_START (0x32) | `url` (199자 이하), `ver`, `crc32`, `size`, `job`, `apply` (0 = 스테이징만, 1 = 받은 뒤 바로 적용), `recover` (선택, `apply:1` 과 함께), **`pkg_url`** (패키지 URL, `url` 과 같은 규칙 — http·호스트 = server IP·199자 이하), **`pkg_size`** (바이트, 1 ~ 6,287,360), **`pkg_sha256`** (소문자 hex 64자), **`pkg_id`** (소문자 hex 16자) | 게이트웨이는 늘 `apply:0` 과 `pkg_*` 넷을 보낸다. 브리지 0.9.0 은 `pkg_*` 가 하나라도 없으면 `no_pkg` 로 거부. 0.8.0 이하는 `pkg_*` 를 무시 |
 | DSP_OTA_APPLY (0x34) | `job` (스테이징 때와 같은 번호), `recover` (선택, 1 = 복구 적용) | 게이트웨이는 운용자가 **복구 적용** 을 켠 작업의 APPLY(재전송 포함)에만 `recover:1`. 앱 버전 `?` 만으로는 넣지 않음 |
 | DSP_OTA_RESULT (0x33) | `job`, `stage`, `pct`, `ver`, `err` | `staged`·`done`·`fail` 은 같은 내용으로 약 300ms 간격 3회. 수신 단계 거부(`bad_request`·`url_*`·`busy`·`not_ready`)는 간격 없이 3회 |
+
+START 예 (한 줄로 보냄):
+
+```json
+{"url":"http://10.0.0.1:8080/fw/20261101-120000-ab12cd/agv_2.0.0.dspfw","ver":"2.0.0","crc32":3735928559,"size":9216,"job":1766700007,"apply":0,
+ "pkg_url":"http://10.0.0.1:8080/fw/20261101-120000-ab12cd/agv_2.0.0.dsppkg","pkg_size":58213,"pkg_sha256":"<저장된 패키지의 sha256, 소문자 hex 64자>","pkg_id":"6b989637677ee7d0"}
+```
+
+브리지(0.9.0)는 패키지를 **먼저** 받아 보관 슬롯에 쓰고(크기·sha256 확인), 이어서 `.dspfw` 를 스테이징한다. `download` 의 `pct` 는 (패키지 + `.dspfw`) 합계 바이트 기준이고 새 `stage` 이름은 없다. 둘 다 끝나야 `staged` 를 보고하고, APPLY 는 메인보드를 지우기 전에 이 스테이징과 짝인 패키지를 다시 확인한다(없으면 `no_pkg`, 메인보드 그대로).
+게이트웨이는 스테이징 시한(보고·heartbeat 진행이 끊기는 시간)을 `3분 + 패키지 MiB × 3초` 로 잡는다 (`OtaTimeouts.DspStageIdleFor`).
 
 `job` 번호: `(유닉스 초 % 10,000,000) × 100 + 호기` (브리지가 u32 로 읽음).
 
@@ -105,6 +117,12 @@
 | `url_too_long` | 명령 접수 | URL 199자 초과, 잘라 쓰지 않음 **새로** |
 | `bad_request` `busy` `not_ready` | 명령 접수 | JSON 오류 / 굽는 중·큐 가득 / 준비 전 |
 | `no_partition` | 명령 접수 | `dspfw` 파티션 없음 |
+| `no_pkg` | 명령 접수·적용 시작 | START 에 `pkg_*` 가 없거나 형식이 틀림(받지 않음, 기존 스테이징 그대로) / APPLY 시 스테이징과 짝인 패키지가 없거나 sha256 이 다름(메인보드 그대로). 새 작업으로 다시 배포 **새로** |
+| `pkg_nopart` | download | `dsppkg` 파티션 없음 (`pkg_st=nopart`) — USB 로 파티션 표 다시 굽기 **새로** |
+| `pkg_too_big` | 명령 접수 | `pkg_size` 가 6,287,360 초과 **새로** |
+| `pkg_size` `pkg_sha` | download | 받은 패키지의 크기·sha256 이 `pkg_size`·`pkg_sha256` 과 다름 **새로** |
+| `pkg_url_host` `pkg_url_too_long` | 명령 접수·리다이렉트 | `pkg_url` 이 `url_host`·`url_too_long` 과 같은 이유로 거부 **새로** |
+| `pkg_http` (그 밖의 `pkg_*`) | download | 패키지 접속·받기·플래시 쓰기 실패 **새로** |
 | `esp_ota_busy` | 명령 접수·적용 시작 | 브리지 자체 OTA 중 |
 | `http_init` `http_open` `http_status` `http_length` `http_read` `http_overrun` `http_short` | download | 파일 받기 실패 |
 | `ver_invalid` | download·적용 시작 | 버전이 1~8자 `[0-9A-Za-z._-]` 가 아니거나 파일 헤더·앱 헤더 버전이 다름. 기존 스테이징·앱을 지우기 전에 거부 **새로** |
@@ -185,7 +203,7 @@
 
 | 필드 | 필수 | 뜻 |
 |---|---|---|
-| `firmwareId` | ✔ | `GET /api/firmware` 의 `id` |
+| `firmwareId` | ✔ | `GET /api/firmware` 의 `id`. 메인보드는 패키지로 올린 항목(`hasOriginals: true`)만 — 원본이 없는 이전 등록은 400 `원본(.out·.map) 패키지가 없는 펌웨어는 배포할 수 없습니다 — 패키지로 다시 올리세요` (브리지가 패키지를 받아 보관해야 굽기 때문). 패키지가 6,287,360B 를 넘어도 400 |
 | `targets` | ✔ | 호기 번호 1~99, 하나 이상 |
 | `name` | | 비우면 "메인보드 1.0.3" 처럼 |
 | `scheduledAt` | | 비우면 지금 바로. 1분 넘게 지난 시각은 400 |
@@ -220,6 +238,7 @@
 | `POST /api/agvs/{n}/cfg/wait` | CFG_CMD 를 보내고 응답을 기다림(최대 20초) `{ "data": "scan" }` → `{ ok, text }` | 200 / 400 / 409 / 504 `{ ok:false, error }` (오프라인·응답 없음) |
 | `POST /api/agvs/{n}/time` | 서버 시각을 브리지에 보냄 (브리지 0.8.0+) | 200 / 400 (미지원 펌웨어) / 404 |
 
+`GET /api/agvs` 의 패키지 필드(0.7.0, 브리지 0.9.0+; 구 브리지는 모두 null): `pkgSt`(`"ok"`·`"nopart"`), `dspPkg`(`{ id, ver }` — 메인보드에 적용된 패키지), `stagedPkg`(스테이징과 짝인 패키지 ID).
 `GET /api/agvs` 의 새 필드(0.5.0): `clockSkewMs`(브리지 − 서버, ms. 미동기·미지원은 null), `clockSynced`, `timeReplies`(서버가 시각 요청에 답한 횟수), `lastTag`(마지막으로 읽은 RFID 태그).
 
 ### 호기 설정 (브리지 0.6.0+, 게이트웨이 0.5.0)

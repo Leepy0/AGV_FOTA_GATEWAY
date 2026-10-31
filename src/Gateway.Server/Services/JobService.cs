@@ -427,6 +427,8 @@ public sealed class JobService : BackgroundService
             if (_deletingFw.Contains(firmwareId)) throw new InvalidOperationException("펌웨어를 지우는 중입니다");
             var fw = _fw.Get(firmwareId) ?? throw new InvalidOperationException("펌웨어 없음");
             if (recover && fw.Kind != FirmwareKind.Dsp) throw new InvalidOperationException("복구 적용은 메인보드 작업만 고를 수 있습니다");
+            // 메인보드는 브리지가 짝 패키지를 받아 보관해야 굽는다 (브리지 0.9.0+) — 원본 없는 이전 등록은 배포하지 않는다
+            if (fw.Kind == FirmwareKind.Dsp && PackageProblem(fw) is { } noPkg) throw new InvalidOperationException(noPkg);
             j = new Job
             {
                 Id = now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..4],
@@ -736,12 +738,35 @@ public sealed class JobService : BackgroundService
         return agv;
     }
 
+    /// <summary>
+    /// 메인보드 작업을 만들 수 없는 펌웨어면 사유(한국어), 아니면 null: 패키지(.dsppkg)·.dspfw·.out·.map 이 없는 이전 등록,
+    /// 또는 패키지가 브리지 보관 한도(DspPkgRef.MaxBytes)를 넘음
+    /// </summary>
+    internal static string? PackageProblem(FirmwareEntry fw)
+    {
+        if (!fw.HasPackage) return FirmwareStore.NoPackageDeploy;
+        if (fw.FileOf(FirmwareStore.SlotPkg)!.Size > DspPkgRef.MaxBytes)
+            return $"패키지가 {fw.FileOf(FirmwareStore.SlotPkg)!.Size:N0}B — 브리지 보관 한도 {DspPkgRef.MaxBytes:N0}B 를 넘어 배포할 수 없습니다 (.out·.map 을 줄여 패키지를 다시 만드세요)";
+        return null;
+    }
+
+    /// <summary>패키지 파티션 없음 안내 (브리지 0.9.0 파티션 표가 아닌 채 OTA 로만 올라온 브리지)</summary>
+    internal static string PkgNoPartText(string fw) =>
+        $"브리지에 패키지(dsppkg) 파티션이 없음 (fw {fw}) — 16MB 파티션 표가 아닌 채 OTA 로 올라온 브리지. USB 로 파티션 표 다시 굽기 (호기 설정·스테이징 유지)";
+
+    /// <summary>패키지 보관 미지원 안내 (브리지 0.9.0 미만)</summary>
+    internal static string PkgUnsupportedText(string fw) =>
+        $"브리지 fw {fw} 는 메인보드 패키지(.out·.map) 보관을 지원하지 않음 — 브리지를 0.9.0 이상으로 먼저 업데이트 (메인보드는 건드리지 않음)";
+
     /// <summary>메인보드 OTA 를 받을 수 있는 브리지인지</summary>
     static Gateway.Core.Bridge.BridgeStatus CheckDspBridge(AgvState agv)
     {
         var st = agv.Status;
         if (st is null || string.IsNullOrEmpty(st.DspState)) throw new InvalidOperationException($"브리지 펌웨어가 메인보드 OTA 를 지원하지 않음 (fw {st?.Fw ?? "?"}, 0.5.0 이상 필요)");
         if (st.DspState == "nopart") throw new InvalidOperationException($"브리지에 dspfw 파티션이 없음 (fw {st.Fw}) — 구 파티션 테이블인 채 OTA 로 올라온 브리지. USB 로 한 번 전체 굽기 필요");
+        if (st.PkgNoPart) throw new InvalidOperationException(PkgNoPartText(st.Fw));
+        // 패키지(.out·.map) 보관은 필수 — 보관을 모르는 0.9.0 미만 브리지에는 메인보드를 굽지 않는다
+        if (!st.HasPkgArchive) throw new InvalidOperationException(PkgUnsupportedText(st.Fw));
         if (st.DspState == "programming") throw new InvalidOperationException("브리지가 이미 메인보드를 프로그래밍 중");
         return st;
     }
@@ -792,14 +817,34 @@ public sealed class JobService : BackgroundService
         var agv = await WaitOnlineAsync(r, ct);
         var st = CheckDspBridge(agv);
         r.VersionBefore = st.Dsp;
+        if (PackageProblem(fw) is { } noPkg) throw new InvalidOperationException(noPkg);   // 작업을 만든 뒤 펌웨어가 바뀌어도(서버 재시작 등) 패키지 없이는 보내지 않는다
         var (file, img) = await LoadDspImageAsync(fw, ct);
         var url = $"{BaseUrlFor(r.Agv)}/fw/{Uri.EscapeDataString(fw.Id)}/{Uri.EscapeDataString(file.FileName)}";
         if (url.Length > DspUrlMax) throw new InvalidOperationException($"스테이징 URL 이 {url.Length}자 — 브리지 한도 {DspUrlMax}자 초과 (펌웨어 파일명을 줄여 다시 올리세요)");
+        var pkg = await LoadPkgRefAsync(fw, r.Agv, ct);
         // 브리지 보고와 대조할 작업 번호 — 브리지가 u32 로 읽으므로 4,294,967,295 이하 (초 단위 시각 × 100 + 호기, 약 115일 주기)
         r.StageJob = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() % 10_000_000) * 100 + r.Agv;
-        Add(r, $"현재 {(st.HasDsp ? st.Dsp : "?")} (부트로더 {st.DspBoot}) → {img.Version} 스테이징 {file.FileName} ({img.Size:N0}B)");
+        Add(r, $"현재 {(st.HasDsp ? st.Dsp : "?")} (부트로더 {st.DspBoot}) → {img.Version} 스테이징 {file.FileName} ({img.Size:N0}B) + 패키지 {pkg.Id} ({pkg.Size:N0}B)");
         using var c = new DspOtaClient(_link, _reg.StatusOf, r.Agv);
-        await c.StageAsync(url, img, r.StageJob, x => OnDspStage(r, x), ct);
+        await c.StageAsync(url, img, pkg, r.StageJob, x => OnDspStage(r, x), ct);
+    }
+
+    /// <summary>
+    /// 브리지가 함께 받아 보관할 패키지 정보: URL(/fw/{id}/{패키지 파일}, .dspfw 와 같은 호스트·199자 한도), 크기, sha256(저장 파일을 다시 읽어 계산), 패키지 ID.
+    /// 디스크의 파일이 등록 때 기록과 다르면(손상) 보내지 않는다.
+    /// </summary>
+    async Task<DspPkgRef> LoadPkgRefAsync(FirmwareEntry fw, int agv, CancellationToken ct)
+    {
+        var file = fw.FileOf(FirmwareStore.SlotPkg) ?? throw new InvalidOperationException(FirmwareStore.NoPackageDeploy);
+        var bytes = await File.ReadAllBytesAsync(_fw.PathOf(fw, file), ct);
+        var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+        if (bytes.LongLength != file.Size || !string.Equals(sha, file.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"저장된 패키지 {file.FileName} 이 등록 때와 다릅니다 (파일 손상) — 같은 패키지를 다시 올리세요");
+        var url = $"{BaseUrlFor(agv)}/fw/{Uri.EscapeDataString(fw.Id)}/{Uri.EscapeDataString(file.FileName)}";
+        if (url.Length > DspUrlMax) throw new InvalidOperationException($"패키지 URL 이 {url.Length}자 — 브리지 한도 {DspUrlMax}자 초과 (패키지 파일명을 줄여 다시 올리세요)");
+        var pkg = new DspPkgRef(url, bytes.LongLength, sha, fw.PkgId);
+        if (pkg.Problem() is { } bad) throw new InvalidOperationException(bad);
+        return pkg;
     }
 
     /// <summary>앱이 멈춘 호기에 복구 적용을 권하는 실패 안내 (일반 적용 작업에서 앱 무응답·구 앱·부트로더 무응답으로 실패했을 때)</summary>
@@ -827,7 +872,7 @@ public sealed class JobService : BackgroundService
         string ver;
         // recover 는 처음 보낸 APPLY 와 재전송 모두에 실린다 (DspOtaClient 가 같은 JSON 을 다시 보냄)
         try { ver = await c.ApplyAsync(r.StageJob, x => OnDspStage(r, x), ct, expectedVersion: img.Version, recover: recover); }
-        catch (DspOtaException e) when (e.Message.Contains("not_staged") || e.Message.Contains("job_mismatch"))
+        catch (DspOtaException e) when (e.Message.Contains("not_staged") || e.Message.Contains("job_mismatch") || e.Message.Contains("no_pkg"))
         {
             r.Committed = false;
             throw new InvalidOperationException(e.Message);   // 안내(새 작업으로 다시 배포)는 BridgeErrors 가 붙였다

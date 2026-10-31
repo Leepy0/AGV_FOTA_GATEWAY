@@ -10,8 +10,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Gateway.Server.Tests;
 
 /// <summary>
-/// 가짜 브리지 여러 대: START 에 download→staged, APPLY 에 start→…→done 을 보고하고 AgvRegistry 의 heartbeat 상태를 갱신한다.
+/// 가짜 브리지 여러 대(0.9.0 흉내): START 에 download→staged, APPLY 에 start→…→done 을 보고하고 AgvRegistry 의 heartbeat 상태를 갱신한다.
 /// 앱 버전 칸이 8자라 done·heartbeat 의 dsp 는 앞 8자만 (실제 브리지와 같음).
+/// 패키지: START 에 pkg_* 가 없으면 no_pkg, 있으면 보관 → heartbeat staged.pkg, 적용 뒤 dsp_pkg (pkg_st). Legacy08 이면 0.8.0 처럼 pkg_* 를 무시하고 새 필드가 없다.
 /// </summary>
 sealed class FakeBridges(AgvRegistry reg) : IAgvLink
 {
@@ -24,6 +25,10 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     public string? ApplyFailErr; // APPLY 에 start 뒤 이 오류로 fail 보고 (예: app_no_reply)
     public bool DeafApply;       // APPLY 를 받기만 하고 아무것도 안 함 (명령 유실 — 스테이징 유지)
     readonly Dictionary<int, (string fw, string part, long up)> _esp = new();
+    public bool Legacy08;                       // 브리지 0.8.0 흉내: pkg_* 무시, pkg_st·dsp_pkg·staged.pkg 없음
+    public readonly HashSet<int> NoPkgPart = []; // 이 호기들은 pkg_st=nopart (START 는 pkg_nopart 로 거부)
+    readonly Dictionary<int, string> _pkgStaged = new();                // 스테이징과 짝인 패키지 ID
+    readonly Dictionary<int, (string id, string ver)> _pkgApplied = new(); // 메인보드에 적용된 패키지 (dsp_pkg)
 
     /// <summary>호기를 온라인으로 등록 (dsp: 앱 버전, "?" = 앱 무응답)</summary>
     public AgvState Add(int agv, string dsp = "1.0.0", string dspState = "idle")
@@ -36,10 +41,13 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     {
         var (dsp, st, job, ver) = _state[agv];
         var (fw, part, up) = _esp.TryGetValue(agv, out var e) ? e : ("0.5.2", "ota_0", 10L);
-        var staged = job == 0 ? "null" : $"{{\"job\":{job},\"ver\":\"{ver}\"}}";
+        var pkgStaged = !Legacy08 && _pkgStaged.TryGetValue(agv, out var sp) ? $",\"pkg\":\"{sp}\"" : "";
+        var staged = job == 0 ? "null" : $"{{\"job\":{job},\"ver\":\"{ver}\"{pkgStaged}}}";
+        var pkgFields = Legacy08 ? "" : $",\"pkg_st\":\"{(NoPkgPart.Contains(agv) ? "nopart" : "ok")}\",\"dsp_pkg\":"
+            + (_pkgApplied.TryGetValue(agv, out var ap) ? $"{{\"id\":\"{ap.id}\",\"ver\":\"{ap.ver}\"}}" : "null");
         var a = reg.GetOrAdd(agv);
         a.Status = BridgeStatus.Parse(System.Text.Encoding.UTF8.GetBytes(
-            $"{{\"fw\":\"{fw}\",\"part\":\"{part}\",\"ota\":\"valid\",\"up\":{up},\"dsp\":\"{dsp}\",\"dspb\":\"1.0.0\",\"dsp_st\":\"{st}\",\"staged\":{staged}}}"));
+            $"{{\"fw\":\"{fw}\",\"part\":\"{part}\",\"ota\":\"valid\",\"up\":{up},\"dsp\":\"{dsp}\",\"dspb\":\"1.0.0\",\"dsp_st\":\"{st}\",\"staged\":{staged}{pkgFields}}}"));
         a.LastSeen = DateTime.UtcNow;
         return a;
     }
@@ -52,7 +60,12 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
     /// <summary>브리지가 보내는 메인보드 OTA 보고를 흉내 (취소 뒤 확인 시험)</summary>
     public void SendReport(int agv, long job, string stage, string? err = null) => Report(agv, job, stage, -1, null, err);
     /// <summary>브리지가 재부팅 등으로 스테이징을 잃음</summary>
-    public void DropStaged(int agv) { var s = _state[agv]; _state[agv] = (s.dsp, "idle", 0, ""); Beat(agv); }
+    public void DropStaged(int agv) { var s = _state[agv]; _state[agv] = (s.dsp, "idle", 0, ""); _pkgStaged.Remove(agv); Beat(agv); }
+    /// <summary>브리지가 보관한 패키지(dsp_pkg)를 정함 — 호기 현황 시험용. null 이면 없음</summary>
+    public void SetPkgApplied(int agv, string? id, string ver = "") { if (id is null) _pkgApplied.Remove(agv); else _pkgApplied[agv] = (id, ver); Beat(agv); }
+    /// <summary>브리지가 지금 보고하는 보관 패키지 / 스테이징 패키지 (시험 확인용)</summary>
+    public (string id, string ver)? PkgApplied(int agv) => _pkgApplied.TryGetValue(agv, out var p) ? p : null;
+    public string? PkgStaged(int agv) => _pkgStaged.TryGetValue(agv, out var p) ? p : null;
 
     void Report(int agv, long job, string stage, int pct = -1, string? ver = null, string? err = null)
     {
@@ -68,6 +81,16 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
         long job = d.RootElement.GetProperty("job").GetInt64();
         if (StageFailErr is not null) { Report(agv, job, "fail", err: StageFailErr); return true; }
         var ver = d.RootElement.GetProperty("ver").GetString()!;
+        if (!Legacy08)
+        {
+            // 브리지 0.9.0: pkg_* 넷이 모두 있어야 받는다
+            var r = d.RootElement;
+            string? pid = r.TryGetProperty("pkg_id", out var pi) ? pi.GetString() : null;
+            bool all = pid is not null && r.TryGetProperty("pkg_url", out _) && r.TryGetProperty("pkg_size", out _) && r.TryGetProperty("pkg_sha256", out _);
+            if (!all) { Report(agv, job, "fail", err: "no_pkg"); return true; }
+            if (NoPkgPart.Contains(agv)) { Report(agv, job, "fail", err: "pkg_nopart"); return true; }
+            _pkgStaged[agv] = pid!;
+        }
         Report(agv, job, "download", 50);
         var s = _state[agv];
         _state[agv] = (s.dsp, "staged", job, ver);
@@ -92,6 +115,7 @@ sealed class FakeBridges(AgvRegistry reg) : IAgvLink
         Report(agv, job, "verify");
         var v8 = s.ver.Length > 8 ? s.ver[..8] : s.ver;
         _state[agv] = (v8, "idle", 0, "");
+        if (!Legacy08 && _pkgStaged.Remove(agv, out var pid)) _pkgApplied[agv] = (pid, v8);   // 적용 성공 → 보관 패키지 = 이 버전
         Beat(agv);
         Report(agv, job, "done", 100, v8);
         return true;
@@ -163,6 +187,27 @@ sealed class JobTestKit : IDisposable
         Store = new FirmwareStore(Dir, Db);
         Svc = NewService();
         return Store.Get(e.Id)!;
+    }
+
+    /// <summary>
+    /// 패키지 도입(0.7.0) 전에 .dspfw 만 올린 이전 등록 (pkg_id 없음, 패키지·.out·.map 없음): 지금은 업로드가 거부하므로 DB 에 직접 넣고
+    /// 저장소·실행기를 다시 만든다 (v4 DB 의 행과 같은 모양)
+    /// </summary>
+    public FirmwareEntry AddNoPackageDsp(string ver = "1.0.3")
+    {
+        var id = "legacy-" + Guid.NewGuid().ToString("N")[..6];
+        var img = DspImage(ver);
+        var name = $"app_{ver}.dspfw";
+        using (var c = Db.Open())
+            GatewayDb.Exec(c, """
+                INSERT INTO firmware(id, kind, version, project, notes, uploaded_at, slot, file_name, size, sha256, pkg_id, link_check)
+                VALUES($id, 'Dsp', $v, 'agv-dsp', '0.6 업로드', $up, 'dspfw', $f, $size, 'AB', '', '')
+                """, ("$id", id), ("$v", ver), ("$up", GatewayDb.Ts(DateTime.UtcNow)), ("$f", name), ("$size", img.Length));
+        Directory.CreateDirectory(Path.Combine(Dir, "firmware", id));
+        File.WriteAllBytes(Path.Combine(Dir, "firmware", id, name), img);
+        Store = new FirmwareStore(Dir, Db);
+        Svc = NewService();
+        return Store.Get(id)!;
     }
 
     /// <summary>스케줄러 한 번 돌리고, 시작한 작업이 끝날(또는 적용 대기에 멈출) 때까지</summary>

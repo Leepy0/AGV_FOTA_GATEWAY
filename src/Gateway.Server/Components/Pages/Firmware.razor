@@ -98,7 +98,7 @@
                                 }
                                 else
                                 {
-                                    <span class="warn-text" title="패키지 도입(0.7.0) 전에 .dspfw 만 올린 펌웨어 — 이 버전의 .out·.map 이 게이트웨이에 없습니다. 같은 버전을 패키지(.dsppkg)로 다시 올리세요">⚠ 없음 (이전 등록)</span>
+                                    <span class="warn-text" title="패키지 도입(0.7.0) 전에 .dspfw 만 올린 펌웨어 — 이 버전의 .out·.map 이 게이트웨이에 없고, 브리지가 패키지를 보관해야 굽기 때문에 배포할 수 없습니다. 같은 버전을 패키지(.dsppkg)로 다시 올리세요">⚠ 없음 (이전 등록 · 배포 불가)</span>
                                 }
                             }</td>
                         <td class="mono small" title="@(e.Primary?.Sha256)">@(e.Primary?.Sha256[..8].ToLowerInvariant())…</td>
@@ -112,7 +112,7 @@
         </table>
         </div>
         @if (list.GroupBy(x => (x.Kind, x.Version)).Any(g => g.Count() > 1)) { <p class="msg warn">⚠ 같은 종류·버전이 여러 개 — 오래된 것을 지우세요</p> }
-        @if (list.Count(x => x.Kind == FirmwareKind.Dsp && !x.HasOriginals) is var legacyN and > 0) { <p class="muted small">원본 ⚠ 없음 @legacyN 개 — .dspfw 만 올렸던 이전 등록입니다. 그 버전을 쓰는 호기가 있으면 같은 버전을 패키지로 다시 올려 .out·.map 을 보관하세요.</p> }
+        @if (list.Count(x => x.Kind == FirmwareKind.Dsp && !x.HasOriginals) is var legacyN and > 0) { <p class="muted small">원본 ⚠ 없음 @legacyN 개 — .dspfw 만 올렸던 이전 등록입니다. 원본(.out·.map) 패키지가 없는 펌웨어는 배포할 수 없습니다(브리지가 패키지를 받아 보관해야 굽습니다) — 같은 버전을 패키지로 다시 올리세요.</p> }
     }
 </section>
 

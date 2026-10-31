@@ -36,6 +36,16 @@ public static class BridgeErrors
             "no_mem" => "브리지 메모리 부족으로 시작하지 못함 — 잠시 뒤 다시, 반복되면 브리지 재부팅",
             "busy" or "not_ready" => "브리지가 앞선 메인보드 명령을 처리 중 — 잠시 뒤 다시",
             "no_partition" or "nopart" => "브리지에 dspfw 파티션이 없음 — USB 로 한 번 전체 굽기 필요",
+            // 패키지(.dsppkg) 보관 (브리지 0.9.0+): 메인보드 스테이징·적용마다 짝 패키지가 브리지에 있어야 한다
+            "no_pkg" => "브리지에 짝 패키지가 없거나 pkg_* 가 빠짐 — 브리지 0.9.0 이상과 게이트웨이 0.7.0 이상이 짝이어야 함. 적용 단계면 새 작업으로 다시 배포(스테이징부터)",
+            "pkg_nopart" => "브리지에 패키지(dsppkg) 파티션이 없음 — USB 로 파티션 표(16MB)를 다시 굽기 (호기 설정·스테이징 유지)",
+            "pkg_too_big" => "패키지가 브리지 보관 한도(약 6MB)를 넘음 — .out·.map 크기를 줄여 dsp_pack.py bundle 로 다시 만들기",
+            "pkg_size" => "브리지가 받은 패키지 크기가 pkg_size 와 다름 — 저장된 패키지 파일·네트워크 확인 후 다시 배포",
+            "pkg_sha" => "브리지가 받은 패키지의 sha256 이 다름 — 전송 중 손상 또는 저장 파일 문제, 다시 배포 (반복되면 펌웨어를 지우고 다시 올리기)",
+            "pkg_url_host" => "패키지 URL 호스트가 브리지에 설정된 서버 IP 와 다름 — PublicBaseUrl 은 브리지 server IP 와 같은 IPv4 여야 함 (비우면 자동)",
+            "pkg_url_too_long" => "패키지 URL 이 브리지 한도를 넘음 — 패키지 파일명을 줄여 다시 올리기",
+            "pkg_http" => "브리지가 서버에서 패키지를 받지 못함 — 서버 HTTP 포트·방화벽·PublicBaseUrl 확인",
+            _ when e.StartsWith("pkg_") => "브리지가 패키지(.dsppkg)를 받아 보관하지 못함 — 다시 배포, 반복되면 브리지 점검 (USB 로 파티션 표 다시 굽기)",
             "ver_mismatch" => "구운 뒤 메인보드 앱이 보고한 버전이 이미지와 다름",
             "not_staged" => "브리지에 받아 둔(스테이징) 이미지가 없음 (브리지 재굽기·스테이징 중 재부팅 등) — 새 작업으로 다시 배포",
             "job_mismatch" => "브리지에 받아 둔 이미지가 다른 작업의 것 (다른 작업이 덮어씀) — 새 작업으로 다시 배포",
@@ -72,6 +82,25 @@ public sealed record DspOtaResult(long Job, string Stage, int Pct, string Ver, s
 }
 
 /// <summary>
+/// 브리지가 .dspfw 와 함께 받아 보관할 메인보드 패키지(.dsppkg) — DSP_OTA_START 의 pkg_url·pkg_size·pkg_sha256·pkg_id.
+/// Sha256 은 저장된 패키지 파일의 소문자 hex 64자, Id 는 패키지 ID 소문자 hex 16자, Size 는 바이트 수
+/// </summary>
+public sealed record DspPkgRef(string Url, long Size, string Sha256, string Id)
+{
+    /// <summary>브리지 보관 한도: 패키지 슬롯 0x600000 − 머리 4KB</summary>
+    public const long MaxBytes = 0x600000 - 0x1000;
+
+    /// <summary>START JSON 에 넣을 수 있는 값인지 — 문제가 있으면 사유 (없으면 null)</summary>
+    public string? Problem()
+    {
+        if (Size is < 1 or > MaxBytes) return $"패키지가 {Size:N0}B — 브리지 보관 한도 {MaxBytes:N0}B (1 이상)를 벗어남";
+        if (Sha256.Length != 64 || !Sha256.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')) return "패키지 sha256 형식 오류 (소문자 hex 64자)";
+        if (Id.Length != 16 || !Id.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')) return "패키지 ID 형식 오류 (소문자 hex 16자)";
+        return null;
+    }
+}
+
+/// <summary>
 /// 메인보드(F2808) OTA — B안 (AGV_Wifi_Bridge/docs/DSP_OTA_DESIGN.md).
 ///  1. 스테이징: DSP_OTA_START {url, ver, crc32, size, job, apply:0} → 브리지가 HTTP 로 받아 보관 → "download"(pct) → "staged"
 ///  2. 적용:     DSP_OTA_APPLY {job[, recover:1]} → "start" → "enter" → "erase" → "progress"(pct) → "verify" → "done"{ver} / "fail"{err}
@@ -103,12 +132,24 @@ public sealed class DspOtaClient : IDisposable
     static readonly JsonSerializerOptions JsOpt = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     static string Js(string s) => JsonSerializer.Serialize(s, JsOpt);
 
-    /// <summary>이미지를 브리지에 받아 두게 한다. "staged" 보고 또는 heartbeat 의 staged.job==job 까지 기다린다</summary>
-    public async Task StageAsync(string url, DspfwInfo img, long job, Action<DspOtaResult>? progress = null, CancellationToken ct = default)
+    /// <summary>
+    /// DSP_OTA_START JSON — 기존 필드 뒤에 패키지 필드(pkg_url·pkg_size·pkg_sha256·pkg_id)가 항상 붙는다.
+    /// 브리지(0.9.0+)는 이 넷 중 하나라도 없으면 no_pkg 로 거부한다.
+    /// </summary>
+    public static string StartJson(string url, DspfwInfo img, DspPkgRef pkg, long job) =>
+        $"{{\"url\":{Js(url)},\"ver\":{Js(img.Version)},\"crc32\":{img.Crc32},\"size\":{img.Size},\"job\":{job},\"apply\":0," +
+        $"\"pkg_url\":{Js(pkg.Url)},\"pkg_size\":{pkg.Size},\"pkg_sha256\":{Js(pkg.Sha256)},\"pkg_id\":{Js(pkg.Id)}}}";
+
+    /// <summary>
+    /// 이미지(.dspfw)와 짝 패키지(.dsppkg)를 브리지에 받아 두게 한다. "staged" 보고 또는 heartbeat 의 staged.job==job 까지 기다린다.
+    /// 시한은 패키지 크기만큼 늘어난다 (OtaTimeouts.DspStageIdleFor).
+    /// </summary>
+    public async Task StageAsync(string url, DspfwInfo img, DspPkgRef pkg, long job, Action<DspOtaResult>? progress = null, CancellationToken ct = default)
     {
-        var json = $"{{\"url\":{Js(url)},\"ver\":{Js(img.Version)},\"crc32\":{img.Crc32},\"size\":{img.Size},\"job\":{job},\"apply\":0}}";
+        if (pkg.Problem() is { } bad) throw new DspOtaException(bad);
+        var json = StartJson(url, img, pkg, job);
         if (!_link.SendDspOtaStart(_agv, json)) throw new DspOtaException("브리지 endpoint 없음 (heartbeat 미수신)");
-        await WaitAsync(job, "staged", _t.DspStageIdle, () => _link.SendDspOtaStart(_agv, json), null, progress, ct);
+        await WaitAsync(job, "staged", _t.DspStageIdleFor(pkg.Size), () => _link.SendDspOtaStart(_agv, json), null, progress, ct);
     }
 
     /// <summary>

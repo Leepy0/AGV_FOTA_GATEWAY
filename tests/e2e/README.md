@@ -1,11 +1,11 @@
 # 종단(E2E) 시험
 
-빌드한 게이트웨이 서버를 임시 데이터 폴더·임의 포트로 띄우고, 가짜 브리지(`tests/fake_esp.py`, 브리지 0.5.2 흉내)를
+빌드한 게이트웨이 서버를 임시 데이터 폴더·임의 포트로 띄우고, 가짜 브리지(`tests/fake_esp.py`, 브리지 0.5.2 흉내 + 패키지 보관 0.9.0)를
 여러 대 붙여 REST API 로 배포 흐름을 끝까지 돌립니다. 파이썬 3.10 이상, 표준 라이브러리만 씁니다.
 
 ```bash
 dotnet build -c Release
-python3 tests/e2e/run_e2e.py              # 전체 16개, 약 4분
+python3 tests/e2e/run_e2e.py              # 전체 17개, 약 5분
 python3 tests/e2e/run_e2e.py --only 1,3   # 골라서
 python3 tests/e2e/run_e2e.py --list       # 시나리오 목록
 python3 tests/e2e/run_e2e.py --dll <다른 빌드의 AgvFotaGateway.dll> --keep   # 임시 폴더(서버·가짜 브리지 로그) 남기기
@@ -20,8 +20,8 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 
 | 번호 | 시나리오 |
 |---|---|
-| 1 | 메인보드 Approve: 3대(한 프로세스) 스테이징 → 적용 대기 → 승인 → 적용 → Done, job 번호가 스테이징·적용에서 같음, heartbeat 버전 |
-| 2 | 메인보드 Immediate |
+| 1 | 메인보드 Approve: 3대(한 프로세스) 스테이징 → 적용 대기 → 승인 → 적용 → Done, job 번호가 스테이징·적용에서 같음, heartbeat 버전. START 의 `pkg_*`(주소·크기·sha256·ID)가 저장된 패키지와 같고, 스테이징 중 heartbeat `stagedPkg`·적용 뒤 `dspPkg` 가 그 패키지 |
+| 2 | 메인보드 Immediate (START 의 `pkg_*`, 작업 뒤 heartbeat `dspPkg`) |
 | 3 | staged 보고 3회 유실 / done 보고 3회 유실 → heartbeat 로 판정해 성공 |
 | 4 | 상향 6.5초 단절로 서버 재전송 유도 → 같은 job 중복 START·APPLY → 다운로드·굽기 각 1회 |
 | 5 | 브리지 자체 OTA → 재부팅 → 서버 자동 PING 으로 확정(valid), done 3회 유실 호기도 성공 |
@@ -36,7 +36,8 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 | 14 | 원격 진단 `POST /api/agvs/{n}/cfg/wait`: cfg json·stat json·scan·nettest, 끝 표시 `>` 줄 제거, 0.5.5 는 텍스트·unknown command, 모르는 호기 504 |
 | 15 | 호기 설정 자동 수집 3대 → 다수결 기준값 → 드리프트(hb_ms) → 입력 검사 → 일괄 변경(2대씩 두 묶음: set·save·reboot·trial 확정·cfg json 확인) |
 | 16 | Wi-Fi 분석: 가짜 브리지가 AP 를 옮기고(`--roam-at`) 끊김(`--disc-at`)을 일으킴 → 로밍·끊김 기록, AP 별 집계 |
+| 17 | 패키지 보관: `--nopkgpart` 브리지는 `pkgSt=nopart` 이고 작업이 START 없이 빠르게 실패(파티션 표 안내) / `--legacy-pkg`(0.8.0) 는 새 필드 없이 `pkg_*` 를 무시해도 Done(미지원 안내) / `--fail-at pkg` 는 `pkg_flash_write` 안내 / v4 형태 이전 등록(`.dspfw` 만)으로는 작업 생성 400, 패키지로 올린 같은 버전은 됨 (따로 띄운 서버의 DB 에 행을 넣음) |
 
 가짜 브리지 단독 실행과 장애 주입 옵션(`--drop`, `--drop-rx`, `--mute-after-cmd`, `--fail-at`, `--app-u`, `--app-frames`, `--nodsp`,
-`--nopart`, `--legacy`, `--dup-id`, `--events`, 기능 버전 `--fw 0.6.0/0.7.0/0.8.0`, 시각 `--clock-wrong-ms`·`--clock-no-req`, Wi-Fi `--roam-at`·`--disc-at` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.
+`--nopart`, `--legacy`, `--nopkgpart`, `--legacy-pkg`, `--dup-id`, `--events`, 기능 버전 `--fw 0.6.0/0.7.0/0.8.0`, 시각 `--clock-wrong-ms`·`--clock-no-req`, Wi-Fi `--roam-at`·`--disc-at` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.
 실제 브리지와 다른 점도 그 주석의 '남은 차이'에 적어 두었습니다.

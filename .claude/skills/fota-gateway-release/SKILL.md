@@ -17,7 +17,7 @@ description: "AGV FOTA Gateway(ASP.NET Core Blazor 웹 서버, 사내 PC Windows
 | 매니페스트 주소 | `https://github.com/Leepy0/AGV_FOTA_GATEWAY/releases/latest/download/AgvFotaGateway.json` |
 | 버전 원본 | `src/Gateway.Server/Gateway.Server.csproj` `<Version>` — 태그와 다르면 CI 가 실패 |
 | 채널 | CI `release`(태그·release=true) / `dev`(main push 테스트 프리릴리스) / `local`(PR·직접 빌드) |
-| 짝 브리지 | `Leepy0/AGV_Wifi_Bridge` (게이트웨이 0.3.0 ↔ 브리지 0.5.2) |
+| 짝 브리지 | `Leepy0/AGV_Wifi_Bridge` (게이트웨이 0.7.0 ↔ 브리지 0.9.0 — ESP32-S3 N16, 패키지 보관) |
 
 ## 공통 전제
 

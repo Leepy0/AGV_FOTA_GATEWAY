@@ -7,8 +7,13 @@ public sealed record OtaTimeouts
 {
     public static readonly OtaTimeouts Default = new();
 
-    /// <summary>메인보드 스테이징: 보고·heartbeat 진행 표시가 이만큼 끊기면 실패 (다운로드 전체)</summary>
+    /// <summary>메인보드 스테이징: 보고·heartbeat 진행 표시가 이만큼 끊기면 실패 (다운로드 전체) — 패키지 크기만큼 DspStagePerMiB 가 더해진다 (DspStageIdleFor)</summary>
     public TimeSpan DspStageIdle { get; init; } = TimeSpan.FromMinutes(3);
+    /// <summary>패키지(.dsppkg) 1 MiB 마다 스테이징 시한에 더하는 시간 — 브리지가 패키지를 HTTP 로 받으며 4KB 씩 지워 쓰는 시간</summary>
+    public TimeSpan DspStagePerMiB { get; init; } = TimeSpan.FromSeconds(3);
+    /// <summary>패키지 크기를 반영한 스테이징 시한: DspStageIdle(최소) + 패키지 MiB × DspStagePerMiB</summary>
+    public TimeSpan DspStageIdleFor(long pkgBytes) =>
+        DspStageIdle + TimeSpan.FromTicks((long)(DspStagePerMiB.Ticks * (Math.Max(0, pkgBytes) / 1048576.0)));
     /// <summary>메인보드 적용: 단계 보고가 이만큼 끊기면 실패 (erase 1~2초×섹터, 쓰기 수십 초, 복구 시 wait_power 10초 간격)</summary>
     public TimeSpan DspApplyIdle { get; init; } = TimeSpan.FromSeconds(90);
     /// <summary>브리지 OTA: OTA_RESULT done 까지 전체</summary>

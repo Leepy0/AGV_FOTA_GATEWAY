@@ -86,7 +86,7 @@ public class GatewayDbMigrationTests
     }
 
     [Fact]
-    public async Task V4_database_gets_firmware_files_and_legacy_dsp_row_stays_deployable()
+    public void V4_database_gets_firmware_files_and_legacy_dsp_row_is_kept_but_not_deployable()
     {
         var dir = Path.Combine(Path.GetTempPath(), "gw-dbmig5-" + Guid.NewGuid().ToString("N")[..8]);
         try
@@ -121,18 +121,18 @@ public class GatewayDbMigrationTests
             Assert.Equal(("dspfw", "app_1.0.3.dspfw"), (Assert.Single(e.Files).Slot, e.Primary!.FileName));
             Assert.DoesNotContain("1.0.3", store.VersionsWithOriginals());
 
-            // 이전 등록도 그대로 배포된다 (주 파일 dspfw)
+            // 이전 등록은 목록에 남지만 (다운로드·삭제는 됨) 배포 작업은 만들 수 없다 — 브리지가 패키지를 받아 보관해야 굽는다 (0.7.0)
+            Assert.False(e.HasPackage);
             var reg = new AgvRegistry();
             var link = new FakeBridges(reg);
             link.Add(7);
             var svc = new JobService(Microsoft.Extensions.Options.Options.Create(new Gateway.Server.Options.GatewayOptions { DataDir = dir, OfflineAfterSec = 5, PublicBaseUrl = "http://10.0.0.1:8080" }),
                                      store, reg, link, db, Microsoft.Extensions.Logging.Abstractions.NullLogger<JobService>.Instance)
             { NotBefore = DateTime.MinValue, OnlineWait = TimeSpan.FromSeconds(1), SaveRetryGap = TimeSpan.Zero };
-            var j = svc.Create("", e.Id, [7], null, true, ApplyMode.Immediate);
-            svc.Tick();
-            await svc.LastRun.WaitAsync(TimeSpan.FromSeconds(20));
-            Assert.Equal(JobState.Done, j.State);
-            Assert.Contains(link.Sent, s => s.kind == "START" && s.json.Contains("/fw/legacy1/app_1.0.3.dspfw"));
+            var ex = Assert.Throws<InvalidOperationException>(() => svc.Create("", e.Id, [7], null, true, ApplyMode.Immediate));
+            Assert.Equal(FirmwareStore.NoPackageDeploy, ex.Message);
+            Assert.Empty(svc.List());
+            Assert.Empty(link.Sent);
         }
         finally
         {
