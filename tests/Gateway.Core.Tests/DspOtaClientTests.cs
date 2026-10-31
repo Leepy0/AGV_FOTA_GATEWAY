@@ -396,7 +396,7 @@ public class DspOtaClientTests
     [InlineData("http_status")] [InlineData("perform ESP_FAIL")] [InlineData("busy")] [InlineData("app_no_fwup")]
     [InlineData("not_staged")] [InlineData("job_mismatch")] [InlineData("write")] [InlineData("write_timeout")] [InlineData("program")] [InlineData("verify_block")]
     [InlineData("no_pkg")] [InlineData("pkg_nopart")] [InlineData("pkg_too_big")] [InlineData("pkg_size")] [InlineData("pkg_sha")]
-    [InlineData("pkg_url_host")] [InlineData("pkg_url_too_long")] [InlineData("pkg_http")] [InlineData("pkg_flash_write")] [InlineData("pkg_http_status")]
+    [InlineData("pkg_url_host")] [InlineData("pkg_url_too_long")] [InlineData("pkg_http")] [InlineData("pkg_flash")] [InlineData("pkg_http_status")]
     public void Every_bridge_error_code_has_a_korean_hint(string err) => Assert.NotNull(BridgeErrors.Hint(err));
 
     [Fact]

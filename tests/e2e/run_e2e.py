@@ -871,17 +871,17 @@ def s17_package_archive(ctx):
     check("0.9.0 이상" in r["message"], f"[95] 미지원 안내: {r['message']}")
     check(not fb.rx("START", 95) and ctx.agv(95)["dsp"] == "1.0.0", f"[95] 0.8.0 브리지에 START 를 보냄 / dsp={ctx.agv(95)['dsp']}")
 
-    # (3) 브리지가 패키지를 flash 에 못 씀(pkg_flash_write) → 메인보드 건드리지 않고 실패 + 패키지 안내 (.dspfw 는 받지도 않음)
+    # (3) 브리지가 패키지를 flash 에 못 씀(pkg_flash) → 메인보드 건드리지 않고 실패 + 패키지 안내 (.dspfw 는 받지도 않음)
     j = ctx.create_job(fw, [96], "Immediate", name="e2e pkg write fail")
     j = ctx.wait_job(j["id"], {"Failed"}, 60)
     r = result(j, 96)
-    check("pkg_flash_write" in r["message"] and "패키지(.dsppkg)를 받아 보관하지 못함" in r["message"], f"[96] 안내: {r['message']}")
+    check("pkg_flash" in r["message"] and "패키지(.dsppkg)를 받아 보관하지 못함" in r["message"], f"[96] 안내: {r['message']}")
     check(not fc.ev("download", 96) and not fc.ev("erase", 96) and ctx.agv(96)["dsp"] == "1.0.0", "[96] 메인보드·스테이징을 건드림")
 
     # (4) 원본 없는 이전 등록(.dspfw 만, 0.6.x 가 올린 v4 행)은 작업을 만들 수 없다 — 따로 띄운 서버의 데이터 폴더에 그 행을 직접 넣는다
     legacy_msg = legacy_entry_rejected(ctx)
     return (f"[94] nopart → START 없이 {fast:.1f}초 만에 실패(파티션 표 안내)·[95] 0.8.0 브리지는 START 없이 거부(0.9.0 이상 안내)·"
-            f"[96] pkg_flash_write 안내·이전 등록 거부: {legacy_msg}")
+            f"[96] pkg_flash 안내·이전 등록 거부: {legacy_msg}")
 
 
 def legacy_entry_rejected(ctx):

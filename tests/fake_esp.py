@@ -71,7 +71,7 @@
   --drop-rx START:1,APPLY:1        받은 명령을 버림(하향 유실). 이름: START APPLY OTA PING INFO CFG MAIN
   --loss P / --rx-loss P           상향/하향 패킷을 확률 P 로 버림
   --mute-after-cmd SEC             job 마다 처음 받은 DSP START·APPLY 뒤 SEC 초 동안 상향 전부 유실(서버 재전송 유도 → 중복 처리 시험)
-  --fail-at STAGE[:N]              download(flash_write) pkg(패키지 쓰기 pkg_flash_write) enter(uart_busy) hello(no_bootloader) erase write(write_timeout) header(write_header)
+  --fail-at STAGE[:N]              download(flash_write) pkg(패키지 쓰기 pkg_flash) enter(uart_busy) hello(no_bootloader) erase write(write_timeout) header(write_header)
                                     verify app(굽기 뒤 앱 무응답 → app_no_reply) ver(ver_mismatch) ota(브리지 OTA finish 실패). N 회만(기본 계속)
   --app-u ok|noreply|ng:NN         메인보드 앱의 U(업데이트 진입) 응답
   --nodsp [mute|boot]              앱이 버전에 응답하지 않음(dsp='?'). mute = 구 앱(U 도 무응답, 전원 재투입해야 부트로더), boot = 앱 없음(부트로더 대기 중)
@@ -1356,7 +1356,7 @@ class Bridge:
         for ch in chunks:
             self.sleep(self.sim(self.o.dl_sec) * len(ch) / max(1, total), epoch)
             if self.take_fail("pkg"):
-                return "pkg_flash_write"
+                return "pkg_flash"
             state["done"] += len(ch)
             self.dl_progress(c["job"], total, state)
         if len(data) != p["size"]:
