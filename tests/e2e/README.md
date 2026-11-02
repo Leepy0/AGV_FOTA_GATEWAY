@@ -5,7 +5,7 @@
 
 ```bash
 dotnet build -c Release
-python3 tests/e2e/run_e2e.py              # 전체 17개, 약 5분
+python3 tests/e2e/run_e2e.py              # 전체 18개, 약 5분
 python3 tests/e2e/run_e2e.py --only 1,3   # 골라서
 python3 tests/e2e/run_e2e.py --list       # 시나리오 목록
 python3 tests/e2e/run_e2e.py --dll <다른 빌드의 AgvFotaGateway.dll> --keep   # 임시 폴더(서버·가짜 브리지 로그) 남기기
@@ -37,6 +37,7 @@ python3 tests/e2e/test_fake_esp.py        # 가짜 브리지 자체 시험 (서�
 | 15 | 호기 설정 자동 수집 3대 → 다수결 기준값 → 드리프트(hb_ms) → 입력 검사 → 일괄 변경(2대씩 두 묶음: set·save·reboot·trial 확정·cfg json 확인) |
 | 16 | Wi-Fi 분석: 가짜 브리지가 AP 를 옮기고(`--roam-at`) 끊김(`--disc-at`)을 일으킴 → 로밍·끊김 기록, AP 별 집계 |
 | 17 | 패키지 보관: `--nopkgpart` 브리지는 `pkgSt=nopart` 이고 작업이 START 없이 빠르게 실패(파티션 표 안내) / `--legacy-pkg`(0.8.0) 는 새 필드가 없어 START 없이 거부(0.9.0 이상 안내) / `--fail-at pkg` 는 `pkg_flash` 안내 / v4 형태 이전 등록(`.dspfw` 만)으로는 작업 생성 400, 패키지로 올린 같은 버전은 됨 (따로 띄운 서버의 DB 에 행을 넣음) |
+| 18 | 호기 번호 변경: 같은 `--mac` 으로 81 → 82 다시 띄움 → 81 기록이 사라지고 81 소속이 82 로 옮겨짐 / 온라인 호기 `DELETE /api/agvs/82` 409, 오프라인이 된 뒤 200 |
 
 가짜 브리지 단독 실행과 장애 주입 옵션(`--drop`, `--drop-rx`, `--mute-after-cmd`, `--fail-at`, `--app-u`, `--app-frames`, `--nodsp`,
 `--nopart`, `--legacy`, `--nopkgpart`, `--legacy-pkg`, `--dup-id`, `--events`, 기능 버전 `--fw 0.6.0/0.7.0/0.8.0`, 시각 `--clock-wrong-ms`·`--clock-no-req`, Wi-Fi `--roam-at`·`--disc-at` …)은 `python3 tests/fake_esp.py --help` 와 파일 머리 주석에 있습니다.

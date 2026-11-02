@@ -135,6 +135,7 @@ else
                                     <a href="jobs?agv=@a.Id" @onclick:stopPropagation>이 호기에 배포</a>
                                     <a href="groups?path=@Uri.EscapeDataString(Groups.Get(a.Id)?.Group.Path ?? "")" @onclick:stopPropagation>구역 @(Groups.Get(a.Id) is null ? "(미등록)" : "")</a>
                                     @if (st?.HasClock == true) { <button @onclick='() => Do(a.Id, Link.SendTime, "시각 동기")' @onclick:stopPropagation title="서버 시각을 브리지에 보냅니다">시각 동기</button> }
+                                    @if (!on) { <button class="danger" @onclick="() => Forget(a)" @onclick:stopPropagation>기록 삭제</button> }
                                     @if (result is { } r && r.agv == a.Id) { <span class="msg @(r.ok ? "" : "err")" role="status">@r.text</span> }
                                 </div>
                                 <div class="row-buttons small">
@@ -388,6 +389,15 @@ else
 
     void Toggle(int id) => sel = sel == id ? null : id;
     void RowKey(KeyboardEventArgs e, int id) { if (e.Key == "Enter") Toggle(id); }
+
+    async Task Forget(AgvState a)
+    {
+        if (a.Online(Opt.Value.OfflineAfterSec)
+            || !await JS.ConfirmAsync($"{a.Id:D2} 호기 기록 삭제\n마지막 수신 {Ago(a.LastSeen)}\n다시 접속하면 새로 생깁니다", "삭제", danger: true)) return;
+        Reg.Remove(a.Id);
+        sel = null;
+        Load();
+    }
 
     void Do(int agv, Func<int, bool> f, string what)
     {

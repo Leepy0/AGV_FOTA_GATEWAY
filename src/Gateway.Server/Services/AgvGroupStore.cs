@@ -157,6 +157,20 @@ public sealed class AgvGroupStore
         return true;
     }
 
+    /// <summary>번호가 바뀐 호기의 소속을 새 번호로 옮긴다. 옛 번호에 소속이 없거나 새 번호에 이미 있으면 그대로 두고 false. DB 쓰기가 실패하면 예외 — 메모리는 그대로</summary>
+    public bool Move(int from, int to)
+    {
+        lock (_lock)
+        {
+            if (!_items.TryGetValue(from, out var a) || _items.ContainsKey(to)) return false;
+            var n = new AgvAssignment { Agv = to, Name = a.Name, Group = a.Group, Source = a.Source, Note = a.Note, UpdatedAt = DateTimeOffset.UtcNow };
+            Save([n], [from]);
+            _items.Remove(from); _items[to] = n; _tree = null;
+        }
+        Notify();
+        return true;
+    }
+
     /// <summary>CSV 가져오기: 목록의 호기만 덮어씀 (출처 import). 한 트랜잭션 — 실패하면 예외, 아무것도 반영 안 됨</summary>
     public int Import(IEnumerable<AgvAssignment> items)
     {

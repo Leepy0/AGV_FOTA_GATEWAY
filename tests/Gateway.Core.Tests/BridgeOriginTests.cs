@@ -33,6 +33,16 @@ public class BridgeOriginTests
         Assert.Equal(OriginDecision.Move, BridgeOrigin.Decide(A, true, "24:0A:C4:00:00:01", B, "24:0a:c4:00:00:01"));   // 같은 장치(MAC)
     }
 
+    [Fact]
+    public void Same_mac_under_other_number_is_rename()
+    {
+        var known = new[] { (5, "24:0A:C4:00:00:01"), (6, ""), (7, "24:0a:c4:00:00:02") };
+        Assert.Equal(5, BridgeOrigin.RenamedFrom(known, 9, "24:0a:c4:00:00:01"));   // 5 → 9
+        Assert.Null(BridgeOrigin.RenamedFrom(known, 5, "24:0a:c4:00:00:01"));       // 자기 번호
+        Assert.Null(BridgeOrigin.RenamedFrom(known, 9, "24:0a:c4:00:00:03"));       // 처음 보는 장치
+        Assert.Null(BridgeOrigin.RenamedFrom(known, 9, ""));                        // MAC 모름 (구 브리지 heartbeat)
+    }
+
     [Theory]
     [InlineData(0, false)]
     [InlineData(1, true)]

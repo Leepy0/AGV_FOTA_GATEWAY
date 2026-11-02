@@ -39,6 +39,19 @@ public static class BridgeOrigin
         return OriginDecision.Conflict;
     }
 
+    /// <summary>
+    /// 호기 번호 변경 판정: 이번 패킷의 MAC 을 다른 번호 항목이 갖고 있으면 그 번호 → agv 로 바뀐 같은 장치다 (STA MAC 은 칩 고유값).
+    /// 그 번호를 돌려주고, MAC 을 모르거나 같은 MAC 이 없으면 null.
+    /// </summary>
+    /// <param name="known">알고 있는 호기들의 (번호, MAC — "" = 모름)</param>
+    public static int? RenamedFrom(IEnumerable<(int Agv, string Mac)> known, int agv, string packetMac)
+    {
+        if (packetMac.Length == 0) return null;
+        foreach (var (id, mac) in known)
+            if (id != agv && string.Equals(mac, packetMac, StringComparison.OrdinalIgnoreCase)) return id;
+        return null;
+    }
+
     /// <summary>둘 다 MAC 을 알고 서로 다르면 확실한 충돌 (표시용)</summary>
     public static bool MacDiffers(string knownMac, string packetMac) =>
         knownMac.Length > 0 && packetMac.Length > 0 && !string.Equals(knownMac, packetMac, StringComparison.OrdinalIgnoreCase);

@@ -185,6 +185,14 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink, ICfgChannel
             OnConflict(a, ep, h, BridgeOrigin.MacDiffers(knownMac, fresh?.Mac ?? ""));
             return;
         }
+        // 브리지에서 호기 번호를 바꾼 경우: 같은 MAC 의 옛 번호 기록을 옮긴다 (옛 번호가 오프라인으로 남아 수량이 늘지 않게)
+        if (fresh?.Mac is { Length: > 0 } mac
+            && BridgeOrigin.RenamedFrom(_reg.Snapshot().Select(x => (x.Id, x.Status?.Mac ?? "")), h.Agv, mac) is int old)
+        {
+            Trace?.Invoke($"[{h.Agv:D2}] 호기 번호 변경 {old:D2}→{h.Agv:D2} (MAC {mac}) — {old:D2} 기록을 지우고 소속·위치를 옮김");
+            _log.LogInformation("호기 번호 변경 {Old}→{New} (MAC {Mac})", old, h.Agv, mac);
+            _reg.Rename(old, h.Agv);
+        }
         if (origin == OriginDecision.Move)
         {
             if (a.EndPoint is not null) Trace?.Invoke($"[{h.Agv:D2}] 주소 변경 {a.EndPoint}→{ep}");
@@ -216,6 +224,12 @@ public sealed class BridgeUdpService : BackgroundService, IAgvLink, ICfgChannel
                     }
                 }
                 if (h.Type == BridgePacket.Info) Trace?.Invoke($"[{h.Agv:D2}] INFO {Encoding.UTF8.GetString(pl)}");
+                // heartbeat 에 MAC 이 없는 구 브리지(0.5.2 미만) — 번호 변경 판정용 MAC 을 INFO 로 받는다 (1분에 한 번)
+                else if (fresh is not null && string.IsNullOrEmpty(a.Status?.Mac) && (now - a.LastInfoReq).TotalSeconds >= 60)
+                {
+                    a.LastInfoReq = now;
+                    SendInfoRequest(h.Agv);
+                }
                 _reg.Touch(a);
                 AutoConfirmPing(a, now);
                 _reg.NotifyChanged();

@@ -121,6 +121,11 @@ api.MapGet("/agvs", (AgvRegistry reg, IOptions<GatewayOptions> o) =>
         // 시각 동기 (브리지 0.8.0+): 편차 ms(+ = 브리지가 앞섬), 미동기·구 펌웨어는 null
         ClockSkewMs = a.ClockSkewMs, ClockSynced = a.Status?.ClockSynced ?? false, a.TimeReplies, LastTag = a.LastTag.Length > 0 ? a.LastTag : null,
     }));
+// 기록 삭제 (폐기·교체로 다시 안 올 호기). 온라인 호기는 다음 heartbeat 로 다시 생기므로 거부
+api.MapDelete("/agvs/{agv:int}", (int agv, AgvRegistry reg, IOptions<GatewayOptions> o) =>
+    reg.Get(agv) is not { } a ? Results.NotFound("없는 호기")
+    : a.Online(o.Value.OfflineAfterSec) ? Results.Conflict("온라인 호기는 지울 수 없음")
+    : reg.Remove(agv) ? Results.Ok() : Results.NotFound("없는 호기"));
 api.MapPost("/agvs/{agv:int}/time", (int agv, BridgeUdpService link, AgvRegistry reg) =>
 {
     // 서버 시각을 브리지에 보낸다 (브리지 0.8.0+)
@@ -326,6 +331,18 @@ api.MapGet("/db", (GatewayDb db) => new
 });
 api.MapGet("/db/backup", (GatewayDb db) => Results.File(db.Backup(), "application/octet-stream", $"gateway-{DateTime.Now:yyyyMMdd-HHmm}.db"));
 api.MapGet("/health", (UpdateService u) => Results.Ok(new { ok = true, version = u.CurrentText, channel = u.Channel, time = DateTime.UtcNow }));
+
+// 호기 번호 변경(같은 MAC): 소속을 새 번호로 옮긴다 (위치는 AgvPositionStore 가 직접 옮김)
+app.Services.GetRequiredService<AgvRegistry>().Renamed += (from, to) =>
+{
+    try
+    {
+        var groups = app.Services.GetRequiredService<AgvGroupStore>();
+        if (!groups.Move(from, to) && groups.Get(from) is not null)
+            app.Logger.LogWarning("호기 번호 변경 {From}→{To}: 새 번호에 이미 소속이 있어 옛 소속을 그대로 둠", from, to);
+    }
+    catch (Exception e) { app.Logger.LogWarning(e, "호기 번호 변경 {From}→{To}: 소속 옮기기 실패", from, to); }
+};
 
 app.Lifetime.ApplicationStarted.Register(() =>
 {

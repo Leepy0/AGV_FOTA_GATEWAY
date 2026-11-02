@@ -928,6 +928,29 @@ def legacy_entry_rejected(ctx):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def s18_renumber(ctx):
+    """브리지에서 호기 번호 변경(같은 MAC) → 옛 번호 기록이 사라지고 소속이 새 번호로 옮겨짐. 기록 삭제는 오프라인만"""
+    mac = "02:fa:ce:00:18:81"
+    st, _ = ctx.api.call("PUT", "/api/agvs/81/group", {"productFamily": "E2E", "floor": "1F", "line": "L18"})
+    check(st == 200, f"81 소속 설정 → {st}")
+    f = ctx.fake("s18a", [81], "--mac", mac)
+    ctx.wait_online([81], need_dsp=False)
+    f.stop()
+    g = ctx.fake("s18b", [82], "--mac", mac)          # 같은 장치를 82 로 다시 설정한 것
+    ctx.wait(lambda: 82 in ctx.agvs() and 81 not in ctx.agvs(), 15, "81 기록이 82 로 바뀜")
+    st, grp = ctx.api.call("GET", "/api/agvs/82/group")
+    check(st == 200 and grp.get("group", {}).get("line") == "L18", f"82 에 소속이 옮겨지지 않음: {st} {grp}")
+    st, _ = ctx.api.call("GET", "/api/agvs/81/group")
+    check(st == 404, f"81 소속이 남음 ({st})")
+    st, _ = ctx.api.call("DELETE", "/api/agvs/82")
+    check(st == 409, f"온라인 호기 기록 삭제가 거부되지 않음 ({st})")
+    g.stop()
+    ctx.wait(lambda: not ctx.agv(82)["online"], ctx.server.offline_sec + 10, "82 오프라인")
+    st, _ = ctx.api.call("DELETE", "/api/agvs/82")
+    check(st == 200 and 82 not in ctx.agvs(), f"오프라인 호기 기록 삭제 실패 ({st})")
+    return "81→82 이전·소속 이동·온라인 삭제 409·오프라인 삭제 200"
+
+
 SCENARIOS = [
     (1, "메인보드 Approve 3대", s1_approve),
     (2, "메인보드 Immediate", s2_immediate),
@@ -946,6 +969,7 @@ SCENARIOS = [
     (15, "호기 설정 수집·기준값·드리프트·일괄 변경", s15_cfg_fleet),
     (16, "Wi-Fi 분석 (로밍·끊김·AP 집계)", s16_wifi),
     (17, "패키지 보관 (nopart 빠른 실패·0.8.0 브리지·패키지 쓰기 실패·이전 등록 작업 거부)", s17_package_archive),
+    (18, "호기 번호 변경 (같은 MAC → 옛 번호 정리·소속 이동·기록 삭제)", s18_renumber),
 ]
 
 

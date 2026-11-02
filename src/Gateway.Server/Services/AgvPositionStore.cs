@@ -35,6 +35,7 @@ public sealed class AgvPositionStore
                     GatewayDb.SN(r.GetValue(10)), false, GatewayDb.SN(r.GetValue(12))));
         }
         reg.Changed += OnRegistryChanged;
+        reg.Renamed += Move;
         // Registry.Changed 는 패킷이 올 때만 발생하므로, 호기가 (전부) 조용해져도 LOST 로 넘어가도록 1초마다 재평가
         _timer = new Timer(_ => { try { OnRegistryChanged(); } catch { } }, null, 1000, 1000);
     }
@@ -63,6 +64,22 @@ public sealed class AgvPositionStore
         }
         catch (Exception) { }
         try { Changed?.Invoke(); } catch { }
+    }
+
+    /// <summary>호기 번호 변경: 옛 번호의 위치를 새 번호로 (새 번호에 이미 위치가 있으면 그대로)</summary>
+    void Move(int from, int to)
+    {
+        if (!_pos.Move(from, to)) return;
+        try
+        {
+            lock (_dbLock)
+            {
+                using var c = _db.Open();
+                GatewayDb.Exec(c, "DELETE FROM agv_positions WHERE agv=$agv", ("$agv", from));
+            }
+        }
+        catch (Exception) { }
+        Persist(to);
     }
 
     public AgvPosition? Get(int agv) => _pos.Get(agv);

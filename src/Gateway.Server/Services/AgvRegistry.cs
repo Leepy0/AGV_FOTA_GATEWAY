@@ -33,6 +33,8 @@ public sealed class AgvState
     public DateTime ConflictWarnedAt { get; set; }
     /// <summary>cfg=trial / ota=pending 확정용 자동 PING 을 마지막으로 보낸 시각 (호기당 5초에 1회)</summary>
     public DateTime LastAutoPing { get; set; }
+    /// <summary>heartbeat 에 MAC 이 없는 구 브리지(0.5.2 미만)에 MAC 을 받으려고 INFO_REQ 를 마지막으로 보낸 시각</summary>
+    public DateTime LastInfoReq { get; set; }
 
     /// <summary>시각 동기 (브리지 0.8.0+): heartbeat ts − 서버가 받은 시각 (ms, 양수 = 브리지가 앞섬). 미동기·구 펌웨어면 null</summary>
     public long? ClockSkewMs { get; set; }
@@ -60,9 +62,13 @@ public sealed class AgvRegistry
     const int DbTimeoutSec = 2;
     readonly ConcurrentDictionary<int, AgvState> _agvs = new();
     readonly ConcurrentDictionary<int, byte> _dirty = new();
+    /// <summary>지운 호기 — Flush 가 agv_last_seen 에서 지운다</summary>
+    readonly ConcurrentDictionary<int, byte> _removed = new();
     readonly object _flushLock = new();
     readonly string? _cs;
     public event Action? Changed;
+    /// <summary>같은 장치(MAC)의 호기 번호가 바뀜 (옛 번호, 새 번호) — 소속·위치를 새 번호로 옮긴다</summary>
+    public event Action<int, int>? Renamed;
     int _pending;
 
     public AgvRegistry() { }
@@ -102,7 +108,10 @@ public sealed class AgvRegistry
         if (_cs is null) return 0;
         lock (_flushLock)
         {
-            if (_dirty.IsEmpty) return 0;
+            if (_dirty.IsEmpty && _removed.IsEmpty) return 0;
+            var gone = new List<int>();
+            foreach (var id in _removed.Keys)
+                if (_removed.TryRemove(id, out _)) gone.Add(id);
             var list = new List<AgvState>();
             foreach (var id in _dirty.Keys)
                 if (_dirty.TryRemove(id, out _) && Get(id) is { } a) list.Add(a);
@@ -111,6 +120,13 @@ public sealed class AgvRegistry
                 using var c = new SqliteConnection(_cs);
                 c.Open();
                 using var tx = c.BeginTransaction();
+                // 지우기를 먼저 — 지운 뒤 같은 번호가 다시 접속했으면 아래에서 새 값으로 들어간다
+                foreach (var id in gone)
+                {
+                    using var del = GatewayDb.Cmd(c, "DELETE FROM agv_last_seen WHERE agv=$agv", ("$agv", id));
+                    del.Transaction = tx;
+                    del.ExecuteNonQuery();
+                }
                 foreach (var a in list)
                 {
                     var st = a.Status;
@@ -123,10 +139,11 @@ public sealed class AgvRegistry
                     cmd.ExecuteNonQuery();
                 }
                 tx.Commit();
-                return list.Count;
+                return list.Count + gone.Count;
             }
             catch
             {
+                foreach (var id in gone) if (Get(id) is null) _removed.TryAdd(id, 0);
                 foreach (var a in list) _dirty.TryAdd(a.Id, 0);
                 throw;
             }
@@ -142,7 +159,24 @@ public sealed class AgvRegistry
     }
 
     /// <summary>DB 에 아직 쓰지 않은 호기 수</summary>
-    public int PendingWrites => _dirty.Count;
+    public int PendingWrites => _dirty.Count + _removed.Count;
+
+    /// <summary>호기 기록을 지운다 (DB 는 다음 Flush 에서). 없으면 false</summary>
+    public bool Remove(int id)
+    {
+        if (!_agvs.TryRemove(id, out _)) return false;
+        _dirty.TryRemove(id, out _);
+        if (_cs is not null) _removed[id] = 0;
+        NotifyChanged();
+        return true;
+    }
+
+    /// <summary>번호가 바뀐 같은 장치: 옛 번호 기록을 지우고 Renamed 를 알린다 (수량이 두 대로 늘지 않게)</summary>
+    public void Rename(int from, int to)
+    {
+        if (!Remove(from)) return;
+        try { Renamed?.Invoke(from, to); } catch { }
+    }
 
     public AgvState GetOrAdd(int id) => _agvs.GetOrAdd(id, i => new AgvState { Id = i });
     public AgvState? Get(int id) => _agvs.TryGetValue(id, out var a) ? a : null;

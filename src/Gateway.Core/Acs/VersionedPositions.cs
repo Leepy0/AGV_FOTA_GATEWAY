@@ -34,6 +34,18 @@ public sealed class VersionedPositions
         }
     }
 
+    /// <summary>호기 번호 변경: from 의 위치를 to 로 옮긴다 (to 는 새 버전). from 이 없거나 to 에 이미 위치가 있으면 false</summary>
+    public bool Move(int from, int to)
+    {
+        lock (_lock)
+        {
+            if (!_pos.TryGetValue(from, out var e) || _pos.ContainsKey(to)) return false;
+            _pos.Remove(from);
+            _pos[to] = (e.pos with { Agv = to }, ++_ver);
+            return true;
+        }
+    }
+
     /// <summary>재시작 복원용 — 버전 0 (발행 대상 아님)</summary>
     public void Restore(AgvPosition p)
     {
